@@ -17,6 +17,7 @@ Current status:
 - Phase 1 implementation has started: generic channel protocol, mock channel, terminal channel, bridge core, command handling, approval manager, mock Codex adapter, initial `codex exec --json` adapter, CLI mock flow, and tests are present.
 - Real Codex CLI communication has been verified through the middleware with `terminal codex` and `codex exec --json`.
 - Phase 2 Weixin work has started: QR login API, local account token store, text `sendmessage`, and inbound message mapping are implemented with fake-fetch tests. Real Weixin login still requires user-assisted scanning.
+- Real Weixin startup entry is available as `weixin codex`: it checks stored Weixin credentials, skips QR when already logged in, and starts QR login when credentials are missing.
 
 Useful local commands:
 
@@ -27,6 +28,7 @@ npm run cli:terminal:mock
 npm run cli:terminal:codex
 npm run cli:weixin:status
 npm run cli:weixin:login
+npm run cli:weixin:codex
 ```
 
 Vendored reference package:

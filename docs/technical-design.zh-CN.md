@@ -107,6 +107,7 @@ Terminal / Weixin / future channels
 - `MockChannelAdapter` 用于自动化测试。
 - `TerminalChannelAdapter` 用于本地 CLI 交互和管道测试，模拟微信输入输出。
 - `WeixinAdapter` 已进入第二阶段初版：二维码登录 API、登录确认轮询、账号 token 文件存储、文本 `sendmessage`、入站消息映射已经实现并通过 fake-fetch 测试。
+- 真实微信启动入口是 `weixin codex`：启动时会先检查 Codex，再检查本地微信凭证；已登录时跳过二维码，未登录时发起二维码登录并在登录完成后启动长轮询。
 - 真实微信扫码登录、`getupdates` 长轮询闭环和真实微信收发需要用户后续协助测试。
 - `MockCodexAdapter` 用于稳定测试审批、阶段性事件和命令。
 - `ExecCodexAdapter` 已具备解析 `codex exec --json` 的基础能力，并已通过中间件终端通道完成真实 Codex CLI 联调。
@@ -227,6 +228,7 @@ WeixinAdapter implements ChannelAdapter
 - 账号 ID 会做文件名安全归一化，例如 `abc@im.bot` 归一化为 `abc-im-bot`。
 - `context_token` 会从微信入站消息带入 `ChannelTarget.context.contextToken`，发送回复时回传给 `sendmessage`。
 - 当前没有定时刷新 token 的协议；登录后复用服务端返回的 `bot_token`。如果 `getupdates` 返回 session 失效码 `-14`，通道状态切换为 `login_required`，停止当前轮询，等待用户重新扫码登录。旧 token 会保留，用于下一次二维码登录时作为 `local_token_list` 传给服务端识别已绑定账号。
+- `weixin status` 会读取本地账号凭证但不启动长轮询；有凭证时显示 `connected`，无凭证时显示 `login_required`。
 
 它不负责：
 

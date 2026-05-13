@@ -34,8 +34,14 @@ async function main(argv: string[]): Promise<void> {
   }
 
   if (area === "weixin" && command === "status") {
-    const adapter = new WeixinAdapter();
+    const adapter = new WeixinAdapter({ pollOnStart: false });
+    await adapter.start();
     console.log(JSON.stringify(await adapter.getStatus(), null, 2));
+    return;
+  }
+
+  if (area === "weixin" && command === "codex") {
+    await runWeixinCodexBridge(parseStartupOptions(rest));
     return;
   }
 
@@ -140,6 +146,66 @@ async function runTerminalBridge(mode: "mock" | "codex", options: StartupOptions
   await bridge.stop();
 }
 
+async function runWeixinCodexBridge(options: StartupOptions = {}): Promise<void> {
+  const startup = await prepareCodexStartup(options);
+  const channel = new WeixinAdapter({ verifyCodeProvider: askStdin });
+  const codex = new ExecCodexAdapter({ runPolicy: startup.policy });
+  const bridge = new Bridge({
+    channel,
+    codex,
+    logger: new ConsoleLogger(false),
+    cwd: process.cwd(),
+    initialSessionId: startup.sessionId,
+  });
+
+  await bridge.start();
+  await ensureWeixinLoggedIn(channel);
+  if (startup.sessionId) {
+    console.log(`首个微信会话将绑定 Codex 会话: ${startup.sessionId}`);
+  } else {
+    console.log("首个微信会话将自动创建新的 Codex 会话。");
+  }
+  console.log("Weixin Codex 中间件已启动。按 Ctrl+C 停止。");
+  await waitForShutdownSignal();
+  await bridge.stop();
+}
+
+async function ensureWeixinLoggedIn(channel: WeixinAdapter): Promise<void> {
+  let status = await channel.getStatus();
+  if (status.state === "connected") {
+    console.log(`微信已登录: ${status.account ?? "default"}`);
+    return;
+  }
+  console.log("微信未登录，开始二维码登录。");
+  const started = await channel.startLogin();
+  console.log(started.message);
+  if (started.qrCodeText) {
+    console.log(started.qrCodeText);
+  }
+  const loginResult = await channel.waitLogin(started.sessionKey);
+  console.log(loginResult.message);
+  if (loginResult.state !== "connected") {
+    throw new Error(`微信登录未完成: ${loginResult.message}`);
+  }
+  await channel.start();
+  status = await channel.getStatus();
+  if (status.state !== "connected") {
+    throw new Error(`微信登录后启动失败: ${status.lastError ?? status.state}`);
+  }
+}
+
+function waitForShutdownSignal(): Promise<void> {
+  return new Promise((resolve) => {
+    const done = () => {
+      process.off("SIGINT", done);
+      process.off("SIGTERM", done);
+      resolve();
+    };
+    process.once("SIGINT", done);
+    process.once("SIGTERM", done);
+  });
+}
+
 async function prepareCodexStartup(options: StartupOptions): Promise<{ policy: CodexRunPolicy; sessionId?: string }> {
   const status = await checkCodexCli();
   if (!status.available) {
@@ -232,6 +298,7 @@ function printHelp(): void {
     "    --session new|last|<id>          选择新会话或已有 Codex 会话",
     "    --permission approval|full       设置审批模式或完全权限",
     "    --yes-dangerously-full           非交互确认完全权限",
+    "  codex-wechat-bridge weixin codex   启动真实微信通道 + codex exec",
     "  codex-wechat-bridge weixin status  查看 WeixinAdapter 当前状态",
     "  codex-wechat-bridge weixin login   显示第二阶段登录提示",
     "  codex-wechat-bridge start          当前等同 terminal mock",

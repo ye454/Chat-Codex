@@ -15,6 +15,7 @@ export interface BridgeOptions {
   approvals?: ApprovalManager;
   logger?: Logger;
   cwd?: string;
+  initialSessionId?: string;
 }
 
 export class Bridge {
@@ -24,6 +25,7 @@ export class Bridge {
   private readonly approvals: ApprovalManager;
   private readonly logger: Logger;
   private readonly cwd: string;
+  private initialSessionId?: string;
 
   constructor(options: BridgeOptions) {
     this.channel = options.channel;
@@ -32,6 +34,7 @@ export class Bridge {
     this.approvals = options.approvals ?? new ApprovalManager();
     this.logger = options.logger ?? new SilentLogger();
     this.cwd = options.cwd ?? process.cwd();
+    this.initialSessionId = options.initialSessionId;
   }
 
   async start(): Promise<void> {
@@ -125,6 +128,13 @@ export class Bridge {
       const stored = this.state.getSession(binding.sessionId);
       if (stored) return stored.session;
       return this.codex.resumeSession(binding.sessionId);
+    }
+    if (this.initialSessionId) {
+      const sessionId = this.initialSessionId;
+      this.initialSessionId = undefined;
+      const session = await this.codex.resumeSession(sessionId);
+      this.state.bindSession(message.routeKey, session);
+      return session;
     }
     const session = await this.codex.startSession({
       routeKey: message.routeKey,

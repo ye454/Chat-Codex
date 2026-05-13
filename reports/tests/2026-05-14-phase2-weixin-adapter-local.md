@@ -8,6 +8,7 @@
 - 能轮询登录确认并把 `bot_token`、`ilink_bot_id` 保存到本地账号存储。
 - 能处理 `need_verifycode` 登录分支，把用户输入的配对数字提交给 `get_qrcode_status`。
 - 能在 `getupdates` 返回 session 失效码 `-14` 时把通道切换到 `login_required`。
+- 能从本地已保存账号凭证判断 `connected`，且状态检查不启动长轮询。
 - 能把微信入站文本消息转换为通用 `ChannelMessage`。
 - 能把 Bridge 回复目标中的 `contextToken` 带入 `sendmessage`。
 - 不依赖 OpenClaw CLI、gateway、host runtime 或 plugin runtime。
@@ -38,17 +39,18 @@ npm run cli:weixin:status
 5. 使用 fake fetch 捕获 `sendmessage` 请求，检查 Authorization、`to_user_id`、`context_token` 和文本内容。
 6. 构造微信 direct/group 原始消息，检查 route key、conversation、sender 和文本提取。
 7. 模拟 `getupdates` 返回 `ret=-14`、`errcode=-14`，确认状态切换为 `login_required`。
-8. 执行 `npm run cli:weixin:status`，确认未登录状态仍清晰显示 `login_required`。
+8. 模拟已保存账号，确认 `pollOnStart=false` 时状态可显示 `connected` 且不启动长轮询。
+9. 执行 `npm run cli:weixin:status`，确认未登录状态仍清晰显示 `login_required`。
 
 ## 实际结果
 
 `npm test` 结果：
 
 ```text
-tests 23
-pass 23
+tests 25
+pass 25
 fail 0
-duration_ms 118.717958
+duration_ms 148.194333
 ```
 
 新增覆盖用例：
@@ -57,6 +59,7 @@ duration_ms 118.717958
 - `WeixinAdapter sends text messages with stored token and context token`
 - `WeixinAdapter submits verify code when QR login requires pairing code`
 - `WeixinAdapter marks channel login_required when getupdates reports expired session`
+- `WeixinAdapter can report connected from stored account without starting polling`
 - `weixinMessageToChannelMessage maps direct text messages to generic channel messages`
 - `weixinMessageToChannelMessage separates group route from sender`
 - `normalizeWeixinAccountId creates file-safe account ids`
@@ -70,7 +73,7 @@ duration_ms 118.717958
   "details": {
     "source": "@tencent-weixin/openclaw-weixin",
     "sourceVersion": "2.4.3",
-    "phase": "adapter-ready",
+    "phase": "missing-account",
     "runtime": "codex-wechat-middleware"
   }
 }

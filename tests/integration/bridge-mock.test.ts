@@ -36,3 +36,27 @@ test("Bridge handles new session, prompt, status, and approval over mock channel
   assert.ok(channel.sentMessages.some((message) => message.text.includes("Bridge: ok")));
   assert.deepEqual(codex.resolvedApprovals, [{ approvalKey, decision: "approve" }]);
 });
+
+test("Bridge binds first route to initial session when provided", async () => {
+  const channel = new MockChannelAdapter();
+  const codex = new MockCodexAdapter();
+  const initial = await codex.startSession({
+    routeKey: "bootstrap",
+    cwd: process.cwd(),
+    title: "existing",
+  });
+  const bridge = new Bridge({
+    channel,
+    codex,
+    cwd: process.cwd(),
+    initialSessionId: initial.id,
+  });
+
+  await bridge.start();
+  await channel.emitText("继续已有会话");
+  await channel.emitText("/status");
+  await bridge.stop();
+
+  assert.ok(channel.sentMessages.some((message) => message.text.includes("Mock Codex 回复: 继续已有会话")));
+  assert.ok(channel.sentMessages.some((message) => message.text.includes(`Session: ${initial.id}`)));
+});

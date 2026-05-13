@@ -170,6 +170,27 @@ test("WeixinAdapter marks channel login_required when getupdates reports expired
   assert.match(status.lastError ?? "", /session expired/);
 });
 
+test("WeixinAdapter can report connected from stored account without starting polling", async () => {
+  const store = new FileWeixinAccountStore(tempStateDir());
+  store.saveAccount({
+    accountId: "abc-im-bot",
+    token: "token-1",
+    baseUrl: "https://api.example",
+    savedAt: new Date().toISOString(),
+  });
+  const adapter = new WeixinAdapter({
+    baseUrl: "https://api.example",
+    store,
+    pollOnStart: false,
+  });
+
+  await adapter.start();
+
+  const status = await adapter.getStatus();
+  assert.equal(status.state, "connected");
+  assert.equal(status.account, "abc-im-bot");
+});
+
 async function waitFor(predicate: () => Promise<boolean>, timeoutMs = 1000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
