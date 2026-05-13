@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -21,6 +21,7 @@ export interface CodexCliStatus {
 export interface DiscoveredCodexSession {
   id: string;
   threadName?: string;
+  preview?: string;
   cwd?: string;
   updatedAt?: string;
   path?: string;
@@ -76,14 +77,21 @@ export function discoverCodexSessions(options: DiscoverCodexSessionsOptions = {}
   const codexHome = options.codexHome ?? process.env.CODEX_HOME ?? path.join(os.homedir(), ".codex");
   const byId = new Map<string, DiscoveredCodexSession>();
   for (const session of readSessionIndex(path.join(codexHome, "session_index.jsonl"))) {
-    byId.set(session.id, session);
+    mergeSession(byId, session);
   }
   for (const session of readSessionFiles(path.join(codexHome, "sessions"))) {
-    byId.set(session.id, { ...byId.get(session.id), ...session });
+    mergeSession(byId, session);
+  }
+  for (const session of readStateDbSessions(path.join(codexHome, "state_5.sqlite"))) {
+    mergeSession(byId, session);
   }
   return [...byId.values()]
     .sort((a, b) => Date.parse(b.updatedAt ?? "") - Date.parse(a.updatedAt ?? ""))
     .slice(0, options.limit);
+}
+
+export function displayCodexSessionTitle(session: DiscoveredCodexSession): string | undefined {
+  return session.threadName ?? session.preview;
 }
 
 export function findCodexSessionById(
@@ -119,6 +127,54 @@ function readSessionIndex(filePath: string): DiscoveredCodexSession[] {
   }
 }
 
+function readStateDbSessions(filePath: string): DiscoveredCodexSession[] {
+  try {
+    if (!fs.existsSync(filePath)) return [];
+    const result = spawnSync("sqlite3", [
+      "-readonly",
+      "-json",
+      filePath,
+      [
+        "SELECT id, title, first_user_message, cwd, rollout_path, updated_at_ms, updated_at",
+        "FROM threads",
+        "WHERE archived = 0",
+        "ORDER BY updated_at DESC",
+      ].join(" "),
+    ], {
+      encoding: "utf8",
+      timeout: 2000,
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    if (result.status !== 0 || !result.stdout.trim()) return [];
+    const rows = JSON.parse(result.stdout) as Array<{
+      id?: string;
+      title?: string;
+      first_user_message?: string;
+      cwd?: string;
+      rollout_path?: string;
+      updated_at_ms?: number;
+      updated_at?: number;
+    }>;
+    return rows
+      .filter((row) => typeof row.id === "string" && row.id.length > 0)
+      .map((row) => {
+        const title = cleanText(row.title);
+        const firstUserMessage = cleanText(row.first_user_message);
+        const distinctTitle = title && title !== firstUserMessage ? title : undefined;
+        return {
+          id: row.id as string,
+          threadName: distinctTitle,
+          preview: firstUserMessage ?? title,
+          cwd: cleanText(row.cwd),
+          path: cleanText(row.rollout_path),
+          updatedAt: sqliteTimeToIso(row.updated_at_ms, row.updated_at),
+        };
+      });
+  } catch {
+    return [];
+  }
+}
+
 function readSessionFiles(rootDir: string): DiscoveredCodexSession[] {
   const files = listJsonlFiles(rootDir);
   const sessions: DiscoveredCodexSession[] = [];
@@ -127,6 +183,37 @@ function readSessionFiles(rootDir: string): DiscoveredCodexSession[] {
     if (session) sessions.push(session);
   }
   return sessions;
+}
+
+function mergeSession(byId: Map<string, DiscoveredCodexSession>, incoming: DiscoveredCodexSession): void {
+  const existing = byId.get(incoming.id);
+  byId.set(incoming.id, {
+    id: incoming.id,
+    threadName: incoming.threadName ?? existing?.threadName,
+    preview: incoming.preview ?? existing?.preview,
+    cwd: incoming.cwd ?? existing?.cwd,
+    updatedAt: latestIso(existing?.updatedAt, incoming.updatedAt),
+    path: incoming.path ?? existing?.path,
+  });
+}
+
+function latestIso(a?: string, b?: string): string | undefined {
+  if (!a) return b;
+  if (!b) return a;
+  return Date.parse(b) >= Date.parse(a) ? b : a;
+}
+
+function sqliteTimeToIso(updatedAtMs?: number, updatedAt?: number): string | undefined {
+  const ms = typeof updatedAtMs === "number" && updatedAtMs > 0
+    ? updatedAtMs
+    : typeof updatedAt === "number" && updatedAt > 0
+      ? updatedAt * 1000
+      : undefined;
+  return ms ? new Date(ms).toISOString() : undefined;
+}
+
+function cleanText(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
 function readSessionMeta(filePath: string): DiscoveredCodexSession | undefined {

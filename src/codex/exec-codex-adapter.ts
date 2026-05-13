@@ -8,7 +8,7 @@ import type {
   CodexSessionSummary,
   StartSessionInput,
 } from "./types.js";
-import { buildCodexRootArgs, discoverCodexSessions, findCodexSessionById, type CodexRunPolicy } from "./codex-cli.js";
+import { buildCodexRootArgs, discoverCodexSessions, displayCodexSessionTitle, findCodexSessionById, type CodexRunPolicy } from "./codex-cli.js";
 
 export interface ExecCodexAdapterOptions {
   codexBin?: string;
@@ -60,7 +60,7 @@ export class ExecCodexAdapter implements CodexAdapter {
     const session: CodexSession = {
       id: sessionId,
       cwd: discovered?.cwd ?? process.cwd(),
-      title: discovered?.threadName ?? `codex:${sessionId}`,
+      title: discovered ? displayCodexSessionTitle(discovered) ?? `codex:${sessionId}` : `codex:${sessionId}`,
       createdAt: discovered?.updatedAt ?? now,
     };
     this.sessions.set(session.id, {
@@ -144,7 +144,7 @@ export class ExecCodexAdapter implements CodexAdapter {
       .filter((session) => !seen.has(session.id))
       .map((session) => ({
         id: session.id,
-        title: session.threadName,
+        title: displayCodexSessionTitle(session),
         cwd: session.cwd,
         status: { type: "unknown" as const, detail: "history" },
         updatedAt: session.updatedAt ?? "",
@@ -171,7 +171,17 @@ export function parseExecJsonLine(line: string, sessionId: string, turnId: strin
     const parsed = JSON.parse(line) as {
       type?: string;
       thread_id?: string;
-      item?: { type?: string; text?: string };
+      item?: {
+        type?: string;
+        text?: string;
+        command?: string;
+        status?: string;
+        changes?: Array<{ path?: string; kind?: string }>;
+        items?: Array<{ text?: string; completed?: boolean }>;
+        server?: string;
+        tool?: string;
+        query?: string;
+      };
       error?: { message?: string };
       message?: string;
     };
@@ -180,6 +190,12 @@ export function parseExecJsonLine(line: string, sessionId: string, turnId: strin
     }
     if (parsed.type === "item.completed" && parsed.item?.type === "agent_message" && parsed.item.text) {
       return { event: { type: "assistant.completed", sessionId, turnId, text: parsed.item.text } };
+    }
+    if ((parsed.type === "item.started" || parsed.type === "item.updated" || parsed.type === "item.completed") && parsed.item) {
+      const progress = progressTextFromExecItem(parsed.type, parsed.item);
+      if (progress) {
+        return { event: { type: "assistant.progress", sessionId, turnId, text: progress } };
+      }
     }
     if (parsed.type === "turn.failed") {
       return { event: { type: "turn.failed", sessionId, turnId, error: parsed.error?.message ?? "codex turn failed" } };
@@ -191,4 +207,41 @@ export function parseExecJsonLine(line: string, sessionId: string, turnId: strin
   } catch {
     return undefined;
   }
+}
+
+function progressTextFromExecItem(eventType: string, item: {
+  type?: string;
+  text?: string;
+  command?: string;
+  status?: string;
+  changes?: Array<{ path?: string; kind?: string }>;
+  items?: Array<{ text?: string; completed?: boolean }>;
+  server?: string;
+  tool?: string;
+  query?: string;
+}): string | undefined {
+  if (item.type === "reasoning" && eventType === "item.completed" && item.text) {
+    return item.text;
+  }
+  if (item.type === "command_execution" && eventType === "item.started" && item.command) {
+    return `正在执行命令: ${item.command}`;
+  }
+  if (item.type === "command_execution" && eventType === "item.completed" && item.command) {
+    return `命令${item.status === "failed" ? "失败" : "完成"}: ${item.command}`;
+  }
+  if (item.type === "file_change" && eventType === "item.completed" && item.changes?.length) {
+    const paths = item.changes.map((change) => change.path).filter(Boolean).slice(0, 5).join(", ");
+    return paths ? `文件变更完成: ${paths}` : undefined;
+  }
+  if (item.type === "mcp_tool_call" && eventType === "item.started") {
+    return `正在调用工具: ${[item.server, item.tool].filter(Boolean).join("/")}`;
+  }
+  if (item.type === "web_search" && eventType === "item.started" && item.query) {
+    return `正在搜索: ${item.query}`;
+  }
+  if (item.type === "todo_list" && item.items?.length) {
+    const active = item.items.find((todo) => !todo.completed)?.text ?? item.items.at(-1)?.text;
+    return active ? `计划更新: ${active}` : undefined;
+  }
+  return undefined;
 }

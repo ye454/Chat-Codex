@@ -1,9 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { buildCodexRootArgs, discoverCodexSessions, findCodexSessionById, parseSessionIndexLine } from "../../src/codex/codex-cli.js";
+import { buildCodexRootArgs, discoverCodexSessions, displayCodexSessionTitle, findCodexSessionById, parseSessionIndexLine } from "../../src/codex/codex-cli.js";
 
 function tempDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "codex-cli-test-"));
@@ -70,4 +71,43 @@ test("findCodexSessionById returns discovered session cwd", () => {
 
   assert.equal(session?.id, "thread-lookup");
   assert.equal(session?.cwd, "/tmp/lookup");
+});
+
+test("discoverCodexSessions reads friendly titles from Codex sqlite state", (t) => {
+  if (spawnSync("sqlite3", ["--version"], { stdio: "ignore" }).status !== 0) {
+    t.skip("sqlite3 binary is not available");
+    return;
+  }
+  const root = tempDir();
+  const dbPath = path.join(root, "state_5.sqlite");
+  const result = spawnSync("sqlite3", [dbPath, [
+    "CREATE TABLE threads (",
+    "id TEXT PRIMARY KEY,",
+    "title TEXT NOT NULL,",
+    "first_user_message TEXT NOT NULL,",
+    "cwd TEXT NOT NULL,",
+    "rollout_path TEXT NOT NULL,",
+    "updated_at_ms INTEGER,",
+    "updated_at INTEGER NOT NULL,",
+    "archived INTEGER NOT NULL",
+    ");",
+    "INSERT INTO threads VALUES (",
+    "'thread-sqlite',",
+    "'友好标题',",
+    "'第一条用户消息',",
+    "'/tmp/sqlite-project',",
+    "'/tmp/rollout.jsonl',",
+    "1778716800000,",
+    "1778716800,",
+    "0",
+    ");",
+  ].join(" ")], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+
+  const session = discoverCodexSessions({ codexHome: root })[0];
+
+  assert.equal(session.id, "thread-sqlite");
+  assert.equal(displayCodexSessionTitle(session), "友好标题");
+  assert.equal(session.preview, "第一条用户消息");
+  assert.equal(session.cwd, "/tmp/sqlite-project");
 });

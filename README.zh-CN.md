@@ -15,6 +15,7 @@
 - 已实现微信二维码登录入口、账号凭证本地保存、文本发送和 `getupdates` 轮询基础能力。
 - `weixin codex` 启动时会检查 Codex 可用性和微信登录态；已登录会跳过二维码，未登录会进入扫码登录。
 - `weixin codex` 常驻终端会打印微信入站消息和发回微信的 Codex 回复，方便运行时观察对话流。
+- 历史会话列表会优先读取 Codex SQLite 状态里的标题或首条用户消息，读不到再回退到 `session_index.jsonl` 和 rollout 元数据。
 
 ## 常用命令
 
@@ -43,6 +44,8 @@ npm run cli:weixin:codex -- --session last --permission approval
 交互启动时，如果选择新会话，会展示默认工作目录。用户输入新目录时，目录不存在会自动创建；如果选择历史会话，中间件会使用该 Codex 会话历史记录里的工作目录。
 
 当前 `codex exec --json` 模式会复用 Codex 历史会话，但不会把微信侧交互实时同步到另一个已经打开的 Codex CLI 或 Codex App 窗口。要实现多端实时同屏，需要后续切换到更完整的 Codex app-server/事件订阅方案，或让中间件成为唯一会话入口并提供自己的观察端。
+
+同一个微信上下文中的普通消息会按顺序排队处理。Codex 正在工作时再发送普通消息，中间件会先回复排队提示；命令类消息如 `/status`、`/cancel`、审批命令仍会立即处理。当前 exec 模式的“中途输出”来自 `codex exec --json` 可见事件，包括开始处理、reasoning summary、命令/工具/文件变更等进度摘要；更细的同 turn 插入和 steering 需要后续 app-server adapter。
 
 ## 微信侧命令
 

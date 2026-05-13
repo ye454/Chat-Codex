@@ -114,7 +114,8 @@ Terminal / Weixin / future channels
 - 中间件启动真实 Codex 模式时会先检测 `codex --version`，不可用则停止启动。
 - 真实 Codex 模式支持启动时选择历史 Codex 会话或创建新会话。
 - 选择新会话时会展示默认工作目录，支持通过交互输入或 `--cwd` / `--workdir` 指定工作目录；目录不存在时自动创建。
-- 选择历史会话时不创建新工作目录，而是从 `$CODEX_HOME/session_index.jsonl` 和 `$CODEX_HOME/sessions/**/*.jsonl` 读取 session 元数据，并把该会话的原 `cwd` 交给 `ExecCodexAdapter.resumeSession()`。
+- 选择历史会话时不创建新工作目录，而是从 `$CODEX_HOME/state_5.sqlite`、`$CODEX_HOME/session_index.jsonl` 和 `$CODEX_HOME/sessions/**/*.jsonl` 读取标题、首条用户消息、session 元数据和原 `cwd`，并交给 `ExecCodexAdapter.resumeSession()`。
+- Bridge 已按 routeKey 建立普通 prompt 串行队列；同一微信上下文中 Codex 正在运行时，新普通消息会排队，命令消息仍立即处理。
 - 真实 Codex 模式支持启动时选择权限模式：`approval` 使用 `--ask-for-approval on-request --sandbox workspace-write`，`full` 使用 `--dangerously-bypass-approvals-and-sandbox` 并要求危险确认。
 
 ## 3.0 通用渠道协议
@@ -513,10 +514,11 @@ src/channels/<channel-id>/
 
 - 已实现 `ExecCodexAdapter`。
 - 已实现 `codex --version` 可用性检测。
-- 已实现从 `$CODEX_HOME/session_index.jsonl` 和 `$CODEX_HOME/sessions/**/*.jsonl` 发现历史会话。
+- 已实现从 `$CODEX_HOME/state_5.sqlite`、`$CODEX_HOME/session_index.jsonl` 和 `$CODEX_HOME/sessions/**/*.jsonl` 发现历史会话，并优先展示 Codex 保存的标题或首条用户消息。
 - 已实现 `terminal codex` 启动时的会话选择与权限模式选择。
 - 已用中间件真实调用 `codex exec --json` 并收到回复。
 - `weixin codex` 启动入口已启用运行期 transcript：Bridge 收到微信消息和向微信发送回复时，会同步打印到启动中间件的终端。
+- 已把 `codex exec --json` 中可见的 reasoning summary、命令、工具、文件变更等事件转换为微信进度消息。
 
 限制：
 
@@ -877,6 +879,14 @@ CLI JSONL adapter 可用事件：
 - `turn.completed`
 - `turn.failed`
 - `error`
+
+当前 CLI JSONL adapter 的阶段性微信输出：
+
+- `turn.started`：Bridge 发送“Codex 开始处理”。
+- `item.completed` + `reasoning`：发送 `Codex 进度`，内容为 Codex 提供的 reasoning summary。
+- `item.started/completed` + `command_execution`：发送命令开始或完成摘要。
+- `item.completed` + `file_change`：发送文件变更摘要。
+- `mcp_tool_call`、`web_search`、`todo_list`：发送工具、搜索或计划摘要。
 
 app-server adapter 可用事件：
 

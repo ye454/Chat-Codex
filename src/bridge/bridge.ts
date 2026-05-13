@@ -20,6 +20,12 @@ export interface BridgeOptions {
   initialSessionId?: string;
 }
 
+interface QueuedPrompt {
+  message: ChannelMessage;
+  target: ChannelTarget;
+  prompt: string;
+}
+
 export class Bridge {
   private readonly channel: ChannelAdapter;
   private readonly codex: CodexAdapter;
@@ -28,6 +34,8 @@ export class Bridge {
   private readonly logger: Logger;
   private readonly transcript?: TranscriptSink;
   private readonly cwd: string;
+  private readonly routeQueues = new Map<string, QueuedPrompt[]>();
+  private readonly routeWorkers = new Map<string, Promise<void>>();
   private initialSessionId?: string;
 
   constructor(options: BridgeOptions) {
@@ -62,7 +70,13 @@ export class Bridge {
       await this.handleCommand(message, target, command.name ?? "", command.args);
       return;
     }
-    await this.forwardPrompt(message, target, text);
+    await this.enqueuePrompt(message, target, text);
+  }
+
+  async waitForIdle(): Promise<void> {
+    while (this.routeWorkers.size > 0) {
+      await Promise.all([...this.routeWorkers.values()]);
+    }
   }
 
   private async handleCommand(
@@ -153,12 +167,57 @@ export class Bridge {
     return session;
   }
 
-  private async forwardPrompt(message: ChannelMessage, target: ChannelTarget, prompt: string): Promise<void> {
+  private async enqueuePrompt(message: ChannelMessage, target: ChannelTarget, prompt: string): Promise<void> {
+    const queue = this.routeQueues.get(message.routeKey) ?? [];
+    const pendingAhead = queue.length + (this.routeWorkers.has(message.routeKey) ? 1 : 0);
+    queue.push({ message, target, prompt });
+    this.routeQueues.set(message.routeKey, queue);
+    if (pendingAhead > 0) {
+      await this.sendText(target, `已加入队列，前面还有 ${pendingAhead} 条消息。`);
+    }
+    if (!this.routeWorkers.has(message.routeKey)) {
+      this.startRouteWorker(message.routeKey);
+    }
+  }
+
+  private startRouteWorker(routeKey: string): void {
+    const worker = this.drainRouteQueue(routeKey).finally(() => {
+      this.routeWorkers.delete(routeKey);
+      if ((this.routeQueues.get(routeKey)?.length ?? 0) > 0) {
+        this.startRouteWorker(routeKey);
+      } else {
+        this.routeQueues.delete(routeKey);
+      }
+    });
+    this.routeWorkers.set(routeKey, worker);
+  }
+
+  private async drainRouteQueue(routeKey: string): Promise<void> {
+    for (;;) {
+      const queue = this.routeQueues.get(routeKey);
+      const task = queue?.shift();
+      if (!task) return;
+      try {
+        await this.forwardPrompt(task.message, task.target, task.prompt, queue?.length ?? 0);
+      } catch (error) {
+        await this.sendText(task.target, `Codex 执行失败: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+  }
+
+  private async forwardPrompt(message: ChannelMessage, target: ChannelTarget, prompt: string, remainingQueued: number): Promise<void> {
     const session = await this.ensureSession(message);
+    await this.sendText(target, [
+      "Codex 开始处理",
+      `Session: ${session.id}`,
+      remainingQueued > 0 ? `Queue: 后面还有 ${remainingQueued} 条` : undefined,
+    ].filter(Boolean).join("\n"));
     let finalText = "";
     for await (const event of this.codex.run(session.id, prompt)) {
       if (event.type === "turn.started") {
         this.state.setSessionStatus(session.id, { type: "running", turnId: event.turnId });
+      } else if (event.type === "assistant.progress") {
+        await this.sendText(target, `Codex 进度:\n${truncateForChannel(event.text)}`);
       } else if (event.type === "assistant.delta") {
         finalText += event.text;
       } else if (event.type === "assistant.completed") {
@@ -252,6 +311,7 @@ export class Bridge {
       `Codex: ${sessionStatus.type}`,
       `Session: ${binding?.sessionId ?? "none"}`,
       binding ? `Cwd: ${this.state.getSession(binding.sessionId)?.session.cwd ?? "unknown"}` : undefined,
+      `Queued messages: ${this.routeQueues.get(routeKey)?.length ?? 0}`,
       `Pending approvals: ${approvals.length}`,
       channelStatus.lastError ? `Last channel error: ${channelStatus.lastError}` : undefined,
     ].filter(Boolean).join("\n");
@@ -328,4 +388,10 @@ export class Bridge {
       "/cancel [id] - 取消审批或当前任务",
     ].join("\n");
   }
+}
+
+function truncateForChannel(text: string, maxLength = 600): string {
+  const normalized = text.trim();
+  if (normalized.length <= maxLength) return normalized;
+  return `${normalized.slice(0, maxLength)}...`;
 }

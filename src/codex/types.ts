@@ -17,6 +17,7 @@ export type CodexSessionStatus =
 
 export type CodexEvent =
   | { type: "turn.started"; sessionId: string; turnId: string }
+  | { type: "assistant.progress"; sessionId: string; turnId: string; text: string }
   | { type: "assistant.delta"; sessionId: string; turnId: string; text: string }
   | { type: "assistant.completed"; sessionId: string; turnId: string; text: string }
   | { type: "approval.requested"; sessionId: string; turnId: string; approval: ApprovalRequest }

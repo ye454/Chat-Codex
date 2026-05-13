@@ -31,8 +31,10 @@ test("Bridge handles new session, prompt, status, and approval over mock channel
   await channel.emitText("/debug");
   await channel.emitText("/use mock-codex-1");
   await channel.emitText("你好");
+  await bridge.waitForIdle();
   await channel.emitText("/status");
   await channel.emitText("请触发审批 approval");
+  await bridge.waitForIdle();
 
   const approvalMessage = channel.sentMessages.find((message) => message.text.includes("Codex 请求审批"));
   assert.ok(approvalMessage, "approval request should be sent to channel");
@@ -40,6 +42,7 @@ test("Bridge handles new session, prompt, status, and approval over mock channel
   assert.ok(approvalKey, "approval key should be present");
 
   await channel.emitText(`/approve ${approvalKey}`);
+  await bridge.waitForIdle();
   await bridge.stop();
 
   assert.ok(channel.sentMessages.some((message) => message.text.includes("已创建新 Codex 会话")));
@@ -80,12 +83,33 @@ test("Bridge emits transcript events for inbound channel text and outbound repli
 
   await bridge.start();
   await channel.emitText("你好，打印到终端");
+  await bridge.waitForIdle();
   await bridge.stop();
 
   assert.equal(transcript.inboundEvents.length, 1);
   assert.equal(transcript.inboundEvents[0].text, "你好，打印到终端");
-  assert.equal(transcript.outboundEvents.length, 1);
-  assert.equal(transcript.outboundEvents[0].text, "Mock Codex 回复: 你好，打印到终端");
+  assert.ok(transcript.outboundEvents.some((event) => event.text.includes("Codex 开始处理")));
+  assert.ok(transcript.outboundEvents.some((event) => event.text === "Mock Codex 回复: 你好，打印到终端"));
+});
+
+test("Bridge queues normal prompts for the same route while keeping commands responsive", async () => {
+  const channel = new MockChannelAdapter();
+  const codex = new MockCodexAdapter();
+  const bridge = new Bridge({ channel, codex, cwd: process.cwd() });
+
+  await bridge.start();
+  await channel.emitText("第一条");
+  await channel.emitText("第二条");
+  await channel.emitText("/status");
+  await bridge.waitForIdle();
+  await bridge.stop();
+
+  assert.ok(channel.sentMessages.some((message) => message.text.includes("已加入队列")));
+  assert.ok(channel.sentMessages.some((message) => message.text.includes("Queued messages")));
+  const firstIndex = channel.sentMessages.findIndex((message) => message.text === "Mock Codex 回复: 第一条");
+  const secondIndex = channel.sentMessages.findIndex((message) => message.text === "Mock Codex 回复: 第二条");
+  assert.ok(firstIndex >= 0);
+  assert.ok(secondIndex > firstIndex);
 });
 
 test("Bridge binds first route to initial session when provided", async () => {
@@ -105,6 +129,7 @@ test("Bridge binds first route to initial session when provided", async () => {
 
   await bridge.start();
   await channel.emitText("继续已有会话");
+  await bridge.waitForIdle();
   await channel.emitText("/status");
   await bridge.stop();
 

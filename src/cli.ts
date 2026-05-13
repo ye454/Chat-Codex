@@ -5,7 +5,7 @@ import { Bridge } from "./bridge/bridge.js";
 import { MockChannelAdapter } from "./channels/mock/mock-channel-adapter.js";
 import { TerminalChannelAdapter } from "./channels/terminal/terminal-channel-adapter.js";
 import { WeixinAdapter } from "./channels/weixin/weixin-adapter.js";
-import { checkCodexCli, discoverCodexSessions, findCodexSessionById, type CodexPermissionMode, type CodexRunPolicy, type DiscoveredCodexSession } from "./codex/codex-cli.js";
+import { checkCodexCli, discoverCodexSessions, displayCodexSessionTitle, findCodexSessionById, type CodexPermissionMode, type CodexRunPolicy, type DiscoveredCodexSession } from "./codex/codex-cli.js";
 import { ExecCodexAdapter } from "./codex/exec-codex-adapter.js";
 import { MockCodexAdapter } from "./codex/mock-codex-adapter.js";
 import { resolveNewSessionWorkdir } from "./codex/workdir.js";
@@ -295,7 +295,8 @@ async function resolveSessionChoice(
   console.log("Codex 会话:");
   console.log("0. 创建新的会话记录");
   sessions.forEach((session, index) => {
-    const name = session.threadName ? ` ${session.threadName}` : "";
+    const title = displayCodexSessionTitle(session);
+    const name = title ? ` ${title}` : "";
     const cwd = session.cwd ? ` ${session.cwd}` : "";
     const updated = session.updatedAt ? ` ${session.updatedAt}` : "";
     console.log(`${index + 1}. ${session.id}${name}${updated}${cwd}`);
