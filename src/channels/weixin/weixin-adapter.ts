@@ -249,7 +249,6 @@ export class WeixinAdapter implements ChannelAdapter {
     if (!account) {
       throw new Error("WeixinAdapter 未登录：请先运行 weixin login");
     }
-    const contextToken = typeof target.context?.contextToken === "string" ? target.context.contextToken : undefined;
     const clientId = `codex-weixin-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const body: WeixinSendMessageRequest = {
       msg: {
@@ -259,7 +258,6 @@ export class WeixinAdapter implements ChannelAdapter {
         message_type: WeixinMessageType.BOT,
         message_state: WeixinMessageState.FINISH,
         item_list: text ? [{ type: WeixinMessageItemType.TEXT, text_item: { text } }] : undefined,
-        context_token: contextToken,
       },
     };
     await this.sendRawMessage(account, body);
@@ -482,7 +480,6 @@ export class WeixinAdapter implements ChannelAdapter {
     account: StoredWeixinAccount,
     items: WeixinMessageItem[],
   ): Promise<SendResult> {
-    const contextToken = typeof target.context?.contextToken === "string" ? target.context.contextToken : undefined;
     let lastClientId = "";
     let lastBody: WeixinSendMessageRequest | undefined;
     for (const item of items) {
@@ -495,7 +492,6 @@ export class WeixinAdapter implements ChannelAdapter {
           message_type: WeixinMessageType.BOT,
           message_state: WeixinMessageState.FINISH,
           item_list: [item],
-          context_token: contextToken,
         },
       };
       await this.sendRawMessage(account, body);

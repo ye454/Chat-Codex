@@ -19,8 +19,7 @@
 2. 微信把这条消息和一个 `context_token` 一起给中间件。
 3. 中间件把问题交给 Codex。
 4. Codex 可能跑很久，期间会产生开始提示、阶段性进度、审批提示、最终回复、媒体消息。
-5. 这些消息原本都会尽量复用第一条用户消息带来的 `context_token`。
-6. 时间久了、消息多了、或者微信后端认为这个上下文不适合继续回复时，`sendmessage` 就可能返回 `ret=-2`。
+5. 如果这些消息一直复用第一条用户消息带来的 `context_token`，时间久了、消息多了、或者微信后端认为这个上下文不适合继续回复时，`sendmessage` 就可能返回 `ret=-2`。
 7. 用户再发 `/help` 时，这是新的微信消息，会带来新的上下文，所以 `/help` 又能正常回。
 
 所以它的体感就是：“刚才 Codex 卡住不回，怎么我发 `/help` 又好了？”
@@ -29,6 +28,14 @@
 ## 专业版本
 
 `context_token` 是微信 `getupdates` 对单条入站消息下发的上下文引用。发送回复时，客户端可以把它放入 `sendmessage` 请求体的 `msg.context_token` 字段，以便微信侧把机器人回复关联到对应会话上下文。
+
+但它不是微信消息发送的授权凭证。真实发送更核心的条件是：
+
+```text
+bot_token + to_user_id + sendmessage
+```
+
+OpenClaw 的 cron 主动投递也支持在没有新入站消息的情况下向微信用户发消息，这说明 `context_token` 更像“回复上下文锚点”，不是“能不能发消息”的硬门槛。
 
 当前没有发现可用的主动刷新 `context_token` API。中间件只能在收到新的微信入站消息时拿到新的 `context_token`。
 
@@ -45,7 +52,17 @@
 - 长文本或多段连续出站是高风险因素。
 - 微信服务端临时波动或限流也可能参与其中。
 
-因此正确策略不是“刷新 context token”，因为目前没有刷新接口；正确策略是减少对旧 token 的依赖，并降低出站消息压力。
+因此正确策略不是“刷新 context token”，因为目前没有刷新接口；正确策略是把 `context_token` 从发送依赖降级为观测和兼容字段，并降低出站消息压力。
+
+## 当前投递策略
+
+中间件采用直接投递模型：
+
+- 接收微信消息时，仍从原始消息里提取并保留 `context_token`，方便日志观察、调试和后续回退。
+- 发送文本消息时，默认不在 `sendmessage` 请求体里携带 `context_token`。
+- 发送图片和文件媒体时，同样默认不携带 `context_token`。
+- 审批、progress、final reply 都按普通微信投递处理，不把旧 `context_token` 作为送达前提。
+- typing 仍可单独使用 `context_token` 请求 `typing_ticket`；typing 失败只记录告警，不影响 `sendmessage`。
 
 ## 现有缓解策略
 
@@ -56,24 +73,12 @@
 - `sendmessage` 有超时和退避重试。
 - `ret=-1`、`ret=-2` 被视为可重试临时错误。
 - progress 发送失败后，会对当前 route 进入短暂冷却，避免持续刷失败请求。
-- 如果带 `context_token` 的 `sendmessage` 在正常重试后仍因 `ret=-2` 失败，会再尝试一次不带 `context_token` 的发送。
+- 兼容逻辑仍保留：如果未来某条带 `context_token` 的 `sendmessage` 在正常重试后仍因 `ret=-2` 失败，会再尝试一次不带 `context_token` 的发送。
 - app-server commentary/progress 分片阈值已提高，减少一句话被拆成多条微信消息。
 
-这些策略的目标是：不要因为微信某次临时拒收就让整个 Codex turn 崩掉，也不要继续用同一个高风险上下文疯狂重试。
+这些策略的目标是：不要因为微信某次临时拒收就让整个 Codex turn 崩掉，也不要继续用同一个高风险上下文疯狂重试。Codex 微信桥更重视“稳定投递到用户”，而不是微信 UI 上严格挂靠某条入站消息。
 
 ## 建议的下一步策略
-
-### 主动过期 `context_token`
-
-建议给 `context_token` 增加接收时间，例如 `contextTokenReceivedAt`。
-
-发送微信消息时按消息类型判断：
-
-- `/help`、`/status`、审批提示、审批结果：短消息且需要及时送达，可以优先带 token。
-- 长任务 progress：如果 token 年龄超过 `60s` 或 `120s`，主动省略 token。
-- final reply：如果任务持续时间较长，也可以主动省略 token，或在带 token 失败后快速 fallback。
-
-这样做的目的不是“证明 token 一定过期”，而是工程上降低旧上下文导致 `ret=-2` 的概率。
 
 ### 合并 progress
 
@@ -83,7 +88,7 @@
 - final reply、approval、stop 等重要消息仍立即发送。
 - `brief` 模式下进一步减少中间消息。
 
-这可以同时降低 `context_token` 压力、微信限流压力和用户聊天窗口刷屏。
+这可以同时降低微信限流压力、用户聊天窗口刷屏和 `ret=-2` 触发概率。
 
 ### 用户侧临时规避
 
@@ -130,7 +135,7 @@
 - `src/protocol/channel.ts`
   - `replyTargetFromMessage()` 从入站消息提取 `context_token`。
 - `src/channels/weixin/weixin-adapter.ts`
-  - 构造 `sendmessage` 请求。
+  - 构造 `sendmessage` 请求；文本、图片和文件默认不携带 `context_token`。
   - 处理 `ret=-2` 重试和去 token fallback。
 - `src/channels/weixin/weixin-api.ts`
   - `sendmessage` API 调用和错误抛出。

@@ -65,7 +65,7 @@ test("WeixinAdapter starts QR login, waits for confirmation, and stores account 
   assert.ok(calls.some((call) => call.url.includes("get_qrcode_status")));
 });
 
-test("WeixinAdapter sends text messages with stored token and context token", async () => {
+test("WeixinAdapter sends text messages without context token by default", async () => {
   const store = new FileWeixinAccountStore(tempStateDir());
   store.saveAccount({
     accountId: "abc-im-bot",
@@ -108,7 +108,7 @@ test("WeixinAdapter sends text messages with stored token and context token", as
   assert.equal(call.headers.get("Authorization"), "Bearer token-1");
   const body = JSON.parse(call.body ?? "{}");
   assert.equal(body.msg.to_user_id, "user@im.wechat");
-  assert.equal(body.msg.context_token, "ctx-1");
+  assert.equal(body.msg.context_token, undefined);
   assert.equal(body.msg.item_list[0].text_item.text, "hello");
   assert.equal(result.channelId, "weixin");
 });
@@ -237,7 +237,7 @@ test("WeixinAdapter retries temporary ret=-2 sendmessage failures", async () => 
   assert.equal(status.lastError, undefined);
 });
 
-test("WeixinAdapter retries ret=-2 sends without stale context token", async () => {
+test("WeixinAdapter ignores target context token for direct text delivery", async () => {
   const store = new FileWeixinAccountStore(tempStateDir());
   store.saveAccount({
     accountId: "abc-im-bot",
@@ -251,9 +251,6 @@ test("WeixinAdapter retries ret=-2 sends without stale context token", async () 
     if (url.includes("sendmessage")) {
       const body = JSON.parse(String(init?.body ?? "{}"));
       bodies.push(body);
-      if (body.msg?.context_token) {
-        return jsonResponse({ ret: -2, errcode: 0, errmsg: "temporary send failure" });
-      }
       return jsonResponse({});
     }
     throw new Error(`unexpected fetch ${url}`);
@@ -275,11 +272,10 @@ test("WeixinAdapter retries ret=-2 sends without stale context token", async () 
     conversation: { id: "user@im.wechat", kind: "direct" },
     recipient: { id: "user@im.wechat" },
     context: { contextToken: "stale-ctx" },
-  }, "hello after context fallback");
+  }, "hello direct delivery");
 
-  assert.equal(bodies.length, 2);
-  assert.equal((bodies[0] as { msg?: { context_token?: string } }).msg?.context_token, "stale-ctx");
-  assert.equal((bodies[1] as { msg?: { context_token?: string } }).msg?.context_token, undefined);
+  assert.equal(bodies.length, 1);
+  assert.equal((bodies[0] as { msg?: { context_token?: string } }).msg?.context_token, undefined);
 });
 
 test("WeixinAdapter sends typing state with getconfig typing ticket", async () => {
@@ -401,6 +397,7 @@ test("WeixinAdapter uploads and sends image media with caption", async () => {
     .filter((call) => call.url.includes("sendmessage"))
     .map((call) => JSON.parse(String(call.body)));
   assert.equal(sendBodies.length, 2);
+  assert.ok(sendBodies.every((body) => body.msg.context_token === undefined));
   assert.equal(sendBodies[0].msg.item_list[0].text_item.text, "截图");
   const imageItem = sendBodies[1].msg.item_list[0];
   assert.equal(imageItem.type, 2);

@@ -252,7 +252,7 @@ WeixinAdapter implements ChannelAdapter
 - 登录轮询支持 `need_verifycode` 分支；CLI 会提示输入手机微信显示的配对数字后继续轮询。
 - 登录 token 默认保存在项目根目录下 `state/weixin/`，该目录被 Git 忽略。
 - 账号 ID 会做文件名安全归一化，例如 `abc@im.bot` 归一化为 `abc-im-bot`。
-- `context_token` 会从微信入站消息带入 `ChannelTarget.context.contextToken`，发送回复时回传给 `sendmessage`。
+- `context_token` 会从微信入站消息带入 `ChannelTarget.context.contextToken`，但文本、图片和文件发送默认不回传给 `sendmessage`；它只作为观测、调试和后续兼容回退字段。typing 可继续单独使用该字段请求 `typing_ticket`，但 typing 失败不影响消息投递。
 - typing 使用 `getconfig` 获取 `typing_ticket`，再调用 `sendtyping`。Bridge 在 Codex 运行期间每 5 秒续发一次 typing start，任务完成或 `/stop` 后发送 typing stop；typing 失败只记录警告，不中断 Codex 正常回复。
 - 当前没有定时刷新 token 的协议；登录后复用服务端返回的 `bot_token`。如果 `getupdates` 返回 session 失效码 `-14`，通道状态切换为 `login_required`，停止当前轮询，等待用户重新扫码登录。旧 token 会保留，用于下一次二维码登录时作为 `local_token_list` 传给服务端识别已绑定账号。
 - `weixin status` 会读取本地账号凭证但不启动长轮询；有凭证时显示 `connected`，无凭证时显示 `login_required`。
@@ -1017,6 +1017,7 @@ app-server adapter 可用事件：
 - `sendmessage`、`getuploadurl` 的 HTTP 200 不直接视为成功；若 JSON 里 `ret/errcode` 非 0，会抛错并更新通道 `lastError`，避免终端 transcript 把失败请求打印成成功 OUT。
 - 终端 transcript 默认使用一行方向摘要加缩进消息体，例如 `微信 <= Alice | direct:...` 和 `微信 => direct:... | 进度`；TTY 下用颜色区分用户入站、Codex 回复、进度、审批、错误和媒体，完整 route/sender 只在 verbose 模式下展示。
 - WeixinAdapter 对 `sendmessage` 串行排队，默认最小发送间隔为 1200ms；遇到 45009 等限流错误、429/5xx 或临时网络错误时按退避重试，最终失败才更新通道 `state=degraded` 和 `lastError`。
+- 文本、图片和文件发送采用直接投递模型，默认不携带 `context_token`；如果未来某条兼容路径带 token 且因 `ret=-2` 失败，保留去掉 token 再试一次的 fallback。
 
 ### 8.2.3 用户可见模式
 
