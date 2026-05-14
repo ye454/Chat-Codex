@@ -62,11 +62,11 @@ npm run cli:weixin:codex -- --session last --permission approval --progress brie
 - `/sessions all` 或 `/all-sessions`：查看全部可发现 Codex 历史会话 ID。
 - `/resume <session>` / `/use <session>`：恢复并绑定指定 Codex 会话。
 - `/progress [brief|detailed|silent]`：查看或设置当前微信上下文的进度投递模式。
-- `/OK` 或 `/approve [id]`：批准当前或指定 Codex 审批。
-- `/NO [理由]` 或 `/deny [id] [理由]`：拒绝当前或指定 Codex 审批，并记录拒绝理由。
-- `/approve-session [id]`：本会话批准当前或指定审批。
+- `/permission [approval|full confirm]`：查看或切换 Codex 权限模式。
+- `/OK`：批准当前 Codex 审批。
+- `/NO [理由]`：拒绝当前 Codex 审批，并记录拒绝理由。
 - `/stop`：终止当前正在处理的 Codex 任务，不结束 Codex 会话。
-- `/cancel [id]`：取消指定审批；不带 ID 时同 `/stop`。
+- `/cancel`：同 `/stop`，保留兼容旧命令。
 
 ## 文档
 

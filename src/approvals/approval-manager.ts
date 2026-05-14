@@ -67,7 +67,7 @@ export class ApprovalManager {
 
   formatForChannel(pending: PendingApproval): string {
     const lines = [
-      `Codex 请求审批 [${pending.approvalKey}]`,
+      "Codex 请求审批",
       `类型: ${pending.kind}`,
       `Session: ${shortId(pending.sessionId)}`,
       `Turn: ${shortId(pending.turnId)}`,
@@ -81,12 +81,6 @@ export class ApprovalManager {
       "快捷回复:",
       "/OK 通过当前审批",
       "/NO [理由] 拒绝当前审批",
-      "",
-      "带 ID 回复:",
-      `/approve ${pending.approvalKey}`,
-      `/approve-session ${pending.approvalKey}`,
-      `/deny ${pending.approvalKey}`,
-      `/cancel ${pending.approvalKey}`,
     );
     return lines.join("\n");
   }

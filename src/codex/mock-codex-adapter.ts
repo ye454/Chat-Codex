@@ -2,6 +2,7 @@ import type { ApprovalDecision } from "../approvals/types.js";
 import type {
   CodexAdapter,
   CodexEvent,
+  CodexRunPolicy,
   CodexSession,
   CodexSessionStatus,
   CodexSessionSummary,
@@ -10,6 +11,7 @@ import type {
 
 export class MockCodexAdapter implements CodexAdapter {
   private sequence = 0;
+  private runPolicy: CodexRunPolicy = { permissionMode: "approval", sandbox: "workspace-write" };
   private readonly sessions = new Map<string, { session: CodexSession; routeKey: string; status: CodexSessionStatus }>();
   readonly resolvedApprovals: Array<{ approvalKey: string; decision: ApprovalDecision; reason?: string }> = [];
 
@@ -91,5 +93,13 @@ export class MockCodexAdapter implements CodexAdapter {
       decision,
       ...(reason ? { reason } : {}),
     });
+  }
+
+  getRunPolicy(): CodexRunPolicy {
+    return { ...this.runPolicy };
+  }
+
+  setRunPolicy(policy: CodexRunPolicy): void {
+    this.runPolicy = { ...policy };
   }
 }

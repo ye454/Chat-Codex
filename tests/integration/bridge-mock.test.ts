@@ -115,10 +115,11 @@ test("Bridge handles new session, prompt, status, and approval over mock channel
 
   const approvalMessage = channel.sentMessages.find((message) => message.text.includes("Codex 请求审批"));
   assert.ok(approvalMessage, "approval request should be sent to channel");
-  const approvalKey = approvalMessage.text.match(/\[(a[0-9a-z]+)\]/)?.[1];
-  assert.ok(approvalKey, "approval key should be present");
+  assert.equal(/\[a[0-9a-z]+]/.test(approvalMessage.text), false, "approval id should not be exposed in normal channel prompt");
+  assert.ok(approvalMessage.text.includes("/OK 通过当前审批"));
+  assert.ok(approvalMessage.text.includes("/NO [理由] 拒绝当前审批"));
 
-  await channel.emitText("/OK");
+  await channel.emitText("/OK 好的");
   await bridge.waitForIdle();
   await bridge.stop();
 
@@ -129,7 +130,12 @@ test("Bridge handles new session, prompt, status, and approval over mock channel
   assert.ok(channel.sentMessages.some((message) => message.text.includes("已绑定 Codex 会话")));
   assert.ok(channel.sentMessages.some((message) => message.text.includes("Mock Codex 回复: 你好")));
   assert.ok(channel.sentMessages.some((message) => message.text.includes("Bridge: ok")));
-  assert.deepEqual(codex.resolvedApprovals, [{ approvalKey, decision: "approve" }]);
+  const approvalHandledMessage = channel.sentMessages.find((message) => message.text.startsWith("审批已处理:"))?.text ?? "";
+  assert.ok(approvalHandledMessage.includes("已通过"));
+  assert.equal(/\[a[0-9a-z]+]/.test(approvalHandledMessage), false, "approval handled reply should not expose internal id");
+  assert.equal(codex.resolvedApprovals.length, 1);
+  assert.match(codex.resolvedApprovals[0].approvalKey, /^a[0-9a-z]+$/);
+  assert.equal(codex.resolvedApprovals[0].decision, "approve");
 });
 
 test("Bridge exposes all sessions command for channel users", async () => {
@@ -146,6 +152,12 @@ test("Bridge exposes all sessions command for channel users", async () => {
   await bridge.stop();
 
   assert.ok(channel.sentMessages.some((message) => message.text.includes("/sessions all - 列出全部可发现 Codex 会话")));
+  const help = channel.sentMessages.find((message) => message.text.startsWith("可用命令:"))?.text ?? "";
+  assert.ok(help.includes("/OK - 批准当前审批"));
+  assert.ok(help.includes("/NO [理由] - 拒绝当前审批"));
+  assert.ok(help.includes("/permission [approval|full confirm]"));
+  assert.equal(help.includes("/approve [id]"), false);
+  assert.equal(help.includes("/cancel [id]"), false);
   const allSessionsMessages = channel.sentMessages.filter((message) => message.text.startsWith("全部可发现 Codex 会话"));
   assert.equal(allSessionsMessages.length, 2);
   assert.ok(allSessionsMessages.every((message) => message.text.includes("mock-codex-1")));
@@ -160,15 +172,16 @@ test("Bridge rejects latest approval with /NO and an optional reason", async () 
   await bridge.start();
   await channel.emitText("请触发审批 approval");
   await bridge.waitForIdle();
-  const approvalMessage = channel.sentMessages.find((message) => message.text.includes("Codex 请求审批"));
-  const approvalKey = approvalMessage?.text.match(/\[(a[0-9a-z]+)\]/)?.[1];
-  assert.ok(approvalKey);
+  assert.ok(channel.sentMessages.some((message) => message.text.includes("Codex 请求审批")));
 
   await channel.emitText("/NO 这个命令会删除文件");
   await bridge.waitForIdle();
   await bridge.stop();
 
-  assert.deepEqual(codex.resolvedApprovals, [{ approvalKey, decision: "deny", reason: "这个命令会删除文件" }]);
+  assert.equal(codex.resolvedApprovals.length, 1);
+  assert.match(codex.resolvedApprovals[0].approvalKey, /^a[0-9a-z]+$/);
+  assert.equal(codex.resolvedApprovals[0].decision, "deny");
+  assert.equal(codex.resolvedApprovals[0].reason, "这个命令会删除文件");
   assert.ok(channel.sentMessages.some((message) => message.text.includes("理由: 这个命令会删除文件")));
 });
 
@@ -239,6 +252,27 @@ test("Bridge progress command enables detailed progress for the current route", 
   assert.ok(channel.sentMessages.some((message) => message.text.includes("正在执行命令: npm test")));
 });
 
+test("Bridge permission command shows and changes Codex run policy", async () => {
+  const channel = new MockChannelAdapter();
+  const codex = new MockCodexAdapter();
+  const bridge = new Bridge({ channel, codex, cwd: process.cwd() });
+
+  await bridge.start();
+  await channel.emitText("/permission");
+  await channel.emitText("/permission full");
+  assert.equal(codex.getRunPolicy().permissionMode, "approval");
+  await channel.emitText("/permission full confirm");
+  await channel.emitText("/status");
+  await channel.emitText("/permission approval");
+  await bridge.stop();
+
+  assert.ok(channel.sentMessages.some((message) => message.text.includes("当前权限模式: approval sandbox=workspace-write")));
+  assert.ok(channel.sentMessages.some((message) => message.text.includes("/permission full confirm")));
+  assert.ok(channel.sentMessages.some((message) => message.text.includes("已切换 Codex 权限模式: full")));
+  assert.ok(channel.sentMessages.some((message) => message.text.includes("Permission: full")));
+  assert.equal(codex.getRunPolicy().permissionMode, "approval");
+});
+
 test("Bridge sends typing state while Codex is running", async () => {
   const channel = new MockChannelAdapter({ typing: true });
   const codex = new ProgressCodexAdapter();
@@ -276,6 +310,22 @@ test("Bridge status reports running work and /stop cancels the current task", as
   assert.equal(codex.cancelled, true);
   assert.ok(channel.sentMessages.some((message) => message.text.includes("已请求停止当前 Codex 任务")));
   assert.deepEqual(channel.sentTyping.map((event) => event.typing), [true, false, false]);
+});
+
+test("Bridge treats /cancel as a stop alias for the current task", async () => {
+  const channel = new MockChannelAdapter();
+  const codex = new CancellableCodexAdapter();
+  const bridge = new Bridge({ channel, codex, cwd: process.cwd() });
+
+  await bridge.start();
+  await channel.emitText("执行一个长任务");
+  await waitFor(async () => (await codex.getStatus()).type === "running");
+  await channel.emitText("/cancel");
+  await bridge.waitForIdle();
+  await bridge.stop();
+
+  assert.equal(codex.cancelled, true);
+  assert.ok(channel.sentMessages.some((message) => message.text.includes("已请求停止当前 Codex 任务")));
 });
 
 test("Bridge queues normal prompts for the same route while keeping commands responsive", async () => {

@@ -62,11 +62,11 @@ When Codex output contains an accessible media reference, the bridge sends the t
 - `/sessions all` or `/all-sessions`: list all discoverable Codex history session IDs.
 - `/resume <session>` / `/use <session>`: resume and bind a Codex session.
 - `/progress [brief|detailed|silent]`: show or set progress delivery mode for the current channel context.
-- `/OK` or `/approve [id]`: approve the current or specified Codex approval.
-- `/NO [reason]` or `/deny [id] [reason]`: deny the current or specified Codex approval and record the reason.
-- `/approve-session [id]`: approve the current or specified approval for the session.
+- `/permission [approval|full confirm]`: show or switch the Codex permission mode.
+- `/OK`: approve the current Codex approval.
+- `/NO [reason]`: deny the current Codex approval and record the reason.
 - `/stop`: stop the currently running Codex task without ending the Codex session.
-- `/cancel [id]`: cancel a specified approval; without an ID it behaves like `/stop`.
+- `/cancel`: same as `/stop`, kept as a compatibility alias.
 
 ## Documentation
 

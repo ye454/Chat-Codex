@@ -32,7 +32,7 @@ interface RunningExecProcess {
 
 export class ExecCodexAdapter implements CodexAdapter {
   private readonly codexBin: string;
-  private readonly runPolicy: CodexRunPolicy;
+  private runPolicy: CodexRunPolicy;
   private readonly codexHome?: string;
   private readonly sessions = new Map<string, ExecSessionRecord>();
   private readonly runningProcesses = new Map<string, RunningExecProcess>();
@@ -192,6 +192,14 @@ export class ExecCodexAdapter implements CodexAdapter {
         updatedAt: session.updatedAt ?? "",
       }));
     return [...localSessions, ...discoveredSessions];
+  }
+
+  getRunPolicy(): CodexRunPolicy {
+    return { ...this.runPolicy };
+  }
+
+  setRunPolicy(policy: CodexRunPolicy): void {
+    this.runPolicy = { ...policy };
   }
 
   private buildArgs(stored: ExecSessionRecord, prompt: string): string[] {

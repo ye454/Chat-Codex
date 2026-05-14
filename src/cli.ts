@@ -98,11 +98,7 @@ async function runMockCodexFlow(): Promise<void> {
   await channel.emitText("/new");
   await channel.emitText("你好，Codex");
   await channel.emitText("请触发审批 approval");
-  const approvalText = channel.sentMessages.find((message) => message.text.includes("Codex 请求审批"))?.text;
-  const approvalKey = approvalText?.match(/\[(a[0-9a-z]+)\]/)?.[1];
-  if (approvalKey) {
-    await channel.emitText(`/approve ${approvalKey}`);
-  }
+  await channel.emitText("/OK");
   await channel.emitText("/status");
   await bridge.stop();
 

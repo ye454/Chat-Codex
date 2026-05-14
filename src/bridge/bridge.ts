@@ -1,5 +1,6 @@
 import type { ApprovalDecision } from "../approvals/types.js";
 import { ApprovalManager } from "../approvals/approval-manager.js";
+import type { CodexRunPolicy } from "../codex/codex-cli.js";
 import type { CodexAdapter, CodexProgressKind, CodexSession, CodexSessionStatus } from "../codex/types.js";
 import { parseCommand } from "../commands/parser.js";
 import type { Logger } from "../logging/logger.js";
@@ -122,9 +123,15 @@ export class Bridge {
       case "mode":
         await this.handleProgressModeCommand(message, target, args[0]);
         return;
+      case "permission":
+      case "permissions":
+      case "perm":
+      case "policy":
+        await this.handlePermissionCommand(message, target, args);
+        return;
       case "ok":
       case "yes":
-        await this.resolveApproval(message, target, args, "approve");
+        await this.resolveApproval(message, target, [], "approve");
         return;
       case "no":
         await this.resolveApproval(message, target, args, "deny");
@@ -143,11 +150,7 @@ export class Bridge {
         await this.stopCurrentTask(message, target);
         return;
       case "cancel":
-        if (args[0]) {
-          await this.resolveApproval(message, target, args, "cancel");
-        } else {
-          await this.stopCurrentTask(message, target);
-        }
+        await this.stopCurrentTask(message, target);
         return;
       default:
         await this.sendText(target, `未知命令: /${name}\n发送 /help 查看可用命令。`);
@@ -307,7 +310,7 @@ export class Bridge {
       const pending = this.approvals.decide(key, message.routeKey, decision, parsed.reason);
       await this.codex.resolveApproval?.(pending.approvalKey, decision, parsed.reason);
       await this.sendText(target, [
-        `审批已处理 [${pending.approvalKey}]: ${decision}`,
+        `审批已处理: ${formatApprovalDecision(decision)}`,
         parsed.reason ? `理由: ${parsed.reason}` : undefined,
       ].filter(Boolean).join("\n"));
     } catch (error) {
@@ -372,6 +375,49 @@ export class Bridge {
     }
     this.routeProgressModes.set(message.routeKey, mode);
     await this.sendText(target, this.progressModeText(message.routeKey));
+  }
+
+  private async handlePermissionCommand(
+    message: ChannelMessage,
+    target: ChannelTarget,
+    args: string[],
+  ): Promise<void> {
+    if (!this.codex.getRunPolicy || !this.codex.setRunPolicy) {
+      await this.sendText(target, "当前 Codex Adapter 不支持运行时切换权限模式。");
+      return;
+    }
+    const rawMode = args[0]?.toLowerCase();
+    if (!rawMode) {
+      await this.sendText(target, this.permissionText());
+      return;
+    }
+    if (rawMode === "approval" || rawMode === "approve" || rawMode === "safe" || rawMode === "审批") {
+      this.codex.setRunPolicy({ permissionMode: "approval", sandbox: "workspace-write" });
+      await this.sendText(target, [
+        "已切换 Codex 权限模式: approval",
+        "后续任务将使用审批模式和 workspace-write sandbox。",
+        this.routeWorkers.has(message.routeKey) ? "当前正在运行的任务不会被改写；需要立即生效请先 /stop。" : undefined,
+      ].filter(Boolean).join("\n"));
+      return;
+    }
+    if (rawMode === "full" || rawMode === "danger" || rawMode === "完全权限") {
+      if (!isConfirmed(args.slice(1))) {
+        await this.sendText(target, [
+          "完全权限会跳过审批和沙箱，Codex 可以直接执行命令并修改文件，风险很高。",
+          "确认切换请发送:",
+          "/permission full confirm",
+        ].join("\n"));
+        return;
+      }
+      this.codex.setRunPolicy({ permissionMode: "full" });
+      await this.sendText(target, [
+        "已切换 Codex 权限模式: full",
+        "后续任务将跳过审批和沙箱。建议完成高权限任务后发送 /permission approval 切回审批模式。",
+        this.routeWorkers.has(message.routeKey) ? "当前正在运行的任务不会被改写；需要立即生效请先 /stop。" : undefined,
+      ].filter(Boolean).join("\n"));
+      return;
+    }
+    await this.sendText(target, "未知权限模式。可用命令: /permission、/permission approval、/permission full confirm。");
   }
 
   private async sendText(target: ChannelTarget, text: string): Promise<void> {
@@ -473,19 +519,19 @@ export class Bridge {
       ? localSession.status
       : adapterStatus;
     const approvals = this.approvals.list(routeKey);
-    const latestApproval = approvals.at(-1);
     const workerRunning = this.routeWorkers.has(routeKey);
+    const policy = this.codex.getRunPolicy?.();
     return [
       `Bridge: ok`,
       `Channel: ${channelStatus.channelId} ${channelStatus.state}`,
       `Processing: ${workerRunning ? "yes" : "no"}`,
       `Codex: ${formatCodexStatus(sessionStatus)}`,
       `Session: ${binding?.sessionId ?? "none"}`,
+      policy ? `Permission: ${formatRunPolicy(policy)}` : undefined,
       `Progress mode: ${this.progressModeFor(routeKey)}`,
       binding ? `Cwd: ${localSession?.session.cwd ?? "unknown"}` : undefined,
       `Queued messages: ${this.routeQueues.get(routeKey)?.length ?? 0}`,
       `Pending approvals: ${approvals.length}`,
-      latestApproval ? `Latest approval: ${latestApproval.approvalKey}` : undefined,
       workerRunning && binding ? "操作: /stop 终止当前任务" : undefined,
       channelStatus.lastError ? `Last channel error: ${channelStatus.lastError}` : undefined,
     ].filter(Boolean).join("\n");
@@ -557,11 +603,11 @@ export class Bridge {
       "/whoami - 查看当前通道身份",
       "/debug - 查看调试状态",
       "/progress [brief|detailed|silent] - 查看或设置当前上下文进度投递模式",
-      "/OK 或 /approve [id] - 批准当前或指定审批",
-      "/NO [理由] 或 /deny [id] [理由] - 拒绝当前或指定审批",
-      "/approve-session [id] - 本会话批准当前或指定审批",
+      "/permission [approval|full confirm] - 查看或切换 Codex 权限模式",
+      "/OK - 批准当前审批",
+      "/NO [理由] - 拒绝当前审批",
       "/stop - 终止当前正在处理的 Codex 任务",
-      "/cancel [id] - 取消审批；无 id 时同 /stop",
+      "/cancel - 同 /stop，保留兼容旧命令",
     ].join("\n");
   }
 
@@ -585,6 +631,17 @@ export class Bridge {
       "silent: 不发送进度文本，只发送开始、审批、最终回复和媒体。",
     ].join("\n");
   }
+
+  private permissionText(): string {
+    const policy = this.codex.getRunPolicy?.();
+    return [
+      `当前权限模式: ${policy ? formatRunPolicy(policy) : "unknown"}`,
+      "approval: 需要审批，使用 workspace-write sandbox。",
+      "full: 完全权限，跳过审批和沙箱，风险很高。",
+      "切回审批模式: /permission approval",
+      "切到完全权限: /permission full confirm",
+    ].join("\n");
+  }
 }
 
 function truncateForChannel(text: string, maxLength = 600): string {
@@ -604,6 +661,24 @@ function formatCodexStatus(status: CodexSessionStatus): string {
   if ("detail" in status && status.detail) parts.push(status.detail);
   if ("error" in status && status.error) parts.push(status.error);
   return parts.join(" ");
+}
+
+function formatRunPolicy(policy: CodexRunPolicy): string {
+  return policy.permissionMode === "full"
+    ? "full"
+    : `approval sandbox=${policy.sandbox ?? "workspace-write"}`;
+}
+
+function isConfirmed(args: string[]): boolean {
+  const normalized = args.join(" ").trim().toLowerCase();
+  return normalized === "confirm" || normalized === "yes" || normalized === "确认" || normalized === "我确认";
+}
+
+function formatApprovalDecision(decision: ApprovalDecision): string {
+  if (decision === "approve") return "已通过";
+  if (decision === "approve-session") return "已按本会话通过";
+  if (decision === "deny") return "已拒绝";
+  return "已取消";
 }
 
 function fallbackMediaText(media: ChannelMedia, mediaCapability: boolean): string {

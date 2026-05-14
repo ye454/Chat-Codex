@@ -16,7 +16,7 @@ Codex <-> Codex Adapter <-> Middleware Core <-> Weixin Adapter <-> WeChat
 
 - 处理 Codex 会话、事件、审批和状态。
 - 处理微信登录、收消息、发消息和通道状态。
-- 处理 `/new`、`/status`、`/stop`、`/OK`、`/NO`、`/approve`、`/deny`、`/cancel` 等微信命令。
+- 处理 `/new`、`/status`、`/stop`、`/OK`、`/NO`、`/permission`、`/cancel` 等微信命令。
 - 记录结构化日志和持久化状态。
 - 以终端命令形式启动和运行，保持轻量，不引入重框架。
 
@@ -91,7 +91,7 @@ Git 管理要求：
 - Bridge Core 只能依赖通用渠道协议，不能直接依赖 `openclaw-weixin` 的原始类型。
 - `WeixinAdapter` 只是通用渠道协议的一个实现。
 - 后续 Telegram、企业微信、飞书、Slack、HTTP webhook 等渠道应能通过实现同一套 adapter contract 接入。
-- `/new`、`/status`、`/stop`、`/OK`、`/NO`、`/approve`、`/deny`、`/cancel` 等命令逻辑必须在 Bridge Core/Command Router 中实现，不写进某个具体渠道 adapter。
+- `/new`、`/status`、`/stop`、`/OK`、`/NO`、`/permission`、`/cancel` 等命令逻辑必须在 Bridge Core/Command Router 中实现，不写进某个具体渠道 adapter。
 - 渠道 adapter 只负责登录、连接、收消息、发消息、能力声明和状态上报。
 - 不同渠道的用户、群、线程等上下文必须归一化为统一 route key。
 
@@ -162,7 +162,7 @@ Git 管理要求：
 建议策略：
 
 - 默认情况下，`/new` 只切换到新会话，不强制取消旧任务。
-- 如果 Codex 当前任务无法并行运行，则提示用户先 `/cancel` 或等待完成。
+- 如果 Codex 当前任务无法并行运行，则提示用户先 `/stop` 或等待完成。
 - 后续可以支持 `/new --cancel-current` 或类似参数。
 
 ### 3.4 自定义 `/status` 命令
@@ -198,7 +198,7 @@ Git 管理要求：
 - `/new`：创建并切换到新的 Codex 会话。
 - `/status`：查看 Codex 与微信通道综合状态。
 - `/stop`：立刻终止当前 Codex 任务，不结束 Codex 会话。
-- `/cancel`：带 ID 时取消审批；无 ID 时兼容为 `/stop`。
+- `/cancel`：同 `/stop`，保留兼容旧命令。
 - `/resume`：恢复或重新绑定已有 Codex 会话。
 - `/sessions`：列出当前微信上下文最近的 Codex 会话。
 - `/sessions all` 或 `/all-sessions`：列出全部可发现 Codex 历史会话，方便微信用户获得会话 ID 后执行 `/resume` 或 `/use`。
@@ -207,11 +207,9 @@ Git 管理要求：
 - `/debug`：管理员诊断命令，输出更详细的通道、状态和错误信息。
 - `/config`：管理员查看当前非敏感配置。
 - `/whoami`：查看当前微信上下文识别结果和权限角色。
-- `/OK` 或 `/approve [id]`：批准当前或指定 Codex 操作。
-- `/approve-session [id]`：本会话内批准当前或指定同类操作。
-- `/NO [理由]` 或 `/deny [id] [理由]`：拒绝当前或指定 Codex 操作，但让 Codex 尝试继续，并记录拒绝理由。
-- `/reject [id] [理由]`：同 `/deny [id] [理由]`。
-- `/cancel <id>`：拒绝指定操作，并中断当前 Codex turn。
+- `/permission [approval|full confirm]`：查看或切换 Codex 权限模式。
+- `/OK`：批准当前 Codex 操作。
+- `/NO [理由]`：拒绝当前 Codex 操作，但让 Codex 尝试继续，并记录拒绝理由。
 
 命令设计要求：
 
@@ -234,7 +232,6 @@ Git 管理要求：
 
 微信审批消息必须包含：
 
-- 审批短 ID。
 - Codex thread ID 和 turn ID 的短标识。
 - 操作类型。
 - 待执行命令或待变更文件摘要。
@@ -246,12 +243,11 @@ Git 管理要求：
 
 微信侧决策命令：
 
-- `/OK` 或 `/approve [id]`：批准当前或指定审批一次。
-- `/approve-session [id]`：本 Codex 会话内批准当前或指定同类操作。
-- `/NO [理由]` 或 `/deny [id] [理由]`：拒绝当前或指定审批一次，让 Codex 尝试继续。
-- `/cancel <id>`：拒绝并中断当前 turn。
+- `/OK`：批准当前审批一次。
+- `/NO [理由]`：拒绝当前审批一次，让 Codex 尝试继续。
+- `/stop`：终止当前 turn。
 
-无 ID 的审批命令只处理当前微信上下文最新的 pending approval；多个审批并存时，用户仍可用带 ID 命令精确选择。拒绝理由需要随审批记录保存，并在 Codex adapter 支持时向 Codex 传递。
+审批 ID 是内部兼容字段，不作为普通微信用户操作入口。无 ID 的审批命令只处理当前微信上下文最新的 pending approval；拒绝理由需要随审批记录保存，并在 Codex adapter 支持时向 Codex 传递。
 
 安全要求：
 
@@ -387,6 +383,8 @@ Last error: none
 - 不能在微信中输出敏感凭据。
 - 不能默认暴露完整本机文件系统信息。
 - 微信消息应视为不可信输入。
+- `/permission` 需要能在微信侧查看和切换 Codex 权限模式；`approval` 可直接切回，`full` 必须带显式确认词，例如 `/permission full confirm`。
+- 权限模式切换只影响后续 Codex turn；当前正在运行的任务不会被热改写，需要立即生效时应先 `/stop`。
 
 ## 8. 配置需求
 
@@ -460,7 +458,7 @@ Last error: none
 - 实现通用 Channel Adapter 协议和 mock channel。
 - 实现 Codex Adapter 的第一版。
 - 用终端或 mock channel 模拟微信输入输出。
-- 验证 `/new`、`/status`、`/stop`、`/approve`、`/deny`、`/cancel` 的本地流程。
+- 验证 `/new`、`/status`、`/stop`、`/OK`、`/NO`、`/permission`、`/cancel` 的本地流程。
 - 验证 Codex 阶段性事件和审批请求能进入中间件。
 - 留下中文测试报告。
 
