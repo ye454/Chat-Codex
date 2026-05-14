@@ -118,6 +118,24 @@ class ProgressFailingChannelAdapter extends MockChannelAdapter {
   }
 }
 
+class ApprovalFlakyChannelAdapter extends MockChannelAdapter {
+  approvalAttempts = 0;
+
+  constructor(private readonly failuresBeforeSuccess: number) {
+    super();
+  }
+
+  override async sendText(target: ChannelTarget, text: string): Promise<SendResult> {
+    if (text.includes("Codex 请求审批")) {
+      this.approvalAttempts += 1;
+      if (this.approvalAttempts <= this.failuresBeforeSuccess) {
+        throw new Error("sendmessage failed: ret=-2 errcode=0");
+      }
+    }
+    return super.sendText(target, text);
+  }
+}
+
 class CancellableCodexAdapter implements CodexAdapter {
   private sequence = 0;
   private readonly sessions = new Map<string, CodexSession>();
@@ -322,6 +340,44 @@ test("Bridge resolves approvals with adapter approval ids when provided", async 
   assert.equal(codex.resolvedApprovals[0].decision, "approve");
 });
 
+test("Bridge retries approval notifications until one is delivered", async () => {
+  const channel = new ApprovalFlakyChannelAdapter(2);
+  const codex = new MockCodexAdapter();
+  const bridge = new Bridge({ channel, codex, cwd: process.cwd(), approvalSendRetryDelayMs: 1 });
+
+  await bridge.start();
+  await channel.emitText("请触发审批 approval");
+  await bridge.waitForIdle();
+  await bridge.stop();
+
+  assert.equal(channel.approvalAttempts, 3);
+  const deliveredApprovals = channel.sentMessages.filter((message) => message.text.includes("Codex 请求审批"));
+  assert.equal(deliveredApprovals.length, 1);
+  assert.ok(deliveredApprovals[0].text.includes("/OK 通过当前审批"));
+});
+
+test("Bridge stops retrying approval notification after approval is resolved", async () => {
+  const channel = new ApprovalFlakyChannelAdapter(Number.POSITIVE_INFINITY);
+  const codex = new MockCodexAdapter();
+  const bridge = new Bridge({ channel, codex, cwd: process.cwd(), approvalSendRetryDelayMs: 20 });
+
+  await bridge.start();
+  await channel.emitText("请触发审批 approval");
+  await waitForTest(() => channel.approvalAttempts > 0);
+  await channel.emitText("/status");
+  const statusMessage = channel.sentMessages.at(-1)?.text ?? "";
+  assert.ok(statusMessage.includes("**Pending Approval**"));
+  assert.ok(statusMessage.includes("```text\n/OK\n```"));
+  assert.ok(statusMessage.includes("```text\n/NO [理由]\n```"));
+  await channel.emitText("/OK");
+  await bridge.waitForIdle();
+  await bridge.stop();
+
+  assert.equal(channel.sentMessages.some((message) => message.text.includes("Codex 请求审批")), false);
+  assert.equal(codex.resolvedApprovals.length, 1);
+  assert.equal(codex.resolvedApprovals[0].decision, "approve");
+});
+
 test("Bridge emits transcript events for inbound channel text and outbound replies", async () => {
   const channel = new MockChannelAdapter();
   const codex = new MockCodexAdapter();
@@ -402,6 +458,14 @@ test("Bridge suppresses progress sends briefly after a channel progress failure"
   assert.equal(channel.progressAttempts, 1);
   assert.ok(channel.sentMessages.some((message) => message.text === "完成"));
 });
+
+async function waitForTest(predicate: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 1));
+  }
+  assert.fail("condition was not met");
+}
 
 test("Bridge permission command shows and changes Codex run policy", async () => {
   const channel = new MockChannelAdapter();

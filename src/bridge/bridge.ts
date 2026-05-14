@@ -1,4 +1,4 @@
-import type { ApprovalDecision } from "../approvals/types.js";
+import type { ApprovalDecision, PendingApproval } from "../approvals/types.js";
 import { ApprovalManager } from "../approvals/approval-manager.js";
 import type { CodexRunPolicy, CodexRunPolicyStatus } from "../codex/codex-cli.js";
 import type { CodexAdapter, CodexProgressKind, CodexSession, CodexSessionContextUsage, CodexSessionModelInfo, CodexSessionStatus } from "../codex/types.js";
@@ -21,6 +21,7 @@ export interface BridgeOptions {
   cwd?: string;
   initialSessionId?: string;
   progressMode?: ProgressDeliveryMode;
+  approvalSendRetryDelayMs?: number;
 }
 
 interface QueuedPrompt {
@@ -32,6 +33,7 @@ interface QueuedPrompt {
 export type ProgressDeliveryMode = "brief" | "detailed" | "silent";
 
 const PROGRESS_SEND_FAILURE_COOLDOWN_MS = 60_000;
+const APPROVAL_SEND_RETRY_DELAY_MS = 10_000;
 
 export class Bridge {
   private readonly channel: ChannelAdapter;
@@ -42,6 +44,7 @@ export class Bridge {
   private readonly transcript?: TranscriptSink;
   private readonly cwd: string;
   private readonly defaultProgressMode: ProgressDeliveryMode;
+  private readonly approvalSendRetryDelayMs: number;
   private readonly routeProgressModes = new Map<string, ProgressDeliveryMode>();
   private readonly routeQueues = new Map<string, QueuedPrompt[]>();
   private readonly routeWorkers = new Map<string, Promise<void>>();
@@ -58,6 +61,7 @@ export class Bridge {
     this.cwd = options.cwd ?? process.cwd();
     this.initialSessionId = options.initialSessionId;
     this.defaultProgressMode = options.progressMode ?? "brief";
+    this.approvalSendRetryDelayMs = options.approvalSendRetryDelayMs ?? APPROVAL_SEND_RETRY_DELAY_MS;
   }
 
   async start(): Promise<void> {
@@ -262,7 +266,7 @@ export class Bridge {
             detail: event.approval.reason ?? event.approval.kind,
           });
           const pending = this.approvals.create(message.routeKey, message.sender.id, event.approval);
-          await this.sendText(target, this.approvals.formatForChannel(pending));
+          await this.sendApprovalTextUntilDelivered(message.routeKey, target, pending);
         } else if (event.type === "turn.completed") {
           this.state.setSessionStatus(session.id, { type: "idle" });
         } else if (event.type === "turn.failed") {
@@ -453,6 +457,33 @@ export class Bridge {
     this.transcript?.outbound(target, text);
   }
 
+  private async sendApprovalTextUntilDelivered(routeKey: string, target: ChannelTarget, pending: PendingApproval): Promise<void> {
+    const text = this.approvals.formatForChannel(pending);
+    let failures = 0;
+    while (this.isApprovalStillPending(routeKey, pending.approvalKey)) {
+      try {
+        await this.deliverText(target, text);
+        return;
+      } catch (error) {
+        failures += 1;
+        this.logger.warn("approval message send failed", {
+          channel: this.channel.id,
+          approvalKey: pending.approvalKey,
+          failures,
+          retryInMs: this.approvalSendRetryDelayMs,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      if (!this.isApprovalStillPending(routeKey, pending.approvalKey)) return;
+      await sleep(this.approvalSendRetryDelayMs);
+    }
+  }
+
+  private isApprovalStillPending(routeKey: string, approvalKey: string): boolean {
+    const approval = this.approvals.get(approvalKey);
+    return approval?.routeKey === routeKey && approval.status === "pending";
+  }
+
   private async sendProgressText(routeKey: string, target: ChannelTarget, text: string): Promise<void> {
     const suppressedUntil = this.progressSendSuppressedUntil.get(routeKey) ?? 0;
     if (Date.now() < suppressedUntil) return;
@@ -568,6 +599,7 @@ export class Bridge {
       `- Processing: \`${workerRunning ? "yes" : "no"}\``,
       `- Queue: \`${this.routeQueues.get(routeKey)?.length ?? 0}\``,
       `- Pending approvals: \`${approvals.length}\``,
+      ...formatPendingApprovalStatus(approvals.at(-1)),
       `- Progress: \`${this.progressModeFor(routeKey)}\``,
       policy ? `- Permission: \`${formatRunPolicy(policy)}\`` : undefined,
       policyStatus && !policyStatus.interactiveApprovals ? `- Approval: \`${formatApprovalSupport(policyStatus)}\`` : undefined,
@@ -800,6 +832,24 @@ function fallbackMediaText(media: ChannelMedia, mediaCapability: boolean): strin
     `Location: ${location}`,
     reason,
   ].filter(Boolean).join("\n");
+}
+
+function formatPendingApprovalStatus(approval: PendingApproval | undefined): Array<string | undefined> {
+  if (!approval) return [];
+  return [
+    "",
+    "**Pending Approval**",
+    `- Type: \`${approval.kind}\``,
+    approval.cwd ? `- Cwd: \`${approval.cwd}\`` : undefined,
+    approval.reason ? `- Reason: ${approval.reason}` : undefined,
+    approval.command ? "```shell\n" + approval.command + "\n```" : undefined,
+    "```text\n/OK\n```",
+    "```text\n/NO [理由]\n```",
+  ];
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, Math.max(0, ms)));
 }
 
 export function parseProgressDeliveryMode(value: string): ProgressDeliveryMode | undefined {

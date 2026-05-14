@@ -926,6 +926,8 @@ Reason: inspect workspace state
 
 审批 ID 是内部兼容字段，不作为普通微信用户操作入口；`/OK`、`/NO` 只作用于当前 `routeKey` 最新的 pending approval。拒绝理由保存在审批记录里，并通过 `CodexAdapter.resolveApproval(approvalKey, decision, reason?)` 传给当前 adapter。app-server adapter 会用原始 request id 回写 JSON-RPC response；exec 回退模式没有完整审批协议。
 
+审批通知是关键消息，不按普通进度消息处理。Bridge 收到 `approval.requested` 后必须先创建 pending approval，再把审批提示投递到当前 `routeKey`；如果通道发送失败，例如微信 `sendmessage ret=-2`，Bridge 会按固定间隔持续重试，直到审批提示至少送达一次。若用户在重试期间已经通过 `/OK`、`/NO` 或 `/stop` 处理了该 pending approval，重试循环立即停止，避免已处理审批再次弹出。
+
 网络或 exec policy 持久化放行：
 
 - 默认不通过普通 `/OK` 自动接受持久化策略。
