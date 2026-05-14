@@ -97,6 +97,17 @@ rl.on("line", (line) => {
       send({ method: "turn/completed", params: { threadId, turn: { id: turnId, items: [], itemsView: "complete", status: "completed", error: null, startedAt: 1778716800, completedAt: 1778716801, durationMs: 1000 } } });
       return;
     }
+    if (prompt.includes("commentary chunks")) {
+      const first = "这是一段很长的 commentary 更新，用来模拟 Codex 工作进度被分片发送到微信时的第一段内容，长度足够触发提前刷新并进入进度流";
+      const second = "，然后继续补上第二段。";
+      send({ method: "item/started", params: { threadId, turnId, startedAtMs: Date.now(), item: { type: "agentMessage", id: "commentary-chunks-1", text: "", phase: "commentary", memoryCitation: null } } });
+      send({ method: "item/agentMessage/delta", params: { threadId, turnId, itemId: "commentary-chunks-1", delta: first } });
+      send({ method: "item/agentMessage/delta", params: { threadId, turnId, itemId: "commentary-chunks-1", delta: second } });
+      send({ method: "item/completed", params: { threadId, turnId, completedAtMs: Date.now(), item: { type: "agentMessage", id: "commentary-chunks-1", text: first + second, phase: "commentary", memoryCitation: null } } });
+      send({ method: "item/completed", params: { threadId, turnId, completedAtMs: Date.now(), item: { type: "agentMessage", id: "msg-1", text: "commentary chunks final", phase: "final_answer", memoryCitation: null } } });
+      send({ method: "turn/completed", params: { threadId, turn: { id: turnId, items: [], itemsView: "complete", status: "completed", error: null, startedAt: 1778716800, completedAt: 1778716801, durationMs: 1000 } } });
+      return;
+    }
     if (prompt.includes("progress")) {
       send({ method: "item/started", params: { threadId, turnId, startedAtMs: Date.now(), item: { type: "reasoning", id: "reasoning-1", summary: [], content: [] } } });
       send({ method: "item/reasoning/summaryTextDelta", params: { threadId, turnId, itemId: "reasoning-1", summaryIndex: 0, delta: "我先确认当前状态。" } });
@@ -309,6 +320,31 @@ test("AppServerCodexAdapter forwards commentary agent messages as progress", asy
   assert.ok(events.some((event) => event.type === "assistant.progress" && event.kind === "other" && event.text.includes("我正在检查状态")));
   assert.ok(events.some((event) => event.type === "assistant.completed" && event.text === "commentary final"));
   assert.equal(events.some((event) => event.type === "assistant.completed" && event.text.includes("我正在检查状态")), false);
+});
+
+test("AppServerCodexAdapter does not duplicate chunked commentary on completion", async () => {
+  const root = tempDir();
+  const adapter = new AppServerCodexAdapter({ codexBin: fakeCodexBin(root) });
+  const session = await adapter.startSession({
+    routeKey: "route-1",
+    cwd: root,
+    title: "test",
+  });
+  const events = [];
+
+  for await (const event of adapter.run(session.id, "commentary chunks please")) {
+    events.push(event);
+  }
+  await adapter.stop();
+
+  const progressTexts = events
+    .filter((event) => event.type === "assistant.progress" && event.kind === "other")
+    .map((event) => event.type === "assistant.progress" ? event.text : "");
+  assert.ok(progressTexts.some((text) => text.includes("第一段内容")));
+  assert.ok(progressTexts.some((text) => text.includes("第二段")));
+  assert.equal(progressTexts.filter((text) => text.includes("第一段内容")).length, 1);
+  assert.ok(events.some((event) => event.type === "assistant.completed" && event.text === "commentary chunks final"));
+  assert.equal(events.some((event) => event.type === "assistant.completed" && event.text.includes("第一段内容")), false);
 });
 
 test("AppServerCodexAdapter reports interactive approval support", () => {

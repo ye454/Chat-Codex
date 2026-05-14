@@ -627,7 +627,8 @@ export class WeixinAdapter implements ChannelAdapter {
 
 function isRetryableSendMessageError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
-  return /errcode=(45009|45011|45047|45048)\b/.test(message)
+  return /\bret=(-1|-2)\b/.test(message)
+    || /errcode=(45009|45011|45047|45048)\b/.test(message)
     || /\b(429|500|502|503|504)\b/.test(message)
     || /rate.?limit|too many|timeout|timed out|ECONNRESET|ETIMEDOUT|fetch failed/i.test(message);
 }

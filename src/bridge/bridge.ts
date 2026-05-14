@@ -425,13 +425,24 @@ export class Bridge {
   }
 
   private async sendText(target: ChannelTarget, text: string): Promise<void> {
+    try {
+      await this.deliverText(target, text);
+    } catch (error) {
+      this.logger.warn("channel text send failed", {
+        channel: this.channel.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  private async deliverText(target: ChannelTarget, text: string): Promise<void> {
     await this.channel.sendText(target, text);
     this.transcript?.outbound(target, text);
   }
 
   private async sendProgressText(target: ChannelTarget, text: string): Promise<void> {
     try {
-      await this.sendText(target, text);
+      await this.deliverText(target, text);
     } catch (error) {
       this.logger.warn("progress message send failed", {
         channel: this.channel.id,

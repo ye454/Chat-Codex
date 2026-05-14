@@ -5,7 +5,7 @@ import { MockChannelAdapter } from "../../src/channels/mock/mock-channel-adapter
 import { MockCodexAdapter } from "../../src/codex/mock-codex-adapter.js";
 import type { CodexAdapter, CodexEvent, CodexSession, CodexSessionContextUsage, CodexSessionStatus, CodexSessionSummary, StartSessionInput } from "../../src/codex/types.js";
 import type { TranscriptSink } from "../../src/logging/transcript.js";
-import type { ChannelMedia, ChannelMessage, ChannelTarget } from "../../src/protocol/channel.js";
+import type { ChannelMedia, ChannelMessage, ChannelTarget, SendResult } from "../../src/protocol/channel.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -82,6 +82,15 @@ class ContextUsageCodexAdapter extends MockCodexAdapter {
   override async getStatus(sessionId: string): Promise<CodexSessionStatus> {
     const status = await super.getStatus(sessionId);
     return { ...status, context: this.context };
+  }
+}
+
+class FailingSendChannelAdapter extends MockChannelAdapter {
+  sentAttempts = 0;
+
+  override async sendText(_target: ChannelTarget, _text: string): Promise<SendResult> {
+    this.sentAttempts += 1;
+    throw new Error("sendmessage failed: ret=-2 errcode=0");
   }
 }
 
@@ -226,6 +235,22 @@ test("Bridge status includes session token context without channel identity deta
   assert.match(statusMessage, /Context: `12,345 \/ 200,000 tokens` \(6\.2%, remaining 187,655\) last turn `789 tokens`/);
   assert.doesNotMatch(statusMessage, /mock:mock-account:direct:project-room/);
   assert.doesNotMatch(statusMessage, /Mock User \(alice\)/);
+});
+
+test("Bridge does not crash when channel text delivery fails", async () => {
+  const channel = new FailingSendChannelAdapter();
+  const codex = new MockCodexAdapter();
+  const bridge = new Bridge({ channel, codex, cwd: process.cwd() });
+
+  await bridge.start();
+  await assert.doesNotReject(async () => {
+    await channel.emitText("/status");
+    await channel.emitText("即使微信发送失败也要完成 turn");
+    await bridge.waitForIdle();
+  });
+  await bridge.stop();
+
+  assert.ok(channel.sentAttempts >= 3);
 });
 
 test("Bridge rejects latest approval with /NO and an optional reason", async () => {

@@ -666,6 +666,7 @@ export class AppServerCodexAdapter implements CodexAdapter {
       const text = stringValue(item.text);
       const phase = messagePhaseValue(item.phase);
       if (phase === "commentary") {
+        if (itemId && turn.emittedProgressItemIds.has(itemId)) return;
         if (text) this.pushProgressEvent(turn, sessionId, turnId, text, "other");
         return;
       }
