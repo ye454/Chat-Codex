@@ -84,6 +84,12 @@ npm run cli:weixin:codex -- --session last --permission approval --progress brie
 - [docs/git-management.zh-CN.md](docs/git-management.zh-CN.md)：Git 管理规范。
 - [reports/tests/](reports/tests/)：中文测试报告。
 
+## 协议
+
+本项目使用 [MIT License](LICENSE)。
+
+作者：小黄 and Codex
+
 ## 参考文件
 
 - `openclaw-weixin-npm/tencent-weixin-openclaw-weixin-2.4.3.tgz`

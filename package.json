@@ -3,6 +3,8 @@
   "version": "0.1.0",
   "private": true,
   "description": "Lightweight middleware between Codex and pluggable chat channels, with Weixin as the first channel adapter.",
+  "author": "小黄 and Codex",
+  "license": "MIT",
   "type": "module",
   "bin": {
     "codex-wechat-bridge": "./dist/src/cli.js"

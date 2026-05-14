@@ -84,6 +84,12 @@ To invalidate Weixin login, stop the middleware and delete the whole `state/weix
 - [docs/git-management.zh-CN.md](docs/git-management.zh-CN.md): Git management rules.
 - [reports/tests/](reports/tests/): Chinese test reports.
 
+## License
+
+This project is licensed under the [MIT License](LICENSE).
+
+Authors: 小黄 and Codex
+
 ## References
 
 - `openclaw-weixin-npm/tencent-weixin-openclaw-weixin-2.4.3.tgz`
