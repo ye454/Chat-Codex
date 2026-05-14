@@ -264,6 +264,7 @@ test("Bridge handles new session, prompt, status, and approval over mock channel
   assert.ok(approvalMessage, "approval request should be sent to channel");
   assert.equal(/\[a[0-9a-z]+]/.test(approvalMessage.text), false, "approval id should not be exposed in normal channel prompt");
   assert.ok(approvalMessage.text.includes("/OK 通过当前审批"));
+  assert.ok(approvalMessage.text.includes("/P 本会话通过"));
   assert.ok(approvalMessage.text.includes("/NO [理由] 拒绝当前审批"));
 
   await channel.emitText("/OK 好的");
@@ -302,6 +303,8 @@ test("Bridge exposes all sessions command for channel users", async () => {
   const help = channel.sentMessages.find((message) => message.text.startsWith("**可用命令**"))?.text ?? "";
   assert.ok(help.includes("```text\n/OK\n```"));
   assert.ok(help.includes("批准当前审批"));
+  assert.ok(help.includes("```text\n/P\n```"));
+  assert.ok(help.includes("按当前会话批准审批"));
   assert.ok(help.includes("```text\n/NO [理由]\n```"));
   assert.ok(help.includes("拒绝当前审批"));
   assert.ok(help.includes("```text\n/permission [approval|full confirm]\n```"));
@@ -447,6 +450,23 @@ test("Bridge resolves approvals with adapter approval ids when provided", async 
   assert.equal(codex.resolvedApprovals[0].decision, "approve");
 });
 
+test("Bridge approves latest approval for the current session with /P", async () => {
+  const channel = new MockChannelAdapter();
+  const codex = new MockCodexAdapter();
+  const bridge = new Bridge({ channel, codex, cwd: process.cwd() });
+
+  await bridge.start();
+  await channel.emitText("请触发审批 approval");
+  await bridge.waitForIdle();
+  await channel.emitText("/P");
+  await bridge.waitForIdle();
+  await bridge.stop();
+
+  assert.equal(codex.resolvedApprovals.length, 1);
+  assert.equal(codex.resolvedApprovals[0].decision, "approve-session");
+  assert.ok(channel.sentMessages.some((message) => message.text.includes("审批已处理: 已按本会话通过")));
+});
+
 test("Bridge retries approval notifications until one is delivered", async () => {
   const channel = new ApprovalFlakyChannelAdapter(2);
   const codex = new MockCodexAdapter();
@@ -475,6 +495,7 @@ test("Bridge stops retrying approval notification after approval is resolved", a
   const statusMessage = channel.sentMessages.at(-1)?.text ?? "";
   assert.ok(statusMessage.includes("**Pending Approval**"));
   assert.ok(statusMessage.includes("```text\n/OK\n```"));
+  assert.ok(statusMessage.includes("```text\n/P\n```"));
   assert.ok(statusMessage.includes("```text\n/NO [理由]\n```"));
   await channel.emitText("/OK");
   await bridge.waitForIdle();

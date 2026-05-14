@@ -14,6 +14,7 @@ test("ApprovalManager creates and resolves approvals", () => {
 
   assert.equal(pending.status, "pending");
   assert.match(manager.formatForChannel(pending), /\/OK/);
+  assert.match(manager.formatForChannel(pending), /\/P 本会话通过/);
   assert.match(manager.formatForChannel(pending), /\/NO \[理由]/);
   assert.doesNotMatch(manager.formatForChannel(pending), new RegExp(pending.approvalKey));
   assert.doesNotMatch(manager.formatForChannel(pending), /\/approve/);

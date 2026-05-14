@@ -94,6 +94,7 @@ export class ApprovalManager {
       "",
       "快捷回复:",
       "/OK 通过当前审批",
+      "/P 本会话通过，后续同类操作尽量不再询问",
       "/NO [理由] 拒绝当前审批",
     );
     return lines.join("\n");

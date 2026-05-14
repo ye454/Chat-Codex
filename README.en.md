@@ -11,7 +11,7 @@ This project is OpenClaw-free at runtime. It must not depend on OpenClaw CLI, Op
 - A generic `ChannelAdapter` protocol is implemented so future channels can reuse the same bridge core.
 - Mock, Terminal, and Weixin channel adapters are implemented.
 - Bridge Core, command routing, approval management, memory state, and baseline logging are implemented.
-- The default `codex app-server` adapter is implemented. It uses stdio JSON-RPC to create/resume threads, start turns, and route command/file/permissions approval requests to Weixin `/OK` and `/NO [reason]`.
+- The default `codex app-server` adapter is implemented. It uses stdio JSON-RPC to create/resume threads, start turns, and route command/file/permissions approval requests to Weixin `/OK`, `/P`, and `/NO [reason]`.
 - The `codex exec --json` adapter is still available as a fallback mode and has been verified through the terminal channel with the real Codex CLI.
 - Weixin QR login, local account token persistence, text send, and basic `getupdates` polling support are implemented.
 - Explicit file delivery is implemented. Paths in ordinary replies and progress are treated as text; use `/sendfile <task>` when Codex should generate and send final files for that turn.
@@ -76,6 +76,7 @@ To invalidate Weixin login, stop the middleware and delete the whole `state/weix
 - `/model [model|number] [effort]`: list app-server models or switch the model and reasoning effort for subsequent turns.
 - `/permission [approval|full confirm]`: show or switch the permission mode for the currently bound Codex session; without a bound session it changes the default for future new sessions.
 - `/OK`: approve the current Codex approval.
+- `/P`: approve the current Codex approval for the current Codex session, so similar operations should stop asking when supported by Codex.
 - `/NO [reason]`: deny the current Codex approval and record the reason.
 - `/stop`: stop the currently running Codex task without ending the Codex session.
 

@@ -11,7 +11,7 @@
 - 已建立通用 `ChannelAdapter` 协议，后续其他渠道可按同一协议接入。
 - 已实现 Mock、Terminal、Weixin 三类通道适配器。
 - 已实现 Bridge Core、命令路由、审批管理、内存状态和基础日志。
-- 已实现默认 `codex app-server` 适配器：通过 stdio JSON-RPC 创建/恢复 thread，启动 turn，并把 command/file/permissions 审批请求转成微信 `/OK`、`/NO [理由]`。
+- 已实现默认 `codex app-server` 适配器：通过 stdio JSON-RPC 创建/恢复 thread，启动 turn，并把 command/file/permissions 审批请求转成微信 `/OK`、`/P`、`/NO [理由]`。
 - 已保留 `codex exec --json` 适配器作为回退模式，并通过终端通道验证真实 Codex CLI 通信。
 - 已实现微信二维码登录入口、账号凭证本地保存、文本发送和 `getupdates` 轮询基础能力。
 - 已实现显式文件发送：普通回复和进度里的路径只当文本；需要让 Codex 本轮生成并发送文件时，使用 `/sendfile <任务内容>`。
@@ -53,7 +53,7 @@ npm run cli:weixin:codex -- --session last --permission approval --progress brie
 
 微信侧 `/model` 会从 Codex app-server 的 `model/list` 获取当前真实可用模型，不维护硬编码目录。可以发送 `/model` 查看列表，发送 `/model gpt-5.5 xhigh` 或 `/model 2 high` 切换后续任务的模型和思考程度；模型名或思考程度不在实际列表内会直接报错。
 
-微信出站消息会串行排队并做轻量间隔，避免连续进度消息过快导致微信侧丢显。默认发送间隔为 1200ms；遇到 `sendmessage` 限流或临时失败时会做退避重试，仍失败才进入 `degraded` 状态并记录 `lastError`，不会再把这类请求误记为成功 OUT。审批消息属于关键消息：Bridge 会在创建 pending approval 后持续重试发送审批提示，直到至少送达一次，或审批已被 `/OK`、`/NO`、`/stop` 处理。Codex 运行期间，微信通道会通过 `getconfig` 获取 `typing_ticket`，再周期调用 `sendtyping` 维持“对方正在输入中”状态，结束或 `/stop` 后会停止 typing。
+微信出站消息会串行排队并做轻量间隔，避免连续进度消息过快导致微信侧丢显。默认发送间隔为 1200ms；遇到 `sendmessage` 限流或临时失败时会做退避重试，仍失败才进入 `degraded` 状态并记录 `lastError`，不会再把这类请求误记为成功 OUT。审批消息属于关键消息：Bridge 会在创建 pending approval 后持续重试发送审批提示，直到至少送达一次，或审批已被 `/OK`、`/P`、`/NO`、`/stop` 处理。Codex 运行期间，微信通道会通过 `getconfig` 获取 `typing_ticket`，再周期调用 `sendtyping` 维持“对方正在输入中”状态，结束或 `/stop` 后会停止 typing。
 
 普通消息和进度输出不会自动发送文件或图片；即使 Codex 回复里出现本地路径、Markdown 图片或 `file://`，也只作为普通文本处理。需要让 Codex 本轮生成并发送文件时，发送 `/sendfile <任务内容>`。中间件会在转给 Codex 的 prompt 里追加内部协议说明，只解析本轮最终回复末尾的 `BRIDGE_SEND_FILE: /absolute/path/to/file` 行；每轮最多发送 3 个文件，并在发给用户的最终文本里隐藏这些内部协议行。文件发送失败时只发送一条聚合结果，不再逐个文件发送 fallback 文本。
 
@@ -76,6 +76,7 @@ npm run cli:weixin:codex -- --session last --permission approval --progress brie
 - `/model [模型|编号] [effort]`：查看 app-server 实际可用模型，或切换后续任务使用的模型和思考程度。
 - `/permission [approval|full confirm]`：查看或切换当前绑定 Codex session 的权限模式；没有绑定 session 时修改后续新会话默认权限。
 - `/OK`：批准当前 Codex 审批。
+- `/P`：按当前 Codex 会话批准审批，后续同类操作尽量不再询问。
 - `/NO [理由]`：拒绝当前 Codex 审批，并记录拒绝理由。
 - `/stop`：终止当前正在处理的 Codex 任务，不结束 Codex 会话。
 

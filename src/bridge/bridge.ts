@@ -151,14 +151,17 @@ export class Bridge {
       case "yes":
         await this.resolveApproval(message, target, [], "approve");
         return;
+      case "p":
+      case "yes-session":
+      case "ok-session":
+      case "approve-session":
+        await this.resolveApproval(message, target, args, "approve-session");
+        return;
       case "no":
         await this.resolveApproval(message, target, args, "deny");
         return;
       case "approve":
         await this.resolveApproval(message, target, args, "approve");
-        return;
-      case "approve-session":
-        await this.resolveApproval(message, target, args, "approve-session");
         return;
       case "deny":
       case "reject":
@@ -839,6 +842,7 @@ export class Bridge {
       ["/model [模型|编号] [effort]", "查看可用模型，或切换当前 Codex session 后续任务的模型和思考程度"],
       ["/permission [approval|full confirm]", "查看或切换当前绑定 Codex session 的权限模式"],
       ["/OK", "批准当前审批"],
+      ["/P", "按当前会话批准审批，后续同类操作尽量不再询问"],
       ["/NO [理由]", "拒绝当前审批"],
       ["/stop", "终止当前正在处理的 Codex 任务"],
     ];
@@ -1193,6 +1197,7 @@ function formatPendingApprovalStatus(approval: PendingApproval | undefined): Arr
     approval.reason ? `- Reason: ${approval.reason}` : undefined,
     approval.command ? "```shell\n" + approval.command + "\n```" : undefined,
     "```text\n/OK\n```",
+    "```text\n/P\n```",
     "```text\n/NO [理由]\n```",
   ];
 }
