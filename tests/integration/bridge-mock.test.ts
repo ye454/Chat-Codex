@@ -206,11 +206,13 @@ test("Bridge exposes all sessions command for channel users", async () => {
   await channel.emitText("/all-sessions", { conversationId: "main" });
   await bridge.stop();
 
-  assert.ok(channel.sentMessages.some((message) => message.text.includes("`/sessions all` 列出全部可发现 Codex 会话")));
+  assert.ok(channel.sentMessages.some((message) => message.text.includes("```text\n/sessions all\n```")));
   const help = channel.sentMessages.find((message) => message.text.startsWith("**可用命令**"))?.text ?? "";
-  assert.ok(help.includes("`/OK` 批准当前审批"));
-  assert.ok(help.includes("`/NO [理由]` 拒绝当前审批"));
-  assert.ok(help.includes("`/permission [approval|full confirm]`"));
+  assert.ok(help.includes("```text\n/OK\n```"));
+  assert.ok(help.includes("批准当前审批"));
+  assert.ok(help.includes("```text\n/NO [理由]\n```"));
+  assert.ok(help.includes("拒绝当前审批"));
+  assert.ok(help.includes("```text\n/permission [approval|full confirm]\n```"));
   assert.equal(help.includes("/approve [id]"), false);
   assert.equal(help.includes("cancel"), false);
   const allSessionsMessages = channel.sentMessages.filter((message) => message.text.startsWith("全部可发现 Codex 会话"));

@@ -618,23 +618,31 @@ export class Bridge {
   }
 
   private helpText(): string {
+    const commands: Array<[command: string, description: string]> = [
+      ["/help", "查看命令"],
+      ["/new", "创建新 Codex 会话"],
+      ["/status", "查看状态、队列、审批和上下文 token 用量"],
+      ["/sessions", "列出当前上下文会话"],
+      ["/sessions all", "列出全部可发现 Codex 会话"],
+      ["/resume <session>", "恢复并绑定已有会话"],
+      ["/use <session>", "切换到已有会话"],
+      ["/whoami", "查看当前通道身份"],
+      ["/debug", "查看调试状态"],
+      ["/progress [brief|detailed|silent]", "查看或设置当前上下文进度投递模式"],
+      ["/permission [approval|full confirm]", "查看或切换当前绑定 Codex session 的权限模式"],
+      ["/OK", "批准当前审批"],
+      ["/NO [理由]", "拒绝当前审批"],
+      ["/stop", "终止当前正在处理的 Codex 任务"],
+    ];
     return [
       "**可用命令**",
-      "- `/help` 查看命令",
-      "- `/new` 创建新 Codex 会话",
-      "- `/status` 查看状态、队列、审批和上下文 token 用量",
-      "- `/sessions` 列出当前上下文会话",
-      "- `/sessions all` 列出全部可发现 Codex 会话",
-      "- `/resume <session>` 恢复并绑定已有会话",
-      "- `/use <session>` 切换到已有会话",
-      "- `/whoami` 查看当前通道身份",
-      "- `/debug` 查看调试状态",
-      "- `/progress [brief|detailed|silent]` 查看或设置当前上下文进度投递模式",
-      "- `/permission [approval|full confirm]` 查看或切换 Codex 权限模式",
-      "- `/OK` 批准当前审批",
-      "- `/NO [理由]` 拒绝当前审批",
-      "- `/stop` 终止当前正在处理的 Codex 任务",
-    ].join("\n");
+      "",
+      ...commands.flatMap(([command, description]) => [
+        `\`\`\`text\n${command}\n\`\`\``,
+        description,
+        "",
+      ]),
+    ].join("\n").trimEnd();
   }
 
   private progressModeFor(routeKey: string): ProgressDeliveryMode {
