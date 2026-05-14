@@ -12,7 +12,8 @@ import type {
 
 export class MockCodexAdapter implements CodexAdapter {
   private sequence = 0;
-  private runPolicy: CodexRunPolicy = { permissionMode: "approval", sandbox: "workspace-write" };
+  private defaultRunPolicy: CodexRunPolicy = { permissionMode: "approval", sandbox: "workspace-write" };
+  private readonly sessionRunPolicies = new Map<string, CodexRunPolicy>();
   private readonly sessions = new Map<string, { session: CodexSession; routeKey: string; status: CodexSessionStatus }>();
   readonly resolvedApprovals: Array<{ approvalKey: string; decision: ApprovalDecision; reason?: string }> = [];
 
@@ -25,6 +26,7 @@ export class MockCodexAdapter implements CodexAdapter {
       createdAt: new Date().toISOString(),
     };
     this.sessions.set(session.id, { session, routeKey: input.routeKey, status: { type: "idle" } });
+    this.sessionRunPolicies.set(session.id, { ...this.defaultRunPolicy });
     return session;
   }
 
@@ -96,19 +98,28 @@ export class MockCodexAdapter implements CodexAdapter {
     });
   }
 
-  getRunPolicy(): CodexRunPolicy {
-    return { ...this.runPolicy };
+  getRunPolicy(sessionId?: string): CodexRunPolicy {
+    return { ...this.runPolicyForSession(sessionId) };
   }
 
-  setRunPolicy(policy: CodexRunPolicy): void {
-    this.runPolicy = { ...policy };
+  setRunPolicy(policy: CodexRunPolicy, sessionId?: string): void {
+    if (sessionId) {
+      this.sessionRunPolicies.set(sessionId, { ...policy });
+      return;
+    }
+    this.defaultRunPolicy = { ...policy };
   }
 
-  getRunPolicyStatus(): CodexRunPolicyStatus {
+  getRunPolicyStatus(sessionId?: string): CodexRunPolicyStatus {
+    const policy = this.runPolicyForSession(sessionId);
     return {
-      policy: this.getRunPolicy(),
+      policy: { ...policy },
       interactiveApprovals: true,
-      effectiveApprovalPolicy: this.runPolicy.permissionMode === "full" ? "never" : "on-request",
+      effectiveApprovalPolicy: policy.permissionMode === "full" ? "never" : "on-request",
     };
+  }
+
+  private runPolicyForSession(sessionId?: string): CodexRunPolicy {
+    return (sessionId ? this.sessionRunPolicies.get(sessionId) : undefined) ?? this.defaultRunPolicy;
   }
 }

@@ -77,7 +77,7 @@ export interface CodexAdapter {
   getStatus(sessionId: string): Promise<CodexSessionStatus>;
   listSessions(routeKey?: string): Promise<CodexSessionSummary[]>;
   resolveApproval?(approvalKey: string, decision: ApprovalDecision, reason?: string): Promise<void>;
-  getRunPolicy?(): CodexRunPolicy;
-  setRunPolicy?(policy: CodexRunPolicy): void;
-  getRunPolicyStatus?(): CodexRunPolicyStatus;
+  getRunPolicy?(sessionId?: string): CodexRunPolicy;
+  setRunPolicy?(policy: CodexRunPolicy, sessionId?: string): void;
+  getRunPolicyStatus?(sessionId?: string): CodexRunPolicyStatus;
 }

@@ -397,7 +397,7 @@ Codex 状态：
 - 不能在微信中输出敏感凭据。
 - 不能默认暴露完整本机文件系统信息。
 - 微信消息应视为不可信输入。
-- `/permission` 需要能在微信侧查看和切换 Codex 权限模式；`approval` 可直接切回，`full` 必须带显式确认词，例如 `/permission full confirm`。
+- `/permission` 需要能在微信侧查看和切换当前绑定 Codex session 的权限模式；`approval` 可直接切回，`full` 必须带显式确认词，例如 `/permission full confirm`。没有绑定 session 时才修改后续新会话默认权限。
 - 权限模式切换只影响后续 Codex turn；当前正在运行的任务不会被热改写，需要立即生效时应先 `/stop`。
 
 ## 8. 配置需求

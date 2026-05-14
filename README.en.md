@@ -45,7 +45,7 @@ npm run cli:weixin:codex -- --session last --permission approval --progress brie
 - `--yes-dangerously-full`: non-interactive confirmation for full permission mode. Full mode bypasses approvals and sandboxing and is high risk.
 - `--progress brief|detailed|silent`: set the default progress delivery mode. `brief` is the default and suppresses command/tool details; `detailed` keeps full command/tool progress; `silent` sends only start, approvals, final replies, and media.
 
-During interactive startup, the middleware asks for the session first and then asks for the Codex permission mode for subsequent tasks. This keeps permission selection clear when resuming an older session. Choosing a new session displays the default working directory; missing directories are created automatically. If an existing session is selected, the middleware uses the working directory recorded in that Codex session history.
+During interactive startup, the middleware asks for the session first and then asks for the Codex permission mode for subsequent tasks. This keeps permission selection clear when resuming an older session. Choosing a new session displays the default working directory; missing directories are created automatically. If an existing session is selected, the middleware uses the working directory recorded in that Codex session history. Weixin-side `/permission` is scoped to the currently bound Codex session; only when no session is bound does it change the default permission mode for future new sessions.
 
 The default `codex app-server` mode can reuse Codex history threads and acts as the Codex client for the current Weixin conversation. It supports interactive approvals, turn interruption, token usage status updates, and commentary-phase message forwarding, but it does not live-sync Weixin-side interaction into another already-open Codex CLI or Codex App window. Real-time multi-view synchronization still needs an observer UI or an event-subscription design. `codex exec --json` remains available with `--codex-adapter exec` for fallback and debugging.
 
@@ -70,7 +70,7 @@ To invalidate Weixin login, stop the middleware and delete the whole `state/weix
 - `/sessions all` or `/all-sessions`: list all discoverable Codex history session IDs.
 - `/resume <session>` / `/use <session>`: resume and bind a Codex session.
 - `/progress [brief|detailed|silent]`: show or set progress delivery mode for the current channel context.
-- `/permission [approval|full confirm]`: show or switch the Codex permission mode.
+- `/permission [approval|full confirm]`: show or switch the permission mode for the currently bound Codex session; without a bound session it changes the default for future new sessions.
 - `/OK`: approve the current Codex approval.
 - `/NO [reason]`: deny the current Codex approval and record the reason.
 - `/stop`: stop the currently running Codex task without ending the Codex session.

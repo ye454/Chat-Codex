@@ -45,7 +45,7 @@ npm run cli:weixin:codex -- --session last --permission approval --progress brie
 - `--yes-dangerously-full`：非交互确认完全权限。完全权限会跳过审批和沙箱，风险很高。
 - `--progress brief|detailed|silent`：设置默认进度投递模式。默认 `brief` 不发送命令/工具细节；`detailed` 保留完整命令/工具进度；`silent` 只发开始、审批、最终回复和媒体。
 
-交互启动时会先选择新会话或历史会话，再选择本次启动后的 Codex 权限模式，避免历史会话的上下文让权限选择不直观。如果选择新会话，会展示默认工作目录。用户输入新目录时，目录不存在会自动创建；如果选择历史会话，中间件会使用该 Codex 会话历史记录里的工作目录。
+交互启动时会先选择新会话或历史会话，再选择本次启动后的 Codex 权限模式，避免历史会话的上下文让权限选择不直观。如果选择新会话，会展示默认工作目录。用户输入新目录时，目录不存在会自动创建；如果选择历史会话，中间件会使用该 Codex 会话历史记录里的工作目录。微信侧 `/permission` 绑定到当前选中的 Codex session；尚未绑定 session 时才修改后续新会话的默认权限。
 
 默认 `codex app-server` 模式会复用 Codex 历史 thread，并由中间件作为当前微信会话的 Codex 客户端。它支持交互审批、turn 中断、token usage 状态更新和 commentary 阶段消息转发，但不会把微信侧交互实时同步到另一个已经打开的 Codex CLI 或 Codex App 窗口；如需多端实时同屏，需要额外的观察端或事件订阅设计。`codex exec --json` 仍可通过 `--codex-adapter exec` 启用，用于回退和调试。
 
@@ -70,7 +70,7 @@ npm run cli:weixin:codex -- --session last --permission approval --progress brie
 - `/sessions all` 或 `/all-sessions`：查看全部可发现 Codex 历史会话 ID。
 - `/resume <session>` / `/use <session>`：恢复并绑定指定 Codex 会话。
 - `/progress [brief|detailed|silent]`：查看或设置当前微信上下文的进度投递模式。
-- `/permission [approval|full confirm]`：查看或切换 Codex 权限模式。
+- `/permission [approval|full confirm]`：查看或切换当前绑定 Codex session 的权限模式；没有绑定 session 时修改后续新会话默认权限。
 - `/OK`：批准当前 Codex 审批。
 - `/NO [理由]`：拒绝当前 Codex 审批，并记录拒绝理由。
 - `/stop`：终止当前正在处理的 Codex 任务，不结束 Codex 会话。

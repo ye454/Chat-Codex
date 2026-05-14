@@ -385,16 +385,19 @@ export class Bridge {
       await this.sendText(target, "当前 Codex Adapter 不支持运行时切换权限模式。");
       return;
     }
+    const binding = this.state.getBinding(message.routeKey);
+    const sessionId = binding?.sessionId;
     const rawMode = args[0]?.toLowerCase();
     if (!rawMode) {
-      await this.sendText(target, this.permissionText());
+      await this.sendText(target, this.permissionText(sessionId));
       return;
     }
     if (rawMode === "approval" || rawMode === "approve" || rawMode === "safe" || rawMode === "审批") {
-      this.codex.setRunPolicy({ permissionMode: "approval", sandbox: "workspace-write" });
-      const policyStatus = this.runPolicyStatus();
+      this.codex.setRunPolicy({ permissionMode: "approval", sandbox: "workspace-write" }, sessionId);
+      const policyStatus = this.runPolicyStatus(sessionId);
       await this.sendText(target, [
         "已切换 Codex 权限模式: approval",
+        sessionId ? `作用范围: 当前会话 \`${sessionId}\`` : "作用范围: 默认策略（后续新会话）",
         "后续任务将使用 workspace-write sandbox。",
         policyStatus && !policyStatus.interactiveApprovals
           ? "注意：当前 Codex Adapter 不支持交互审批；真实生效的 approval_policy 仍是 never。"
@@ -413,9 +416,10 @@ export class Bridge {
         ].join("\n"));
         return;
       }
-      this.codex.setRunPolicy({ permissionMode: "full" });
+      this.codex.setRunPolicy({ permissionMode: "full" }, sessionId);
       await this.sendText(target, [
         "已切换 Codex 权限模式: full",
+        sessionId ? `作用范围: 当前会话 \`${sessionId}\`` : "作用范围: 默认策略（后续新会话）",
         "后续任务将跳过审批和沙箱。建议完成高权限任务后发送 /permission approval 切回安全沙箱模式。",
         this.routeWorkers.has(message.routeKey) ? "当前正在运行的任务不会被改写；需要立即生效请先 /stop。" : undefined,
       ].filter(Boolean).join("\n"));
@@ -536,8 +540,8 @@ export class Bridge {
       : adapterStatus;
     const approvals = this.approvals.list(routeKey);
     const workerRunning = this.routeWorkers.has(routeKey);
-    const policyStatus = this.runPolicyStatus();
-    const policy = policyStatus?.policy ?? this.codex.getRunPolicy?.();
+    const policyStatus = this.runPolicyStatus(binding?.sessionId);
+    const policy = policyStatus?.policy ?? this.codex.getRunPolicy?.(binding?.sessionId);
     return [
       "**Codex 状态**",
       `- Session: \`${binding?.sessionId ?? "none"}\``,
@@ -655,11 +659,12 @@ export class Bridge {
     ].join("\n");
   }
 
-  private permissionText(): string {
-    const policyStatus = this.runPolicyStatus();
-    const policy = policyStatus?.policy ?? this.codex.getRunPolicy?.();
+  private permissionText(sessionId?: string): string {
+    const policyStatus = this.runPolicyStatus(sessionId);
+    const policy = policyStatus?.policy ?? this.codex.getRunPolicy?.(sessionId);
     return [
       "**权限模式**",
+      `- 作用范围: ${sessionId ? `当前会话 \`${sessionId}\`` : "默认策略（后续新会话）"}`,
       `- 当前模式: \`${policy ? formatRunPolicy(policy) : "unknown"}\``,
       policyStatus ? `- 审批支持: \`${formatApprovalSupport(policyStatus)}\`` : undefined,
       "- `approval`: 使用 `workspace-write` sandbox；是否能在微信里弹审批取决于 Codex adapter。",
@@ -670,8 +675,8 @@ export class Bridge {
     ].filter(Boolean).join("\n");
   }
 
-  private runPolicyStatus(): CodexRunPolicyStatus | undefined {
-    return this.codex.getRunPolicyStatus?.();
+  private runPolicyStatus(sessionId?: string): CodexRunPolicyStatus | undefined {
+    return this.codex.getRunPolicyStatus?.(sessionId);
   }
 }
 

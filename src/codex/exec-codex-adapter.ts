@@ -33,20 +33,22 @@ interface RunningExecProcess {
 
 export class ExecCodexAdapter implements CodexAdapter {
   private readonly codexBin: string;
-  private runPolicy: CodexRunPolicy;
+  private defaultRunPolicy: CodexRunPolicy;
+  private readonly sessionRunPolicies = new Map<string, CodexRunPolicy>();
   private readonly codexHome?: string;
   private readonly sessions = new Map<string, ExecSessionRecord>();
   private readonly runningProcesses = new Map<string, RunningExecProcess>();
+  private sessionSequence = 0;
 
   constructor(options: ExecCodexAdapterOptions = {}) {
     this.codexBin = options.codexBin ?? "codex";
-    this.runPolicy = options.runPolicy ?? { permissionMode: "approval", sandbox: "workspace-write" };
+    this.defaultRunPolicy = cloneRunPolicy(options.runPolicy ?? { permissionMode: "approval", sandbox: "workspace-write" });
     this.codexHome = options.codexHome;
   }
 
   async startSession(input: StartSessionInput): Promise<CodexSession> {
     const session: CodexSession = {
-      id: `exec-local-${Date.now()}`,
+      id: `exec-local-${Date.now()}-${++this.sessionSequence}`,
       cwd: input.cwd,
       title: input.title,
       createdAt: new Date().toISOString(),
@@ -57,6 +59,7 @@ export class ExecCodexAdapter implements CodexAdapter {
       status: { type: "idle" },
       updatedAt: session.createdAt,
     });
+    this.sessionRunPolicies.set(session.id, cloneRunPolicy(this.defaultRunPolicy));
     return session;
   }
 
@@ -77,6 +80,9 @@ export class ExecCodexAdapter implements CodexAdapter {
       actualThreadId: sessionId,
       updatedAt: now,
     });
+    if (!this.sessionRunPolicies.has(session.id)) {
+      this.sessionRunPolicies.set(session.id, cloneRunPolicy(this.defaultRunPolicy));
+    }
     return session;
   }
 
@@ -195,17 +201,21 @@ export class ExecCodexAdapter implements CodexAdapter {
     return [...localSessions, ...discoveredSessions];
   }
 
-  getRunPolicy(): CodexRunPolicy {
-    return { ...this.runPolicy };
+  getRunPolicy(sessionId?: string): CodexRunPolicy {
+    return cloneRunPolicy(this.runPolicyForSession(sessionId));
   }
 
-  setRunPolicy(policy: CodexRunPolicy): void {
-    this.runPolicy = { ...policy };
+  setRunPolicy(policy: CodexRunPolicy, sessionId?: string): void {
+    if (sessionId) {
+      this.sessionRunPolicies.set(sessionId, cloneRunPolicy(policy));
+      return;
+    }
+    this.defaultRunPolicy = cloneRunPolicy(policy);
   }
 
-  getRunPolicyStatus(): CodexRunPolicyStatus {
+  getRunPolicyStatus(sessionId?: string): CodexRunPolicyStatus {
     return {
-      policy: this.getRunPolicy(),
+      policy: this.getRunPolicy(sessionId),
       interactiveApprovals: false,
       effectiveApprovalPolicy: "never",
       note: "codex exec 是非交互模式，不会把审批请求回调给微信；approval 只恢复 workspace-write sandbox。",
@@ -213,12 +223,20 @@ export class ExecCodexAdapter implements CodexAdapter {
   }
 
   private buildArgs(stored: ExecSessionRecord, prompt: string): string[] {
-    const rootArgs = buildCodexRootArgs(this.runPolicy);
+    const rootArgs = buildCodexRootArgs(this.runPolicyForSession(stored.session.id));
     if (stored.actualThreadId) {
       return [...rootArgs, "exec", "resume", "--json", "--skip-git-repo-check", "--all", stored.actualThreadId, prompt];
     }
     return [...rootArgs, "exec", "--json", "--cd", stored.session.cwd, "--skip-git-repo-check", prompt];
   }
+
+  private runPolicyForSession(sessionId?: string): CodexRunPolicy {
+    return (sessionId ? this.sessionRunPolicies.get(sessionId) : undefined) ?? this.defaultRunPolicy;
+  }
+}
+
+function cloneRunPolicy(policy: CodexRunPolicy): CodexRunPolicy {
+  return { ...policy };
 }
 
 export interface ParsedExecJsonLine {

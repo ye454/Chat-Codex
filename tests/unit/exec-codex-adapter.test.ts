@@ -214,6 +214,26 @@ test("ExecCodexAdapter reports non-interactive approval support", () => {
   assert.match(status.note ?? "", /非交互模式/);
 });
 
+test("ExecCodexAdapter scopes run policy per session", async () => {
+  const adapter = new ExecCodexAdapter();
+  const first = await adapter.startSession({
+    routeKey: "route-a",
+    cwd: process.cwd(),
+    title: "first",
+  });
+  const second = await adapter.startSession({
+    routeKey: "route-b",
+    cwd: process.cwd(),
+    title: "second",
+  });
+
+  adapter.setRunPolicy({ permissionMode: "full" }, first.id);
+
+  assert.equal(adapter.getRunPolicy(first.id).permissionMode, "full");
+  assert.equal(adapter.getRunPolicy(second.id).permissionMode, "approval");
+  assert.equal(adapter.getRunPolicy().permissionMode, "approval");
+});
+
 test("ExecCodexAdapter cancel terminates a running exec task", async () => {
   const root = tempDir();
   const fakeScript = path.join(root, "fake-codex.js");

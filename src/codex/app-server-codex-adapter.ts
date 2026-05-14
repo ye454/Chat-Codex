@@ -84,7 +84,8 @@ interface ProgressDraft {
 
 export class AppServerCodexAdapter implements CodexAdapter {
   private readonly codexBin: string;
-  private runPolicy: CodexRunPolicy;
+  private defaultRunPolicy: CodexRunPolicy;
+  private readonly sessionRunPolicies = new Map<string, CodexRunPolicy>();
   private readonly codexHome?: string;
   private readonly requestTimeoutMs: number;
   private readonly interruptTimeoutMs: number;
@@ -104,7 +105,7 @@ export class AppServerCodexAdapter implements CodexAdapter {
 
   constructor(options: AppServerCodexAdapterOptions = {}) {
     this.codexBin = options.codexBin ?? "codex";
-    this.runPolicy = options.runPolicy ?? { permissionMode: "approval", sandbox: "workspace-write" };
+    this.defaultRunPolicy = cloneRunPolicy(options.runPolicy ?? { permissionMode: "approval", sandbox: "workspace-write" });
     this.codexHome = options.codexHome;
     this.requestTimeoutMs = options.requestTimeoutMs ?? 30_000;
     this.interruptTimeoutMs = options.interruptTimeoutMs ?? 1500;
@@ -134,9 +135,9 @@ export class AppServerCodexAdapter implements CodexAdapter {
     await this.ensureStarted();
     const response = await this.request<Record<string, unknown>>("thread/start", {
       cwd: input.cwd,
-      approvalPolicy: approvalPolicyForRunPolicy(this.runPolicy),
-      approvalsReviewer: approvalsReviewerForRunPolicy(this.runPolicy),
-      sandbox: sandboxModeForRunPolicy(this.runPolicy),
+      approvalPolicy: approvalPolicyForRunPolicy(this.defaultRunPolicy),
+      approvalsReviewer: approvalsReviewerForRunPolicy(this.defaultRunPolicy),
+      sandbox: sandboxModeForRunPolicy(this.defaultRunPolicy),
       serviceName: "codex-chat-bridge",
       sessionStartSource: "startup",
     });
@@ -155,6 +156,7 @@ export class AppServerCodexAdapter implements CodexAdapter {
       status: { type: "idle" },
       updatedAt: new Date().toISOString(),
     });
+    this.sessionRunPolicies.set(session.id, cloneRunPolicy(this.defaultRunPolicy));
     this.threadToSession.set(threadId, session.id);
     return session;
   }
@@ -167,9 +169,9 @@ export class AppServerCodexAdapter implements CodexAdapter {
     const response = await this.request<Record<string, unknown>>("thread/resume", {
       threadId: sessionId,
       cwd: discovered?.cwd ?? undefined,
-      approvalPolicy: approvalPolicyForRunPolicy(this.runPolicy),
-      approvalsReviewer: approvalsReviewerForRunPolicy(this.runPolicy),
-      sandbox: sandboxModeForRunPolicy(this.runPolicy),
+      approvalPolicy: approvalPolicyForRunPolicy(this.defaultRunPolicy),
+      approvalsReviewer: approvalsReviewerForRunPolicy(this.defaultRunPolicy),
+      sandbox: sandboxModeForRunPolicy(this.defaultRunPolicy),
     });
     const thread = objectValue(response.thread);
     const cwd = stringValue(response.cwd) ?? stringValue(thread.cwd) ?? discovered?.cwd ?? process.cwd();
@@ -184,6 +186,9 @@ export class AppServerCodexAdapter implements CodexAdapter {
       status: { type: "idle" },
       updatedAt: new Date().toISOString(),
     });
+    if (!this.sessionRunPolicies.has(session.id)) {
+      this.sessionRunPolicies.set(session.id, cloneRunPolicy(this.defaultRunPolicy));
+    }
     this.threadToSession.set(sessionId, session.id);
     return session;
   }
@@ -192,13 +197,14 @@ export class AppServerCodexAdapter implements CodexAdapter {
     const stored = this.sessions.get(sessionId);
     if (!stored) throw new Error(`app-server session not found locally: ${sessionId}`);
     await this.ensureStarted();
+    const runPolicy = this.runPolicyForSession(sessionId);
     const turnResponse = await this.request<Record<string, unknown>>("turn/start", {
       threadId: sessionId,
       input: [{ type: "text", text: prompt, text_elements: [] }],
       cwd: stored.session.cwd,
-      approvalPolicy: approvalPolicyForRunPolicy(this.runPolicy),
-      approvalsReviewer: approvalsReviewerForRunPolicy(this.runPolicy),
-      sandboxPolicy: sandboxPolicyForRunPolicy(this.runPolicy, stored.session.cwd),
+      approvalPolicy: approvalPolicyForRunPolicy(runPolicy),
+      approvalsReviewer: approvalsReviewerForRunPolicy(runPolicy),
+      sandboxPolicy: sandboxPolicyForRunPolicy(runPolicy, stored.session.cwd),
     });
     const turn = objectValue(turnResponse.turn);
     const turnId = stringValue(turn.id) ?? `app-server-turn-${Date.now()}`;
@@ -288,21 +294,30 @@ export class AppServerCodexAdapter implements CodexAdapter {
     this.pendingApprovals.delete(approvalKey);
   }
 
-  getRunPolicy(): CodexRunPolicy {
-    return { ...this.runPolicy };
+  getRunPolicy(sessionId?: string): CodexRunPolicy {
+    return cloneRunPolicy(this.runPolicyForSession(sessionId));
   }
 
-  setRunPolicy(policy: CodexRunPolicy): void {
-    this.runPolicy = { ...policy };
+  setRunPolicy(policy: CodexRunPolicy, sessionId?: string): void {
+    if (sessionId) {
+      this.sessionRunPolicies.set(sessionId, cloneRunPolicy(policy));
+      return;
+    }
+    this.defaultRunPolicy = cloneRunPolicy(policy);
   }
 
-  getRunPolicyStatus(): CodexRunPolicyStatus {
+  getRunPolicyStatus(sessionId?: string): CodexRunPolicyStatus {
+    const policy = this.runPolicyForSession(sessionId);
     return {
-      policy: this.getRunPolicy(),
-      interactiveApprovals: this.runPolicy.permissionMode !== "full",
-      effectiveApprovalPolicy: this.runPolicy.permissionMode === "full" ? "never" : "on-request",
+      policy: cloneRunPolicy(policy),
+      interactiveApprovals: policy.permissionMode !== "full",
+      effectiveApprovalPolicy: policy.permissionMode === "full" ? "never" : "on-request",
       note: "codex app-server 会把审批请求回调给中间件，可通过微信 /OK 或 /NO [理由] 处理。",
     };
+  }
+
+  private runPolicyForSession(sessionId?: string): CodexRunPolicy {
+    return (sessionId ? this.sessionRunPolicies.get(sessionId) : undefined) ?? this.defaultRunPolicy;
   }
 
   private ensureStarted(): Promise<void> {
@@ -813,6 +828,10 @@ class AsyncEventQueue<T> implements AsyncIterable<T> {
 
 function approvalPolicyForRunPolicy(policy: CodexRunPolicy): "on-request" | "never" {
   return policy.permissionMode === "full" ? "never" : "on-request";
+}
+
+function cloneRunPolicy(policy: CodexRunPolicy): CodexRunPolicy {
+  return { ...policy };
 }
 
 function approvalsReviewerForRunPolicy(policy: CodexRunPolicy): "user" | null {

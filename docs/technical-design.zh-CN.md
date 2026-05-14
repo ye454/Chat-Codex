@@ -830,9 +830,9 @@ Status: idle
 
 `/permission` 用于在微信侧查看和切换后续 Codex turn 的运行权限：
 
-- `/permission`：显示当前权限模式。
-- `/permission approval`：切回 `workspace-write` sandbox。默认 app-server adapter 会在后续 turn 使用 `approvalPolicy=on-request` 和 `approvalsReviewer=user`，审批请求会推送到微信；exec 回退模式仍是非交互审批。
-- `/permission full confirm`：切到完全权限，使用 `--dangerously-bypass-approvals-and-sandbox`。必须带确认词，避免误触。
+- `/permission`：显示当前绑定 Codex session 的权限模式；没有绑定 session 时显示默认权限。
+- `/permission approval`：把当前绑定 Codex session 切回 `workspace-write` sandbox。默认 app-server adapter 会在该 session 后续 turn 使用 `approvalPolicy=on-request` 和 `approvalsReviewer=user`，审批请求会推送到微信；exec 回退模式仍是非交互审批。
+- `/permission full confirm`：把当前绑定 Codex session 切到完全权限，使用 `--dangerously-bypass-approvals-and-sandbox`。必须带确认词，避免误触。没有绑定 session 时修改后续新会话的默认权限。
 
 权限模式切换只影响后续 turn，不热改写当前正在运行的 Codex turn；需要立即应用时先 `/stop`。
 

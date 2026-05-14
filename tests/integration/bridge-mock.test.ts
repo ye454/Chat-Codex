@@ -379,6 +379,31 @@ test("Bridge permission command shows and changes Codex run policy", async () =>
   assert.equal(codex.getRunPolicy().permissionMode, "approval");
 });
 
+test("Bridge permission command scopes changes to the current bound session", async () => {
+  const channel = new MockChannelAdapter();
+  const codex = new MockCodexAdapter();
+  const bridge = new Bridge({ channel, codex, cwd: process.cwd() });
+
+  await bridge.start();
+  await channel.emitText("/new", { conversationId: "main" });
+  await channel.emitText("/new", { conversationId: "other" });
+  await channel.emitText("/permission full confirm", { conversationId: "main" });
+  await channel.emitText("/status", { conversationId: "main" });
+  await channel.emitText("/status", { conversationId: "other" });
+  await bridge.stop();
+
+  assert.equal(codex.getRunPolicy("mock-codex-1").permissionMode, "full");
+  assert.equal(codex.getRunPolicy("mock-codex-2").permissionMode, "approval");
+  const mainStatus = channel.sentMessages
+    .filter((message) => message.target.conversation.id === "main" && message.text.includes("**Codex 状态**"))
+    .at(-1)?.text ?? "";
+  const otherStatus = channel.sentMessages
+    .filter((message) => message.target.conversation.id === "other" && message.text.includes("**Codex 状态**"))
+    .at(-1)?.text ?? "";
+  assert.ok(mainStatus.includes("Permission: `full`"));
+  assert.ok(otherStatus.includes("Permission: `approval sandbox=workspace-write`"));
+});
+
 test("Bridge sends typing state while Codex is running", async () => {
   const channel = new MockChannelAdapter({ typing: true });
   const codex = new ProgressCodexAdapter();

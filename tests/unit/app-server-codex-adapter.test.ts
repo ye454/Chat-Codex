@@ -16,6 +16,7 @@ const readline = require("node:readline");
 const rl = readline.createInterface({ input: process.stdin });
 let threadId = "thread-app-server-1";
 let turnId = "turn-app-server-1";
+let threadSequence = 1;
 let ignoreInterrupt = false;
 function send(message) {
   process.stdout.write(JSON.stringify(message) + "\\n");
@@ -55,6 +56,7 @@ rl.on("line", (line) => {
       send({ id: message.id, error: { code: -32602, message: "invalid sessionStartSource" } });
       return;
     }
+    threadId = "thread-app-server-" + threadSequence++;
     send({ id: message.id, result: { thread: thread(message.params.cwd), cwd: message.params.cwd, model: "fake", modelProvider: "openai", serviceTier: null, instructionSources: [], approvalPolicy: "on-request", approvalsReviewer: "user", sandbox: { type: "workspaceWrite", writableRoots: [message.params.cwd], networkAccess: false, excludeTmpdirEnvVar: false, excludeSlashTmp: false }, reasoningEffort: null } });
     return;
   }
@@ -355,4 +357,24 @@ test("AppServerCodexAdapter reports interactive approval support", () => {
   assert.equal(status.interactiveApprovals, true);
   assert.equal(status.effectiveApprovalPolicy, "on-request");
   assert.match(status.note ?? "", /微信/);
+});
+
+test("AppServerCodexAdapter scopes run policy per session", async () => {
+  const root = tempDir();
+  const adapter = new AppServerCodexAdapter({ codexBin: fakeCodexBin(root) });
+  const first = await adapter.startSession({
+    routeKey: "route-1",
+    cwd: root,
+    title: "first",
+  });
+  const second = await adapter.resumeSession("thread-app-server-2");
+
+  adapter.setRunPolicy({ permissionMode: "full" }, first.id);
+  await adapter.stop();
+
+  assert.equal(adapter.getRunPolicy(first.id).permissionMode, "full");
+  assert.equal(adapter.getRunPolicyStatus(first.id).effectiveApprovalPolicy, "never");
+  assert.equal(adapter.getRunPolicy(second.id).permissionMode, "approval");
+  assert.equal(adapter.getRunPolicyStatus(second.id).effectiveApprovalPolicy, "on-request");
+  assert.equal(adapter.getRunPolicy().permissionMode, "approval");
 });
