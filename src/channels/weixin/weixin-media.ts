@@ -88,6 +88,7 @@ export async function materializeChannelMedia(params: {
   media: ChannelMedia;
   api: WeixinApiClient;
   tempDir?: string;
+  timeoutMs?: number;
 }): Promise<string> {
   if (params.media.path) return params.media.path;
   if (!params.media.url) throw new Error("media path or url is required");
@@ -96,7 +97,7 @@ export async function materializeChannelMedia(params: {
   if (!/^https?:\/\//i.test(url)) {
     throw new Error(`unsupported media url: ${url}`);
   }
-  const downloaded = await params.api.fetchBinary({ url });
+  const downloaded = await params.api.fetchBinary({ url, timeoutMs: params.timeoutMs });
   const tempDir = params.tempDir ?? path.join(os.tmpdir(), "codex-weixin-media");
   await fs.mkdir(tempDir, { recursive: true });
   const ext = extensionFromContentTypeOrUrl(downloaded.contentType, url);
@@ -112,6 +113,7 @@ export async function uploadLocalMediaToWeixin(params: {
   toUserId: string;
   cdnBaseUrl: string;
   mediaType: keyof typeof WeixinUploadMediaType;
+  timeoutMs?: number;
 }): Promise<UploadedWeixinMedia> {
   const plaintext = await fs.readFile(params.filePath);
   const rawsize = plaintext.length;
@@ -121,6 +123,7 @@ export async function uploadLocalMediaToWeixin(params: {
   const aeskey = crypto.randomBytes(16);
   const upload = await params.api.getUploadUrl({
     token: params.token,
+    timeoutMs: params.timeoutMs,
     body: {
       filekey,
       media_type: WeixinUploadMediaType[params.mediaType],
@@ -139,7 +142,7 @@ export async function uploadLocalMediaToWeixin(params: {
     throw new Error("getuploadurl response missing upload URL");
   }
   const encrypted = encryptAesEcb(plaintext, aeskey);
-  const { downloadParam } = await params.api.uploadCdnBuffer({ url: uploadUrl, body: encrypted });
+  const { downloadParam } = await params.api.uploadCdnBuffer({ url: uploadUrl, body: encrypted, timeoutMs: params.timeoutMs });
   return {
     filekey,
     downloadEncryptedQueryParam: downloadParam,

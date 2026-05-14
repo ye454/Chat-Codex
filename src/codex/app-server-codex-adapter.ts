@@ -19,6 +19,8 @@ export interface AppServerCodexAdapterOptions {
   codexBin?: string;
   runPolicy?: CodexRunPolicy;
   codexHome?: string;
+  requestTimeoutMs?: number;
+  interruptTimeoutMs?: number;
 }
 
 interface AppServerSessionRecord {
@@ -80,6 +82,8 @@ export class AppServerCodexAdapter implements CodexAdapter {
   private readonly codexBin: string;
   private runPolicy: CodexRunPolicy;
   private readonly codexHome?: string;
+  private readonly requestTimeoutMs: number;
+  private readonly interruptTimeoutMs: number;
   private readonly sessions = new Map<string, AppServerSessionRecord>();
   private readonly pendingResponses = new Map<string, PendingResponse>();
   private readonly pendingApprovals = new Map<string, PendingServerApproval>();
@@ -92,14 +96,18 @@ export class AppServerCodexAdapter implements CodexAdapter {
   private stdoutLines?: ReadlineInterface;
   private stderr = "";
   private initialized?: Promise<void>;
+  private stopping = false;
 
   constructor(options: AppServerCodexAdapterOptions = {}) {
     this.codexBin = options.codexBin ?? "codex";
     this.runPolicy = options.runPolicy ?? { permissionMode: "approval", sandbox: "workspace-write" };
     this.codexHome = options.codexHome;
+    this.requestTimeoutMs = options.requestTimeoutMs ?? 30_000;
+    this.interruptTimeoutMs = options.interruptTimeoutMs ?? 1500;
   }
 
   async stop(): Promise<void> {
+    this.stopping = true;
     for (const turn of this.turnQueues.values()) {
       turn.queue.close();
     }
@@ -224,19 +232,19 @@ export class AppServerCodexAdapter implements CodexAdapter {
     const pendingForTurn = [...this.pendingApprovals.entries()]
       .filter(([, pending]) => pending.sessionId === sessionId && pending.turnId === turnId);
     for (const [approvalKey, pending] of pendingForTurn) {
-      await pending.resolve("cancel");
+      try {
+        await pending.resolve("cancel");
+      } catch {
+        // Best effort: the app-server may already be stuck or gone.
+      }
       this.pendingApprovals.delete(approvalKey);
-    }
-    try {
-      await this.request("turn/interrupt", { threadId: sessionId, turnId });
-    } catch (error) {
-      if (pendingForTurn.length === 0) throw error;
     }
     const turn = this.turnQueues.get(turnId);
     if (turn && !turn.closed) {
       turn.queue.push({ type: "turn.completed", sessionId, turnId });
       this.closeTurn(turnId, "idle");
     }
+    void this.request("turn/interrupt", { threadId: sessionId, turnId }, { timeoutMs: this.interruptTimeoutMs }).catch(() => undefined);
   }
 
   async getStatus(sessionId: string): Promise<CodexSessionStatus> {
@@ -297,6 +305,8 @@ export class AppServerCodexAdapter implements CodexAdapter {
   }
 
   private async startProcessAndInitialize(): Promise<void> {
+    this.stopping = false;
+    this.stderr = "";
     this.child = spawn(this.codexBin, ["app-server", "--listen", "stdio://"], {
       stdio: ["pipe", "pipe", "pipe"],
     });
@@ -305,6 +315,14 @@ export class AppServerCodexAdapter implements CodexAdapter {
       this.stderr += chunk;
     });
     this.child.on("error", (error) => {
+      if (this.stopping) {
+        this.pendingResponses.clear();
+        this.turnQueues.clear();
+        this.closedTurnIds.clear();
+        this.initialized = undefined;
+        this.child = undefined;
+        return;
+      }
       for (const pending of this.pendingResponses.values()) pending.reject(error);
       this.pendingResponses.clear();
       for (const turn of this.turnQueues.values()) {
@@ -317,6 +335,14 @@ export class AppServerCodexAdapter implements CodexAdapter {
       this.child = undefined;
     });
     this.child.on("close", (code) => {
+      if (this.stopping) {
+        this.pendingResponses.clear();
+        this.turnQueues.clear();
+        this.closedTurnIds.clear();
+        this.initialized = undefined;
+        this.child = undefined;
+        return;
+      }
       const error = new Error(this.stderr.trim() || `codex app-server exited with code ${code}`);
       for (const pending of this.pendingResponses.values()) pending.reject(error);
       this.pendingResponses.clear();
@@ -350,17 +376,42 @@ export class AppServerCodexAdapter implements CodexAdapter {
     this.writeMessage({ method: "initialized" });
   }
 
-  private async request<T = unknown>(method: string, params?: unknown): Promise<T> {
+  private async request<T = unknown>(
+    method: string,
+    params?: unknown,
+    options: { timeoutMs?: number } = {},
+  ): Promise<T> {
     await this.ensureChildOpen();
     const id = `ccbridge-${++this.requestSequence}`;
     const message: JsonRpcRequest = { id, method, ...(params !== undefined ? { params } : {}) };
+    const timeoutMs = options.timeoutMs ?? this.requestTimeoutMs;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     const promise = new Promise<T>((resolve, reject) => {
       this.pendingResponses.set(id, {
-        resolve: (value) => resolve(value as T),
-        reject,
+        resolve: (value) => {
+          if (timer) clearTimeout(timer);
+          resolve(value as T);
+        },
+        reject: (error) => {
+          if (timer) clearTimeout(timer);
+          reject(error);
+        },
       });
+      if (timeoutMs > 0) {
+        timer = setTimeout(() => {
+          this.pendingResponses.delete(id);
+          reject(new Error(`codex app-server request timed out: ${method}`));
+        }, timeoutMs);
+        timer.unref?.();
+      }
     });
-    this.writeMessage(message);
+    try {
+      this.writeMessage(message);
+    } catch (error) {
+      if (timer) clearTimeout(timer);
+      this.pendingResponses.delete(id);
+      throw error;
+    }
     return promise;
   }
 
@@ -380,6 +431,7 @@ export class AppServerCodexAdapter implements CodexAdapter {
         void this.handleMessage(message);
       }
     } catch (error) {
+      if (this.stopping) return;
       const message = error instanceof Error ? error.message : String(error);
       for (const pending of this.pendingResponses.values()) pending.reject(new Error(message));
       this.pendingResponses.clear();

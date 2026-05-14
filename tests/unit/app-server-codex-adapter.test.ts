@@ -16,6 +16,7 @@ const readline = require("node:readline");
 const rl = readline.createInterface({ input: process.stdin });
 let threadId = "thread-app-server-1";
 let turnId = "turn-app-server-1";
+let ignoreInterrupt = false;
 function send(message) {
   process.stdout.write(JSON.stringify(message) + "\\n");
 }
@@ -77,6 +78,10 @@ rl.on("line", (line) => {
       send({ method: "turn/completed", params: { threadId, turn: { id: turnId, items: [], itemsView: "complete", status: "completed", error: null, startedAt: 1778716800, completedAt: 1778716801, durationMs: 1000 } } });
       return;
     }
+    if (prompt.includes("hang until stop")) {
+      ignoreInterrupt = true;
+      return;
+    }
     send({ method: "item/commandExecution/requestApproval", id: "approval-1", params: { threadId, turnId, itemId: "cmd-1", startedAtMs: Date.now(), command: "touch approved.txt", cwd: message.params.cwd, reason: "fake approval" } });
     return;
   }
@@ -86,6 +91,7 @@ rl.on("line", (line) => {
     return;
   }
   if (message.method === "turn/interrupt") {
+    if (ignoreInterrupt) return;
     send({ id: message.id, result: {} });
   }
 });
@@ -140,8 +146,31 @@ test("AppServerCodexAdapter cancels pending approvals when interrupting a turn",
   await adapter.stop();
 
   assert.ok(events.some((event) => event.type === "approval.requested"));
-  assert.ok(events.some((event) => event.type === "assistant.completed" && event.text === "decision cancel"));
   assert.ok(events.some((event) => event.type === "turn.completed"));
+  assert.equal(events.some((event) => event.type === "turn.failed"), false);
+});
+
+test("AppServerCodexAdapter cancel does not wait for app-server interrupt response", async () => {
+  const root = tempDir();
+  const adapter = new AppServerCodexAdapter({ codexBin: fakeCodexBin(root), interruptTimeoutMs: 10_000 });
+  const session = await adapter.startSession({
+    routeKey: "route-1",
+    cwd: root,
+    title: "test",
+  });
+  const events = [];
+
+  for await (const event of adapter.run(session.id, "hang until stop")) {
+    events.push(event);
+    if (event.type === "turn.started") {
+      await adapter.cancel(session.id);
+    }
+  }
+  await adapter.stop();
+
+  assert.ok(events.some((event) => event.type === "turn.started"));
+  assert.ok(events.some((event) => event.type === "turn.completed"));
+  assert.equal(events.some((event) => event.type === "turn.failed"), false);
 });
 
 test("AppServerCodexAdapter emits reasoning and plan progress from app-server notifications", async () => {

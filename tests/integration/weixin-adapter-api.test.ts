@@ -73,12 +73,13 @@ test("WeixinAdapter sends text messages with stored token and context token", as
     baseUrl: "https://api.example",
     savedAt: new Date().toISOString(),
   });
-  const calls: Array<{ url: string; headers: Headers; body?: string }> = [];
+  const calls: Array<{ url: string; headers: Headers; body?: string; signal?: AbortSignal | null }> = [];
   const fetchImpl: FetchLike = async (input, init) => {
     calls.push({
       url: String(input),
       headers: new Headers(init?.headers),
       body: typeof init?.body === "string" ? init.body : undefined,
+      signal: init?.signal,
     });
     return jsonResponse({});
   };
@@ -88,6 +89,7 @@ test("WeixinAdapter sends text messages with stored token and context token", as
     pollOnStart: false,
     outboundMinIntervalMs: 0,
     outboundMaxRetries: 0,
+    outboundRequestTimeoutMs: 1000,
     apiOptions: { fetch: fetchImpl },
   });
 
@@ -102,6 +104,7 @@ test("WeixinAdapter sends text messages with stored token and context token", as
 
   const call = calls.find((item) => item.url.includes("sendmessage"));
   assert.ok(call, "sendmessage should be called");
+  assert.ok(call.signal, "sendmessage should have an abort signal");
   assert.equal(call.headers.get("Authorization"), "Bearer token-1");
   const body = JSON.parse(call.body ?? "{}");
   assert.equal(body.msg.to_user_id, "user@im.wechat");
@@ -247,11 +250,11 @@ test("WeixinAdapter uploads and sends image media with caption", async () => {
   });
   const imagePath = path.join(tempStateDir(), "shot.png");
   fs.writeFileSync(imagePath, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x01]));
-  const calls: Array<{ url: string; body?: unknown }> = [];
+  const calls: Array<{ url: string; body?: unknown; signal?: AbortSignal | null }> = [];
   let encryptedUploadSize = 0;
   const fetchImpl: FetchLike = async (input, init) => {
     const url = String(input);
-    calls.push({ url, body: init?.body });
+    calls.push({ url, body: init?.body, signal: init?.signal });
     if (url.includes("getuploadurl")) {
       return jsonResponse({ upload_full_url: "https://cdn.example/upload" });
     }
@@ -272,6 +275,7 @@ test("WeixinAdapter uploads and sends image media with caption", async () => {
     store,
     pollOnStart: false,
     outboundMinIntervalMs: 0,
+    mediaRequestTimeoutMs: 1000,
     apiOptions: { fetch: fetchImpl },
   });
 
@@ -292,6 +296,8 @@ test("WeixinAdapter uploads and sends image media with caption", async () => {
 
   const uploadUrlCall = calls.find((call) => call.url.includes("getuploadurl"));
   assert.ok(uploadUrlCall, "getuploadurl should be called");
+  assert.ok(uploadUrlCall.signal, "getuploadurl should have an abort signal");
+  assert.ok(calls.find((call) => call.url === "https://cdn.example/upload")?.signal, "cdn upload should have an abort signal");
   const uploadBody = JSON.parse(String(uploadUrlCall.body));
   assert.equal(uploadBody.media_type, 1);
   assert.equal(uploadBody.to_user_id, "user@im.wechat");

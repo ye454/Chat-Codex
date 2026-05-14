@@ -49,6 +49,8 @@ export interface WeixinAdapterOptions {
   outboundMinIntervalMs?: number;
   outboundMaxRetries?: number;
   outboundRetryBaseDelayMs?: number;
+  outboundRequestTimeoutMs?: number;
+  mediaRequestTimeoutMs?: number;
 }
 
 export interface WeixinLoginStartResult extends ChannelLoginResult {
@@ -76,6 +78,8 @@ const TYPING_TICKET_TTL_MS = 20 * 60 * 1000;
 const DEFAULT_OUTBOUND_MIN_INTERVAL_MS = 1200;
 const DEFAULT_OUTBOUND_MAX_RETRIES = 2;
 const DEFAULT_OUTBOUND_RETRY_BASE_DELAY_MS = 1500;
+const DEFAULT_OUTBOUND_REQUEST_TIMEOUT_MS = 30_000;
+const DEFAULT_MEDIA_REQUEST_TIMEOUT_MS = 60_000;
 
 export class WeixinAdapter implements ChannelAdapter {
   readonly id = "weixin";
@@ -95,6 +99,8 @@ export class WeixinAdapter implements ChannelAdapter {
   private readonly outboundMinIntervalMs: number;
   private readonly outboundMaxRetries: number;
   private readonly outboundRetryBaseDelayMs: number;
+  private readonly outboundRequestTimeoutMs: number;
+  private readonly mediaRequestTimeoutMs: number;
   private handler?: ChannelMessageHandler;
   private status: ChannelStatus;
   private activeLogin?: ActiveLogin;
@@ -124,6 +130,8 @@ export class WeixinAdapter implements ChannelAdapter {
     this.outboundMinIntervalMs = options.outboundMinIntervalMs ?? DEFAULT_OUTBOUND_MIN_INTERVAL_MS;
     this.outboundMaxRetries = options.outboundMaxRetries ?? DEFAULT_OUTBOUND_MAX_RETRIES;
     this.outboundRetryBaseDelayMs = options.outboundRetryBaseDelayMs ?? DEFAULT_OUTBOUND_RETRY_BASE_DELAY_MS;
+    this.outboundRequestTimeoutMs = options.outboundRequestTimeoutMs ?? DEFAULT_OUTBOUND_REQUEST_TIMEOUT_MS;
+    this.mediaRequestTimeoutMs = options.mediaRequestTimeoutMs ?? DEFAULT_MEDIA_REQUEST_TIMEOUT_MS;
     this.status = {
       channelId: this.id,
       state: "login_required",
@@ -279,7 +287,7 @@ export class WeixinAdapter implements ChannelAdapter {
     if (!account) {
       throw new Error("WeixinAdapter 未登录：请先运行 weixin login");
     }
-    const filePath = await materializeChannelMedia({ media, api: this.api });
+    const filePath = await materializeChannelMedia({ media, api: this.api, timeoutMs: this.mediaRequestTimeoutMs });
     const uploadMediaType = media.type === "file" ? "FILE" : mediaTypeForPath(filePath);
     if (uploadMediaType === "VIDEO") throw new Error(`WeixinAdapter 当前不支持视频媒体发送: ${filePath}`);
     const toUserId = target.recipient.id || target.conversation.id;
@@ -290,6 +298,7 @@ export class WeixinAdapter implements ChannelAdapter {
       toUserId,
       cdnBaseUrl: account.cdnBaseUrl ?? this.cdnBaseUrl,
       mediaType: uploadMediaType,
+      timeoutMs: this.mediaRequestTimeoutMs,
     });
     const items: WeixinMessageItem[] = [];
     const caption = media.caption?.trim();
@@ -562,7 +571,7 @@ export class WeixinAdapter implements ChannelAdapter {
     let attempt = 0;
     while (true) {
       try {
-        await this.api.sendMessage({ token: account.token, body });
+        await this.api.sendMessage({ token: account.token, body, timeoutMs: this.outboundRequestTimeoutMs });
         return;
       } catch (error) {
         if (attempt >= this.outboundMaxRetries || !isRetryableSendMessageError(error)) {
@@ -610,6 +619,8 @@ export class WeixinAdapter implements ChannelAdapter {
       runtime: "codex-wechat-middleware",
       outboundMinIntervalMs: this.outboundMinIntervalMs,
       outboundMaxRetries: this.outboundMaxRetries,
+      outboundRequestTimeoutMs: this.outboundRequestTimeoutMs,
+      mediaRequestTimeoutMs: this.mediaRequestTimeoutMs,
     };
   }
 }
