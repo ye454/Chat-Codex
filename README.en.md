@@ -2,7 +2,7 @@
 
 A lightweight middleware for connecting Codex to pluggable chat channels. It lets users drive Codex from chat apps, create or resume sessions, handle approvals, stop turns, inspect status, and receive final replies or files.
 
-Weixin is the first real channel adapter. Its communication behavior is adapted from the `@tencent-weixin/openclaw-weixin` package, but this project does not depend on the OpenClaw CLI, gateway, host runtime, or channel runtime at execution time.
+Weixin is the first and currently only real channel adapter. Lark/Feishu is planned as the next real channel adapter and will be adapted later. The project currently only targets Weixin and Lark/Feishu as real channels. Weixin communication behavior is adapted from the `@tencent-weixin/openclaw-weixin` package, but this project does not depend on the OpenClaw CLI, gateway, host runtime, or channel runtime at execution time.
 
 - Default Simplified Chinese README: [README.md](README.md)
 - Documentation index: [docs/README.md](docs/README.md)
@@ -25,7 +25,7 @@ Current boundaries:
 
 - Weixin is currently treated as verified direct-chat only: `direct=true, group=false, thread=false`.
 - The multi-channel CLI wizard, channel configuration UI, and persistent local runtime state are still design-stage.
-- Lark/Feishu, Telegram, Slack, and other real channel adapters are not implemented yet.
+- Lark/Feishu is planned as the next real adapter, targeting direct chats, group chats, and threads. Other real channel adapters are not currently planned.
 
 ## Architecture
 
@@ -165,7 +165,7 @@ Do not commit `node_modules/`, `dist/`, `state/`, tokens, cookies, logs, `.env`,
 
 - Multi-channel CLI startup wizard and channel instance management.
 - Persistent local runtime state.
-- Lark/Feishu direct, group, and thread adapter.
+- Lark/Feishu direct, group, and thread adapter as the next real channel integration.
 - RouteRuntime extraction from Bridge Core.
 - Richer multi-channel transcript and admin status views.
 
