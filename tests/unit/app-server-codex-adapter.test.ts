@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { AppServerCodexAdapter } from "../../src/codex/app-server-codex-adapter.js";
+import type { CodexEvent } from "../../src/codex/types.js";
 
 function tempDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "app-server-codex-test-"));
@@ -153,6 +154,14 @@ rl.on("line", (line) => {
       updatedAt: now,
     };
     send({ id: message.id, result: { goal } });
+    if (message.params.objective) {
+      const goalTurnId = "goal-turn-" + Date.now();
+      send({ method: "turn/started", params: { threadId: message.params.threadId, turnId: goalTurnId, turn: { id: goalTurnId } } });
+      send({ method: "item/started", params: { threadId: message.params.threadId, turnId: goalTurnId, startedAtMs: Date.now(), item: { type: "reasoning", id: "goal-reasoning", summary: [], content: [] } } });
+      send({ method: "item/reasoning/summaryTextDelta", params: { threadId: message.params.threadId, turnId: goalTurnId, itemId: "goal-reasoning", summaryIndex: 0, delta: "正在推进 Goal。" } });
+      send({ method: "item/completed", params: { threadId: message.params.threadId, turnId: goalTurnId, completedAtMs: Date.now(), item: { type: "agentMessage", id: "goal-msg", text: "Goal 自动续跑完成", phase: "final_answer", memoryCitation: null } } });
+      send({ method: "turn/completed", params: { threadId: message.params.threadId, turn: { id: goalTurnId, items: [], itemsView: "complete", status: "completed", error: null, startedAt: 1778716800, completedAt: 1778716801, durationMs: 1000 } } });
+    }
     return;
   }
   if (message.method === "thread/goal/clear") {
@@ -272,7 +281,7 @@ test("AppServerCodexAdapter routes command approvals through resolveApproval", a
     cwd: root,
     title: "test",
   });
-  const events = [];
+  const events: CodexEvent[] = [];
 
   for await (const event of adapter.run(session.id, "run command that needs approval")) {
     events.push(event);
@@ -299,7 +308,7 @@ test("AppServerCodexAdapter cancels pending approvals when interrupting a turn",
     cwd: root,
     title: "test",
   });
-  const events = [];
+  const events: CodexEvent[] = [];
 
   for await (const event of adapter.run(session.id, "run command that needs approval")) {
     events.push(event);
@@ -623,3 +632,37 @@ test("AppServerCodexAdapter manages experimental thread goals", async () => {
   assert.equal(cleared, true);
   assert.equal(empty, null);
 });
+
+test("AppServerCodexAdapter emits goal auto-continuation as background events", async () => {
+  const root = tempDir();
+  const adapter = new AppServerCodexAdapter({ codexBin: fakeCodexBin(root) });
+  const events: CodexEvent[] = [];
+  const unsubscribe = adapter.onBackgroundEvent((event) => {
+    events.push(event);
+  });
+  const session = await adapter.startSession({
+    routeKey: "route-1",
+    cwd: root,
+    title: "test",
+  });
+
+  await adapter.setGoal(session.id, "自动推进 Goal");
+  await waitForUnit(() => events.some((event) => event.type === "turn.completed"));
+  unsubscribe();
+  await adapter.stop();
+
+  assert.ok(events.some((event) => event.type === "turn.started"));
+  assert.ok(events.some((event) => event.type === "assistant.progress" && event.text.includes("正在分析")));
+  assert.ok(events.some((event) => event.type === "assistant.progress" && event.text.includes("正在推进 Goal")));
+  assert.ok(events.some((event) => event.type === "assistant.completed" && event.text === "Goal 自动续跑完成"));
+  assert.ok(events.some((event) => event.type === "turn.completed"));
+});
+
+async function waitForUnit(predicate: () => boolean, timeoutMs = 1000): Promise<void> {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.fail("condition not met before timeout");
+}

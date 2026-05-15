@@ -114,6 +114,8 @@ export type CodexEvent =
   | { type: "turn.completed"; sessionId: string; turnId: string }
   | { type: "turn.failed"; sessionId: string; turnId: string; error: string };
 
+export type CodexBackgroundEventHandler = (event: CodexEvent) => void | Promise<void>;
+
 export type CodexProgressKind =
   | "reasoning"
   | "todo"
@@ -140,6 +142,7 @@ export interface CodexSessionSummary {
 
 export interface CodexAdapter {
   stop?(): Promise<void>;
+  onBackgroundEvent?(handler: CodexBackgroundEventHandler): () => void;
   startSession(input: StartSessionInput): Promise<CodexSession>;
   resumeSession(sessionId: string): Promise<CodexSession>;
   run(sessionId: string, prompt: string, options?: CodexRunOptions): AsyncIterable<CodexEvent>;

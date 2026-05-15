@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto";
 import type { ApprovalDecision, ApprovalKind, ApprovalRequest } from "../approvals/types.js";
 import type {
   CodexAdapter,
+  CodexBackgroundEventHandler,
   CodexCollaborationMode,
   CodexEvent,
   CodexGoal,
@@ -113,6 +114,7 @@ export class AppServerCodexAdapter implements CodexAdapter {
   private readonly turnQueues = new Map<string, TurnQueueRecord>();
   private readonly earlyTurnEvents = new Map<string, CodexEvent[]>();
   private readonly closedTurnIds = new Set<string>();
+  private readonly backgroundHandlers = new Set<CodexBackgroundEventHandler>();
   private readonly threadToSession = new Map<string, string>();
   private requestSequence = 0;
   private child?: ChildProcess;
@@ -127,6 +129,13 @@ export class AppServerCodexAdapter implements CodexAdapter {
     this.codexHome = options.codexHome;
     this.requestTimeoutMs = options.requestTimeoutMs ?? 30_000;
     this.interruptTimeoutMs = options.interruptTimeoutMs ?? 1500;
+  }
+
+  onBackgroundEvent(handler: CodexBackgroundEventHandler): () => void {
+    this.backgroundHandlers.add(handler);
+    return () => {
+      this.backgroundHandlers.delete(handler);
+    };
   }
 
   async stop(): Promise<void> {
@@ -240,7 +249,23 @@ export class AppServerCodexAdapter implements CodexAdapter {
     const runPolicy = this.runPolicyForSession(sessionId);
     const modelPolicy = this.modelPolicyForSession(sessionId);
     const collaborationMode = options.collaborationMode ?? this.sessionCollaborationModes.get(sessionId);
-    const turnResponse = await this.request<Record<string, unknown>>("turn/start", {
+    const queue = new AsyncEventQueue<CodexEvent>();
+    let turnId = "";
+    const registerTurn = (response: unknown): void => {
+      const turn = objectValue(objectValue(response).turn);
+      turnId = stringValue(turn.id) ?? `app-server-turn-${Date.now()}`;
+      this.closedTurnIds.delete(turnId);
+      this.turnQueues.set(turnId, createTurnQueueRecord(sessionId, turnId, queue, collaborationMode));
+      for (const event of this.earlyTurnEvents.get(turnId) ?? []) {
+        queue.push(event);
+      }
+      this.earlyTurnEvents.delete(turnId);
+      stored.status = withContext(stored, { type: "running", turnId, task: truncatePrompt(prompt) });
+      stored.status = withModelPolicy(stored.status, modelPolicy);
+      stored.currentTurnId = turnId;
+      stored.updatedAt = new Date().toISOString();
+    };
+    await this.request<Record<string, unknown>>("turn/start", {
       threadId: sessionId,
       input: [{ type: "text", text: prompt, text_elements: [] }],
       cwd: stored.session.cwd,
@@ -253,31 +278,9 @@ export class AppServerCodexAdapter implements CodexAdapter {
       collaborationMode: collaborationMode
         ? collaborationModePayload(collaborationMode, modelPolicy, stored)
         : undefined,
+    }, {
+      onResult: registerTurn,
     });
-    const turn = objectValue(turnResponse.turn);
-    const turnId = stringValue(turn.id) ?? `app-server-turn-${Date.now()}`;
-    const queue = new AsyncEventQueue<CodexEvent>();
-    this.closedTurnIds.delete(turnId);
-    this.turnQueues.set(turnId, {
-      sessionId,
-      turnId,
-      queue,
-      ...(collaborationMode ? { collaborationMode } : {}),
-      finalText: "",
-      progressDrafts: new Map(),
-      agentMessagePhases: new Map(),
-      emittedProgressItemIds: new Set(),
-      emittedProgress: new Set(),
-      closed: false,
-    });
-    for (const event of this.earlyTurnEvents.get(turnId) ?? []) {
-      queue.push(event);
-    }
-    this.earlyTurnEvents.delete(turnId);
-    stored.status = withContext(stored, { type: "running", turnId, task: truncatePrompt(prompt) });
-    stored.status = withModelPolicy(stored.status, modelPolicy);
-    stored.currentTurnId = turnId;
-    stored.updatedAt = new Date().toISOString();
     yield { type: "turn.started", sessionId, turnId };
 
     for await (const event of queue) {
@@ -545,7 +548,7 @@ export class AppServerCodexAdapter implements CodexAdapter {
   private async request<T = unknown>(
     method: string,
     params?: unknown,
-    options: { timeoutMs?: number } = {},
+    options: { timeoutMs?: number; onResult?: (value: unknown) => void } = {},
   ): Promise<T> {
     await this.ensureChildOpen();
     const id = `ccbridge-${++this.requestSequence}`;
@@ -556,7 +559,12 @@ export class AppServerCodexAdapter implements CodexAdapter {
       this.pendingResponses.set(id, {
         resolve: (value) => {
           if (timer) clearTimeout(timer);
-          resolve(value as T);
+          try {
+            options.onResult?.(value);
+            resolve(value as T);
+          } catch (error) {
+            reject(error instanceof Error ? error : new Error(String(error)));
+          }
         },
         reject: (error) => {
           if (timer) clearTimeout(timer);
@@ -635,7 +643,7 @@ export class AppServerCodexAdapter implements CodexAdapter {
     const adapterApprovalId = String(request.id);
     const turnId = approval.turnId;
     const sessionId = this.threadToSession.get(approval.sessionId) ?? approval.sessionId;
-    const turn = this.turnQueues.get(turnId);
+    this.turnQueues.get(turnId) ?? this.createBackgroundTurn(sessionId, turnId);
     const stored = this.sessions.get(sessionId);
     if (stored) {
       stored.status = withContext(stored, { type: "waiting_approval", detail: approval.reason ?? approval.kind });
@@ -696,9 +704,12 @@ export class AppServerCodexAdapter implements CodexAdapter {
     const threadId = stringValue(params.threadId);
     const turnId = stringValue(params.turnId) ?? stringValue(objectValue(params.turn).id);
     if (!turnId) return;
-    const turn = this.turnQueues.get(turnId);
+    let turn = this.turnQueues.get(turnId);
     const sessionId = (threadId ? this.threadToSession.get(threadId) : undefined) ?? turn?.sessionId ?? threadId;
     if (!sessionId) return;
+    if (!turn && shouldCreateBackgroundTurn(notification.method)) {
+      turn = this.createBackgroundTurn(sessionId, turnId);
+    }
 
     if (notification.method === "turn/started") {
       const stored = this.sessions.get(sessionId);
@@ -816,6 +827,35 @@ export class AppServerCodexAdapter implements CodexAdapter {
     const early = this.earlyTurnEvents.get(turnId) ?? [];
     early.push(event);
     this.earlyTurnEvents.set(turnId, early);
+  }
+
+  private createBackgroundTurn(sessionId: string, turnId: string): TurnQueueRecord | undefined {
+    if (this.closedTurnIds.has(turnId)) return undefined;
+    const existing = this.turnQueues.get(turnId);
+    if (existing) return existing;
+    const stored = this.sessions.get(sessionId);
+    if (!stored) return undefined;
+    const queue = new AsyncEventQueue<CodexEvent>();
+    const turn = createTurnQueueRecord(sessionId, turnId, queue);
+    this.turnQueues.set(turnId, turn);
+    stored.status = withContext(stored, { type: "running", turnId });
+    stored.currentTurnId = turnId;
+    stored.updatedAt = new Date().toISOString();
+    void this.drainBackgroundTurn(queue);
+    queue.push({ type: "turn.started", sessionId, turnId });
+    return turn;
+  }
+
+  private async drainBackgroundTurn(queue: AsyncEventQueue<CodexEvent>): Promise<void> {
+    for await (const event of queue) {
+      await this.emitBackgroundEvent(event);
+    }
+  }
+
+  private async emitBackgroundEvent(event: CodexEvent): Promise<void> {
+    for (const handler of [...this.backgroundHandlers]) {
+      await handler(event);
+    }
   }
 
   private handleItemCompleted(turn: TurnQueueRecord, sessionId: string, turnId: string, item: Record<string, unknown>): void {
@@ -974,6 +1014,30 @@ class AsyncEventQueue<T> implements AsyncIterable<T> {
       },
     };
   }
+}
+
+function createTurnQueueRecord(
+  sessionId: string,
+  turnId: string,
+  queue: AsyncEventQueue<CodexEvent>,
+  collaborationMode?: CodexCollaborationMode,
+): TurnQueueRecord {
+  return {
+    sessionId,
+    turnId,
+    queue,
+    ...(collaborationMode ? { collaborationMode } : {}),
+    finalText: "",
+    progressDrafts: new Map(),
+    agentMessagePhases: new Map(),
+    emittedProgressItemIds: new Set(),
+    emittedProgress: new Set(),
+    closed: false,
+  };
+}
+
+function shouldCreateBackgroundTurn(method: string): boolean {
+  return method !== "thread/tokenUsage/updated";
 }
 
 function approvalPolicyForRunPolicy(policy: CodexRunPolicy): "on-request" | "never" {

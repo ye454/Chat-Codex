@@ -1,7 +1,7 @@
 import type { ApprovalDecision, PendingApproval } from "../approvals/types.js";
 import { ApprovalManager } from "../approvals/approval-manager.js";
 import type { CodexRunPolicy, CodexRunPolicyStatus } from "../codex/codex-cli.js";
-import type { CodexAdapter, CodexCollaborationMode, CodexGoal, CodexGoalStatus, CodexModelOption, CodexModelPolicy, CodexProgressKind, CodexReasoningEffort, CodexSession, CodexSessionContextUsage, CodexSessionModelInfo, CodexSessionStatus } from "../codex/types.js";
+import type { CodexAdapter, CodexCollaborationMode, CodexEvent, CodexGoal, CodexGoalStatus, CodexModelOption, CodexModelPolicy, CodexProgressKind, CodexReasoningEffort, CodexSession, CodexSessionContextUsage, CodexSessionModelInfo, CodexSessionStatus } from "../codex/types.js";
 import { CODEX_REASONING_EFFORTS } from "../codex/types.js";
 import { parseCommand } from "../commands/parser.js";
 import type { Logger } from "../logging/logger.js";
@@ -43,6 +43,14 @@ interface QueuedPrompt {
   sendFile: boolean;
 }
 
+interface BackgroundTurnState {
+  routeKey: string;
+  message: ChannelMessage;
+  target: ChannelTarget;
+  finalText: string;
+  finalPlanText: string;
+}
+
 export type ProgressDeliveryMode = "brief" | "detailed" | "silent";
 export type UnboundRoutePolicy = "auto_new" | "ask";
 
@@ -64,10 +72,14 @@ export class Bridge {
   private readonly approvalSendRetryDelayMs: number;
   private readonly routeProgressModes = new Map<string, ProgressDeliveryMode>();
   private readonly routeCollaborationModes = new Map<string, CodexCollaborationMode>();
+  private readonly routeMessages = new Map<string, ChannelMessage>();
+  private readonly routeTargets = new Map<string, ChannelTarget>();
   private readonly routeQueues = new Map<string, QueuedPrompt[]>();
   private readonly routeWorkers = new Map<string, Promise<void>>();
+  private readonly backgroundTurns = new Map<string, BackgroundTurnState>();
   private readonly routeAbortControllers = new Map<string, AbortController>();
   private readonly progressSendSuppressedUntil = new Map<string, number>();
+  private stopBackgroundEvents?: () => void;
   private initialSessionId?: string;
 
   constructor(options: BridgeOptions) {
@@ -92,12 +104,15 @@ export class Bridge {
   }
 
   async start(): Promise<void> {
+    this.stopBackgroundEvents = this.codex.onBackgroundEvent?.((event) => this.handleBackgroundCodexEvent(event));
     this.channels.onMessage((message) => this.handleMessage(message));
     await this.channels.start();
     this.logger.info("bridge started", { channels: this.channels.ids().join(",") });
   }
 
   async stop(): Promise<void> {
+    this.stopBackgroundEvents?.();
+    this.stopBackgroundEvents = undefined;
     await this.channels.stop();
     await this.codex.stop?.();
     this.logger.info("bridge stopped", { channels: this.channels.ids().join(",") });
@@ -108,6 +123,8 @@ export class Bridge {
     if (!text) return;
     this.transcript?.inbound(message, text);
     const target = replyTargetFromMessage(message);
+    this.routeMessages.set(message.routeKey, message);
+    this.routeTargets.set(message.routeKey, target);
     const command = parseCommand(text);
     if (command.isCommand) {
       await this.handleCommand(message, target, command.name ?? "", command.args, text);
@@ -117,8 +134,13 @@ export class Bridge {
   }
 
   async waitForIdle(): Promise<void> {
-    while (this.routeWorkers.size > 0) {
-      await Promise.all([...this.routeWorkers.values()]);
+    while (this.routeWorkers.size > 0 || this.backgroundTurns.size > 0) {
+      if (this.routeWorkers.size > 0) {
+        await Promise.all([...this.routeWorkers.values()]);
+      }
+      if (this.backgroundTurns.size > 0) {
+        await sleep(10);
+      }
     }
   }
 
@@ -298,7 +320,7 @@ export class Bridge {
       return;
     }
     const queue = this.routeQueues.get(message.routeKey) ?? [];
-    const pendingAhead = queue.length + (this.routeWorkers.has(message.routeKey) ? 1 : 0);
+    const pendingAhead = queue.length + (this.isRouteBusy(message.routeKey) ? 1 : 0);
     queue.push({
       message,
       target,
@@ -310,7 +332,7 @@ export class Bridge {
     if (pendingAhead > 0) {
       await this.sendText(target, `已加入队列，前面还有 ${pendingAhead} 条消息。`);
     }
-    if (!this.routeWorkers.has(message.routeKey)) {
+    if (!this.routeWorkers.has(message.routeKey) && !this.hasBackgroundTurnForRoute(message.routeKey)) {
       this.startRouteWorker(message.routeKey);
     }
   }
@@ -325,6 +347,14 @@ export class Bridge {
       }
     });
     this.routeWorkers.set(routeKey, worker);
+  }
+
+  private isRouteBusy(routeKey: string): boolean {
+    return this.routeWorkers.has(routeKey) || this.hasBackgroundTurnForRoute(routeKey);
+  }
+
+  private hasBackgroundTurnForRoute(routeKey: string): boolean {
+    return [...this.backgroundTurns.values()].some((turn) => turn.routeKey === routeKey);
   }
 
   private shouldAskBeforeBindingSession(message: ChannelMessage): boolean {
@@ -433,6 +463,84 @@ export class Bridge {
       if (this.routeAbortControllers.get(message.routeKey) === abortController) {
         this.routeAbortControllers.delete(message.routeKey);
       }
+    }
+  }
+
+  private async handleBackgroundCodexEvent(event: CodexEvent): Promise<void> {
+    const state = this.backgroundTurns.get(event.turnId) ?? this.createBackgroundTurnState(event);
+    if (!state) return;
+    const deliveryPolicy = this.deliveryPolicyFor(state.message);
+    if (event.type === "turn.started") {
+      this.state.setSessionStatus(event.sessionId, {
+        type: "running",
+        turnId: event.turnId,
+        task: "Goal 自动续跑",
+      });
+      await this.sendTyping(state.target, true);
+    } else if (event.type === "assistant.progress") {
+      const progressText = `Codex 进度:\n${truncateForChannel(event.text)}`;
+      if (this.shouldDeliverProgressWithPolicy(deliveryPolicy, state.routeKey, event.kind)) {
+        await this.sendProgressText(state.routeKey, state.target, progressText);
+      } else if (deliveryPolicy.progress === "suppress") {
+        this.transcript?.localProgress?.(state.target, progressText);
+      }
+    } else if (event.type === "assistant.plan") {
+      state.finalPlanText = event.text;
+    } else if (event.type === "assistant.delta") {
+      state.finalText += event.text;
+    } else if (event.type === "assistant.completed") {
+      state.finalText = event.text;
+    } else if (event.type === "approval.requested") {
+      this.state.setSessionStatus(event.sessionId, {
+        type: "waiting_approval",
+        detail: event.approval.reason ?? event.approval.kind,
+      });
+      const pending = this.approvals.create(state.routeKey, state.message.sender.id, event.approval);
+      await this.sendApprovalTextUntilDelivered(state.routeKey, state.target, pending);
+    } else if (event.type === "turn.completed") {
+      this.state.setSessionStatus(event.sessionId, { type: "idle" });
+      await this.finishBackgroundTurn(event.turnId, state);
+    } else if (event.type === "turn.failed") {
+      this.state.setSessionStatus(event.sessionId, { type: "failed", error: event.error });
+      await this.sendText(state.target, `Codex 执行失败: ${event.error}`);
+      await this.finishBackgroundTurn(event.turnId, state, false);
+    }
+  }
+
+  private createBackgroundTurnState(event: CodexEvent): BackgroundTurnState | undefined {
+    const owner = this.state.getSessionOwner(event.sessionId);
+    const stored = this.state.getSession(event.sessionId);
+    const routeKey = owner?.ownerRouteKey ?? stored?.ownerRouteKey ?? stored?.routeKey;
+    const message = routeKey ? this.routeMessages.get(routeKey) : undefined;
+    const target = routeKey ? this.routeTargets.get(routeKey) : undefined;
+    if (!routeKey || !message || !target) {
+      this.logger.warn("background codex event has no route target", {
+        sessionId: event.sessionId,
+        turnId: event.turnId,
+        eventType: event.type,
+      });
+      return undefined;
+    }
+    const state: BackgroundTurnState = {
+      routeKey,
+      message,
+      target,
+      finalText: "",
+      finalPlanText: "",
+    };
+    this.backgroundTurns.set(event.turnId, state);
+    return state;
+  }
+
+  private async finishBackgroundTurn(turnId: string, state: BackgroundTurnState, sendFinal = true): Promise<void> {
+    const composedFinalText = composeFinalAnswer(state.finalPlanText, state.finalText);
+    if (sendFinal && composedFinalText) {
+      await this.sendText(state.target, composedFinalText);
+    }
+    await this.sendTyping(state.target, false);
+    this.backgroundTurns.delete(turnId);
+    if ((this.routeQueues.get(state.routeKey)?.length ?? 0) > 0 && !this.routeWorkers.has(state.routeKey)) {
+      this.startRouteWorker(state.routeKey);
     }
   }
 
@@ -988,7 +1096,7 @@ export class Bridge {
       ? localSession.status
       : adapterStatus;
     const approvals = this.approvals.list(routeKey);
-    const workerRunning = this.routeWorkers.has(routeKey);
+    const workerRunning = this.isRouteBusy(routeKey);
     const policyStatus = this.runPolicyStatus(binding?.sessionId);
     const policy = policyStatus?.policy ?? this.codex.getRunPolicy?.(binding?.sessionId);
     const modelPolicy = this.codex.getModelPolicy?.(binding?.sessionId);
@@ -1008,7 +1116,7 @@ export class Bridge {
       `- Processing: \`${workerRunning ? "yes" : "no"}\``,
       `- Queue: \`${this.routeQueues.get(routeKey)?.length ?? 0}\``,
       `- Mode: \`${this.collaborationModeForRoute(routeKey, binding?.sessionId)}\``,
-      goal !== undefined ? `- Goal: ${formatGoalSummary(goal)}` : undefined,
+      ...formatGoalStatusLines(goal),
       `- Pending approvals: \`${approvals.length}\``,
       ...formatPendingApprovalStatus(approvals.at(-1)),
       this.progressStatusLine(routeKey, deliveryPolicy),
@@ -1312,9 +1420,18 @@ function formatRunPolicy(policy: CodexRunPolicy): string {
     : `approval sandbox=${policy.sandbox ?? "workspace-write"}`;
 }
 
-function formatGoalSummary(goal: CodexGoal | null): string {
-  if (!goal) return "`none`";
-  return `\`${formatGoalStatus(goal.status)}\` ${truncateForChannel(goal.objective, 80)}`;
+function formatGoalStatusLines(goal: CodexGoal | null | undefined): string[] {
+  if (goal === undefined) return [];
+  if (!goal) return ["- Goal: `none`"];
+  const budget = goal.tokenBudget !== null && goal.tokenBudget > 0
+    ? `\`${formatNumber(goal.tokensUsed)} / ${formatNumber(goal.tokenBudget)}\` (${formatPercent(goal.tokensUsed / goal.tokenBudget)}, remaining ${formatNumber(Math.max(goal.tokenBudget - goal.tokensUsed, 0))})`
+    : `\`${formatNumber(goal.tokensUsed)}\``;
+  return [
+    `- Goal: \`${formatGoalStatus(goal.status)}\` ${truncateForChannel(goal.objective, 80)}`,
+    `- Goal tokens: ${budget}`,
+    `- Goal time: \`${formatDuration(goal.timeUsedSeconds)}\``,
+    `- Goal updated: \`${formatGoalTimestamp(goal.updatedAt)}\``,
+  ];
 }
 
 function formatGoalStatus(status: CodexGoalStatus): string {
@@ -1527,6 +1644,11 @@ function formatDuration(seconds: number): string {
   if (hours > 0) return `${hours}h ${minutes}m ${rest}s`;
   if (minutes > 0) return `${minutes}m ${rest}s`;
   return `${rest}s`;
+}
+
+function formatGoalTimestamp(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds <= 0) return "unknown";
+  return new Date(seconds * 1000).toISOString();
 }
 
 function goalErrorText(error: unknown): string {

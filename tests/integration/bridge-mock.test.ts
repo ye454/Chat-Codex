@@ -4,9 +4,9 @@ import { Bridge } from "../../src/bridge/bridge.js";
 import { ChannelRegistry } from "../../src/channels/registry.js";
 import { MockChannelAdapter } from "../../src/channels/mock/mock-channel-adapter.js";
 import { MockCodexAdapter } from "../../src/codex/mock-codex-adapter.js";
-import type { CodexAdapter, CodexCollaborationMode, CodexEvent, CodexRunOptions, CodexSession, CodexSessionContextUsage, CodexSessionStatus, CodexSessionSummary, StartSessionInput } from "../../src/codex/types.js";
+import type { CodexAdapter, CodexBackgroundEventHandler, CodexCollaborationMode, CodexEvent, CodexGoal, CodexRunOptions, CodexSession, CodexSessionContextUsage, CodexSessionStatus, CodexSessionSummary, StartSessionInput } from "../../src/codex/types.js";
 import type { TranscriptSink } from "../../src/logging/transcript.js";
-import type { ChannelMedia, ChannelMessage, ChannelTarget, SendResult } from "../../src/protocol/channel.js";
+import type { ChannelCapabilities, ChannelMedia, ChannelMessage, ChannelTarget, SendResult } from "../../src/protocol/channel.js";
 import type { ChannelDeliveryPolicy } from "../../src/protocol/delivery-policy.js";
 import fs from "node:fs";
 import os from "node:os";
@@ -46,6 +46,58 @@ class ProgressCodexAdapter extends MockCodexAdapter {
   }
 }
 
+class AutoGoalCodexAdapter extends MockCodexAdapter {
+  private readonly backgroundHandlers = new Set<CodexBackgroundEventHandler>();
+
+  onBackgroundEvent(handler: CodexBackgroundEventHandler): () => void {
+    this.backgroundHandlers.add(handler);
+    return () => {
+      this.backgroundHandlers.delete(handler);
+    };
+  }
+
+  override async setGoal(sessionId: string, objective: string): Promise<CodexGoal> {
+    const goal = await super.setGoal(sessionId, objective);
+    setTimeout(() => {
+      void this.emitGoalTurn(sessionId);
+    }, 0);
+    return goal;
+  }
+
+  protected async emitGoalTurn(sessionId: string): Promise<void> {
+    const turnId = `goal-turn-${Date.now()}`;
+    await this.emitBackground({ type: "turn.started", sessionId, turnId });
+    await this.emitBackground({ type: "assistant.progress", sessionId, turnId, kind: "reasoning", text: "正在推进 Goal。" });
+    await this.emitBackground({ type: "assistant.completed", sessionId, turnId, text: "Goal 自动续跑完成" });
+    await this.emitBackground({ type: "turn.completed", sessionId, turnId });
+  }
+
+  protected async emitBackground(event: CodexEvent): Promise<void> {
+    for (const handler of [...this.backgroundHandlers]) {
+      await handler(event);
+    }
+  }
+}
+
+class BlockingGoalCodexAdapter extends AutoGoalCodexAdapter {
+  private releaseBackgroundTurn: (() => void) | undefined;
+
+  release(): void {
+    this.releaseBackgroundTurn?.();
+  }
+
+  protected override async emitGoalTurn(sessionId: string): Promise<void> {
+    const turnId = `goal-blocking-turn-${Date.now()}`;
+    await this.emitBackground({ type: "turn.started", sessionId, turnId });
+    await this.emitBackground({ type: "assistant.progress", sessionId, turnId, kind: "reasoning", text: "Goal 仍在执行。" });
+    await new Promise<void>((resolve) => {
+      this.releaseBackgroundTurn = resolve;
+    });
+    await this.emitBackground({ type: "assistant.completed", sessionId, turnId, text: "Goal 后台任务完成" });
+    await this.emitBackground({ type: "turn.completed", sessionId, turnId });
+  }
+}
+
 class FailedTurnCodexAdapter extends MockCodexAdapter {
   override async *run(sessionId: string, _prompt: string): AsyncIterable<CodexEvent> {
     const turnId = `failed-turn-${Date.now()}`;
@@ -62,6 +114,16 @@ class WeixinIdOnlyChannelAdapter extends MockChannelAdapter {
 class WeixinLikeChannelAdapter extends MockChannelAdapter {
   override readonly id = "weixin";
   override readonly label = "Weixin-like Channel";
+
+  override getCapabilities(): ChannelCapabilities {
+    return {
+      ...super.getCapabilities(),
+      typing: true,
+      media: true,
+      group: false,
+      thread: false,
+    };
+  }
 
   override getDeliveryPolicy(): ChannelDeliveryPolicy {
     return {
@@ -564,6 +626,9 @@ test("Bridge manages experimental goal commands for the current session", async 
   assert.ok(channel.sentMessages.some((message) => message.text.includes("已设置 Goal")));
   const status = channel.sentMessages.find((message) => message.text.includes("**Codex 状态**"))?.text ?? "";
   assert.ok(status.includes("Goal: `active` 完成微信 Goal 适配并保持测试通过"));
+  assert.ok(status.includes("Goal tokens: `0`"));
+  assert.ok(status.includes("Goal time: `0s`"));
+  assert.match(status, /Goal updated: `20\d\d-/);
   assert.ok(channel.sentMessages.some((message) => message.text.includes("已暂停 Goal") && message.text.includes("Status: `paused`")));
   assert.ok(channel.sentMessages.some((message) => message.text.includes("已恢复 Goal") && message.text.includes("Status: `active`")));
   assert.ok(channel.sentMessages.some((message) => message.text.includes("已清除 Goal")));
@@ -857,6 +922,49 @@ test("Bridge logs suppressed weixin progress to local transcript without sending
   assert.equal(transcript.outboundEvents.some((event) => event.text.startsWith("Codex 进度:")), false);
   assert.ok(transcript.localProgressEvents.some((event) => event.text.includes("我先列一个简短计划。")));
   assert.ok(transcript.localProgressEvents.some((event) => event.text.includes("正在执行命令: npm test")));
+});
+
+test("Bridge routes background goal turn final to weixin and logs progress locally", async () => {
+  const channel = new WeixinLikeChannelAdapter();
+  const codex = new AutoGoalCodexAdapter();
+  const transcript = new CapturingTranscriptSink();
+  const bridge = new Bridge({ channel, codex, cwd: process.cwd(), transcript });
+
+  await bridge.start();
+  await channel.emitText("/goal 完成后台 Goal");
+  await waitFor(() => channel.sentMessages.some((message) => message.text === "Goal 自动续跑完成"));
+  await bridge.waitForIdle();
+  await bridge.stop();
+
+  const channelTexts = channel.sentMessages.map((message) => message.text);
+  assert.ok(channelTexts.some((text) => text.startsWith("已设置 Goal。")));
+  assert.ok(channelTexts.includes("Goal 自动续跑完成"));
+  assert.equal(channelTexts.some((text) => text.startsWith("Codex 进度:")), false);
+  assert.ok(transcript.localProgressEvents.some((event) => event.text.includes("正在推进 Goal。")));
+  assert.ok(transcript.outboundEvents.some((event) => event.text === "Goal 自动续跑完成"));
+});
+
+test("Bridge queues route messages while background goal turn is running", async () => {
+  const channel = new WeixinLikeChannelAdapter();
+  const codex = new BlockingGoalCodexAdapter();
+  const bridge = new Bridge({ channel, codex, cwd: process.cwd() });
+
+  await bridge.start();
+  await channel.emitText("/goal 执行较长 Goal");
+  await waitFor(() => channel.sentTyping.some((event) => event.typing));
+  await channel.emitText("后续普通消息");
+
+  assert.ok(channel.sentMessages.some((message) => message.text.includes("已加入队列，前面还有 1 条消息。")));
+  assert.equal(codex.runs.length, 0);
+
+  codex.release();
+  await bridge.waitForIdle();
+  await bridge.stop();
+
+  assert.equal(codex.runs.length, 1);
+  assert.equal(codex.runs[0]?.prompt, "后续普通消息");
+  assert.ok(channel.sentMessages.some((message) => message.text === "Goal 后台任务完成"));
+  assert.ok(channel.sentMessages.some((message) => message.text.includes("Mock Codex 回复: 后续普通消息")));
 });
 
 test("Bridge uses delivery policy instead of channel id for progress suppression", async () => {
