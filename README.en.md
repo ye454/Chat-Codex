@@ -26,6 +26,7 @@ Current boundaries:
 - Weixin is currently treated as verified direct-chat only: `direct=true, group=false, thread=false`.
 - The multi-channel CLI wizard, channel configuration UI, and persistent local runtime state are still design-stage.
 - Lark/Feishu is planned as the next real adapter, targeting direct chats, group chats, and threads. Other real channel adapters are not currently planned.
+- macOS is the fully developed and verified platform today. Windows is expected to work in principle, but please verify it yourself before using it in a formal workflow.
 
 ## Architecture
 
@@ -62,6 +63,7 @@ Requirements:
 - Node.js >= 22
 - npm
 - A working local Codex CLI
+- macOS is fully verified. On Windows, verify `npm test`, Weixin login, `weixin codex`, file paths, and Ctrl+C shutdown first.
 
 Install and test:
 
