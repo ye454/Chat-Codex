@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Box, useApp, useInput } from "ink";
 import type { CodexRunPolicy } from "../../codex/codex-cli.js";
 import type { FeishuCredentials } from "../../channels/feishu/feishu-types.js";
@@ -38,6 +38,7 @@ export function ChatCodexTui({ actions, onDone }: ChatCodexTuiProps): React.JSX.
   const [flash, setFlash] = useState<Flash>({ kind: "info", message: "按 ? 查看快捷键。" });
   const [confirm, setConfirm] = useState<{ message: string; yes: () => void | Promise<void> }>();
   const [manualValue, setManualValue] = useState("");
+  const weixinLoginRequest = useRef(0);
 
   const refresh = async (message?: string): Promise<void> => {
     setLoading(true);
@@ -111,6 +112,25 @@ export function ChatCodexTui({ actions, onDone }: ChatCodexTuiProps): React.JSX.
     setFlash({ kind: "error", message: validation.message });
   };
 
+  const openAddWeixinLogin = async (): Promise<void> => {
+    const requestId = weixinLoginRequest.current + 1;
+    weixinLoginRequest.current = requestId;
+    setScreen({ name: "addWeixin" });
+    setLoading(true);
+    try {
+      const login = await actions.startWeixinLogin();
+      if (weixinLoginRequest.current !== requestId) return;
+      setScreen({ name: "addWeixin", login });
+      setFlash({ kind: "info", message: login.started.message });
+    } catch (error) {
+      if (weixinLoginRequest.current === requestId) {
+        setFlash({ kind: "error", message: error instanceof Error ? error.message : String(error) });
+      }
+    } finally {
+      if (weixinLoginRequest.current === requestId) setLoading(false);
+    }
+  };
+
   const back = (): void => {
     if (confirm) {
       setConfirm(undefined);
@@ -121,8 +141,10 @@ export function ChatCodexTui({ actions, onDone }: ChatCodexTuiProps): React.JSX.
       return;
     }
     if (screen.name === "addWeixin") {
+      weixinLoginRequest.current += 1;
       const result = actions.cancelWeixinLogin();
       setFlash({ kind: "info", message: result.message });
+      setLoading(false);
       setScreen({ name: "channels" });
       return;
     }
@@ -202,7 +224,7 @@ export function ChatCodexTui({ actions, onDone }: ChatCodexTuiProps): React.JSX.
       return;
     }
     if (input === "w" || (noChannels && actionIndex === 0 && actionRequested)) {
-      setScreen({ name: "addWeixin" });
+      void openAddWeixinLogin();
       return;
     }
     if (input === "f" || (noChannels && actionIndex === 1 && actionRequested)) {
@@ -231,7 +253,7 @@ export function ChatCodexTui({ actions, onDone }: ChatCodexTuiProps): React.JSX.
   const handleChannelsInput = async (input: string, enter: boolean): Promise<void> => {
     const emptyAction = numericPick(input, 2) ?? selected;
     if (input === "w" || (channels.length === 0 && emptyAction === 0 && (enter || input === "1"))) {
-      setScreen({ name: "addWeixin" });
+      void openAddWeixinLogin();
       return;
     }
     if (input === "f" || (channels.length === 0 && emptyAction === 1 && (enter || input === "2"))) {
@@ -279,18 +301,9 @@ export function ChatCodexTui({ actions, onDone }: ChatCodexTuiProps): React.JSX.
   };
 
   const handleAddWeixinInput = async (enter: boolean): Promise<void> => {
-    if (!enter || !screenIs("addWeixin", screen)) return;
+    if (!enter || !screenIs("addWeixin", screen) || loading) return;
     if (!screen.login) {
-      setLoading(true);
-      try {
-        const login = await actions.startWeixinLogin();
-        setScreen({ name: "addWeixin", login });
-        setFlash({ kind: "info", message: login.started.message });
-      } catch (error) {
-        setFlash({ kind: "error", message: error instanceof Error ? error.message : String(error) });
-      } finally {
-        setLoading(false);
-      }
+      await openAddWeixinLogin();
       return;
     }
     setLoading(true);

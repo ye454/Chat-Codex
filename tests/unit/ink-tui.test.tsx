@@ -84,6 +84,8 @@ test("Ink TUI first run guides user to add channels with Enter and number shortc
   view.stdin.write("\r");
   await waitForInk();
   assert.match(view.lastFrame() ?? "", /添加微信账号/);
+  assert.match(view.lastFrame() ?? "", /请使用微信扫码/);
+  assert.match(view.lastFrame() ?? "", /QR-CODE/);
 
   view.stdin.write("\u001B");
   await waitForInk();
@@ -135,6 +137,16 @@ function mockActions(dashboard: LauncherDashboard): LauncherActions {
     getStartup: () => dashboard.startup,
     getPlan: () => ({ unboundRoutePolicy: "auto_new" }),
     getBinding: (routeKey: string) => dashboard.bindings.find((binding) => binding.route.routeKey === routeKey),
+    startWeixinLogin: async () => ({
+      started: {
+        state: "login_required",
+        message: "微信扫码登录已发起。",
+        sessionKey: "login-session",
+      },
+      qrCode: "QR-CODE",
+      fallbackLink: "https://login.example/qr",
+    }),
+    checkWeixinLogin: async () => ({ state: "pending", message: "还没有检测到扫码确认。" }),
     cancelWeixinLogin: () => ({ state: "cancelled", message: "已返回管理渠道，未添加微信账号。" }),
     listSessionChoices: () => ({ selectable: [], unavailable: [] }),
     listWeixinPrimaryChoices: () => ({ selectable: [], unavailable: [] }),

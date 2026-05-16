@@ -122,9 +122,10 @@ export function ChannelDetailView({ channel, selected }: { channel?: LauncherDas
 }
 
 export function AddWeixinView({ screen, loading }: { screen: Extract<Screen, { name: "addWeixin" }>; loading: boolean }): React.JSX.Element {
+  const subtitle = screen.login ? "Enter 检查登录结果  Esc 返回" : loading ? "正在获取二维码  Esc 返回" : "Enter 重试  Esc 返回";
   return (
-    <Frame title="添加微信账号" subtitle={screen.login ? "Enter 检查登录结果  Esc 返回" : "Enter 发起扫码登录  Esc 返回"}>
-      {!screen.login ? <Muted text={loading ? "正在发起扫码登录..." : "按 Enter 获取微信登录二维码。"} /> : (
+    <Frame title="添加微信账号" subtitle={subtitle}>
+      {!screen.login ? <Muted text={loading ? "正在发起扫码登录..." : "二维码未显示。按 Enter 重试，或按 Esc 返回。"} /> : (
         <>
           <Text>请使用微信扫码，并在手机上确认。</Text>
           <Box marginY={1} flexDirection="column">
