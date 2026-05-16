@@ -288,6 +288,23 @@ export class AppServerCodexAdapter implements CodexAdapter {
     }
   }
 
+  async steer(sessionId: string, prompt: string): Promise<void> {
+    const stored = this.sessions.get(sessionId);
+    if (!stored) throw new Error(`app-server session not found locally: ${sessionId}`);
+    await this.ensureStarted();
+    const turnId = stored.currentTurnId;
+    if (!turnId) throw new Error("no active turn to steer");
+    const response = await this.request<Record<string, unknown>>("turn/steer", {
+      threadId: sessionId,
+      input: [{ type: "text", text: prompt, text_elements: [] }],
+      expectedTurnId: turnId,
+    });
+    const acceptedTurnId = stringValue(response.turnId ?? response.turn_id) ?? stringValue(objectValue(response.turn).id);
+    if (acceptedTurnId && acceptedTurnId !== turnId) {
+      stored.currentTurnId = acceptedTurnId;
+    }
+  }
+
   async cancel(sessionId: string): Promise<void> {
     const stored = this.sessions.get(sessionId);
     const turnId = stored?.currentTurnId;

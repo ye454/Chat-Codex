@@ -116,7 +116,7 @@ Terminal / Weixin / future channels
 - 真实 Codex 模式支持启动时选择历史 Codex 会话或创建新会话。
 - 选择新会话时会展示默认工作目录，支持通过交互输入或 `--cwd` / `--workdir` 指定工作目录；目录不存在时自动创建。
 - 选择历史会话时不创建新工作目录，而是从 `$CODEX_HOME/state_5.sqlite`、`$CODEX_HOME/session_index.jsonl` 和 `$CODEX_HOME/sessions/**/*.jsonl` 读取标题、首条用户消息、session 元数据和原 `cwd`，再交给当前 Codex adapter 恢复。
-- Bridge 已按 routeKey 建立普通 prompt 串行队列；同一微信上下文中 Codex 正在运行时，新普通消息会排队，命令消息仍立即处理。
+- Bridge 已按 routeKey 建立普通 prompt 串行队列；同一微信上下文中 Codex 正在运行时，新普通文本后续应优先通过 mid-turn steer 投递到当前 turn，steer 不可用时回退排队，命令消息仍立即处理。
 - 真实 Codex 模式支持启动时先选择会话、再选择权限模式：默认 app-server adapter 的 `approval` 使用 `workspace-write` sandbox、`approvalPolicy=on-request` 和 `approvalsReviewer=user`，可把审批推送到微信，并保留网络访问能力以对齐本机 Codex CLI 的 `workspace-write` 行为；`full` 使用完全权限并要求危险确认。`codex exec` adapter 只作为非交互回退。
 
 ## 3.0 通用渠道协议
@@ -392,7 +392,7 @@ busy route 下允许的命令：
 - 只读命令：`/help`、`/status`、`/sessions`、`/whoami`、`/debug`、`/permission`、`/model`、`/goal`。
 - 运行控制命令：`/stop`、`/OK`、`/P`、`/NO`。
 - 投递视图命令：`/progress brief|detailed|silent`，因为它只影响当前 route 的进度投递模式，不改变 Codex 执行语义。
-- 普通文本继续按当前 route 队列策略处理；入队时必须快照本轮 `sendFile` 和 collaboration mode。
+- 普通文本不是命令；当当前 active turn 支持 mid-turn steer 时，优先投递到当前 turn。steer 不可用、失败或当前 turn 不可 steer 时，继续按当前 route 队列策略处理；入队时必须快照本轮 `sendFile` 和 collaboration mode。
 
 busy route 下必须拒绝的命令：
 
@@ -405,11 +405,70 @@ busy route 下必须拒绝的命令：
 拒绝提示应使用当前 route 语义，例如：
 
 ```text
-当前对话的 Codex 正在执行，不能修改会话、权限、模型或 Goal。
+当前对话的 Codex 正在执行，不能修改会话、权限、模型、协作模式或 Goal。
 请等待完成，或发送 /stop 后再修改。
 ```
 
 其他 route 不受影响。一个微信私聊或飞书私聊 busy 时，另一个 route 仍可修改自己的 session、权限、模型和 Goal。
+
+#### 3.3.2 Busy Route 普通文本 mid-turn steer
+
+Codex CLI/TUI 在 turn 运行中允许用户继续提交普通文本，这类输入不会开启新 turn，而是通过 app-server `turn/steer` 注入当前 active regular turn。Codex 会在下一次工具调用、工具结果或模型继续推理边界读取这些补充输入。Bridge 应保留这个体验，但必须保持 route/session 作用域清晰。
+
+适用范围：
+
+- 仅普通文本适用。slash command、会话选择编号、`/sendfile` 任务和其它会改变执行语义的输入不走 steer。
+- 仅当前 `routeKey` 已绑定 active session，且 `CodexAdapter.steer(sessionId, text)` 可用时适用。
+- 仅 active regular turn 适用。review、compact、无 active turn、turn id 竞态或 adapter 不支持 steer 时，必须回退到普通 route queue。
+- steer 不接受权限、模型、sandbox、collaboration mode、Goal 等执行上下文覆盖，因此这些命令仍由 busy guard 阻断。
+
+Bridge Core 负责统一行为，渠道 adapter 不直接调用 Codex steer：
+
+1. `handleMessage()` 收到非命令普通文本。
+2. 如果当前 route 不 busy，按现有 `enqueuePrompt()` 启动新 turn。
+3. 如果当前 route busy，先尝试进入 route 级 steer buffer。
+4. steer buffer 按 route 保序 drain；每次只允许一个 `steer()` 请求在途。
+5. 投递成功后通过当前 ChannelTarget 发送确认，默认文案：
+
+```text
+已投递到当前 Codex 任务，会在下一次工具调用或模型继续推理时生效。
+```
+
+6. 投递失败、adapter 不支持或 active turn 已结束时，未投递文本按原始顺序转入普通 prompt 队列，并使用现有排队提示。
+
+连续消息策略：
+
+- 不能把用户连续发送的每条消息都立即并发调用 `turn/steer`。Bridge 必须对每个 route 维护独立 `steerQueue` 和 drain 状态，确保同一 route 内保序、串行投递。
+- 可以设置短 debounce 窗口，例如 800-1500ms，把用户连续发送的多条普通文本合并成一个 steer payload。合并格式应保留消息边界，例如：
+
+```text
+用户补充消息 1:
+...
+
+用户补充消息 2:
+...
+```
+
+- 需要设置批次上限，例如最多合并 5 条或 4000 字符；超过上限时继续拆成后续批次，仍按顺序慢慢投递。
+- 确认消息应按批次聚合。单条成功回复“已投递到当前 Codex 任务...”；多条合并成功回复“已投递 3 条补充消息到当前 Codex 任务...”。这样微信、飞书等渠道不会因为连续输入产生大量确认消息。
+- 如果 steer buffer 中还有等待投递的消息，`/status` 应展示“待投递补充消息”数量；已回退到普通 route queue 的消息仍展示在“排队消息”。
+- `/stop` 应取消当前 route 未投递的 steer buffer，并按现有逻辑取消 active turn、清理普通 prompt 队列。已成功 steer 的文本已经进入 Codex 当前 turn，不能单独撤回。
+
+失败与回退：
+
+- `no active turn to steer`：说明 active turn 已结束或本地状态滞后，当前批次和后续 steer buffer 回退普通队列。
+- `expected active turn id ... but found ...`：如果 adapter 能拿到新 active turn id，可重试一次；仍失败则回退普通队列。
+- `ActiveTurnNotSteerable`：review/compact 等非 regular turn 不支持 steer，回退普通队列。
+- 其它临时 app-server 错误：当前批次回退普通队列，并记录 warning；不能丢消息。
+
+测试要求：
+
+- app-server adapter 能把 `CodexAdapter.steer(sessionId, text)` 映射到 `turn/steer`，并携带当前 active turn id。
+- Bridge 在 route busy 时普通文本优先 steer，成功后不进入普通 prompt 队列，并向当前渠道发送投递确认。
+- 连续普通文本按 route 保序，短时间多条可合并成批次，确认消息按批次聚合。
+- steer 失败时回退普通 route queue，顺序不能乱。
+- route A busy 且收到普通文本 steer，不影响 route B 的普通 turn、命令、权限和模型操作。
+- busy guard 仍阻断语义修改命令，确保 `/plan`、`/model`、`/permission`、`/goal clear` 不会误走 steer。
 
 ### 3.4 Codex Adapter
 
@@ -772,7 +831,7 @@ Codex Adapter 已从 CLI JSONL 验证链路升级为默认 app-server 接入；C
 - 最适合实现接近完整 Codex 客户端的能力。
 - `/status`、`/stop`、运行中追加输入、审批流都会更完整。
 
-当前初版已覆盖 stdio JSON-RPC、thread start/resume、turn start/interrupt 和审批请求闭环；`turn/steer`、更完整的 status changed 订阅、重连和背压属于后续硬化项。
+当前初版已覆盖 stdio JSON-RPC、thread start/resume、turn start/interrupt 和审批请求闭环；`turn/steer` 应作为下一步补齐普通文本 mid-turn 投递能力，更完整的 status changed 订阅、重连和背压属于后续硬化项。
 
 ### 第四阶段：长期运行和硬化
 

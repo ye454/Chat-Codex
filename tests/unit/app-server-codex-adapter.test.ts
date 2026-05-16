@@ -255,12 +255,26 @@ rl.on("line", (line) => {
       ignoreInterrupt = true;
       return;
     }
+    if (prompt.includes("hang until steer")) {
+      return;
+    }
     send({ method: "item/commandExecution/requestApproval", id: "approval-1", params: { threadId, turnId, itemId: "cmd-1", startedAtMs: Date.now(), command: "touch approved.txt", cwd: message.params.cwd, reason: "fake approval" } });
     return;
   }
   if (message.id === "approval-1") {
     send({ method: "item/completed", params: { threadId, turnId, completedAtMs: Date.now(), item: { type: "agentMessage", id: "msg-1", text: "decision " + message.result.decision, phase: null, memoryCitation: null } } });
     send({ method: "turn/completed", params: { threadId, turn: { id: turnId, items: [], itemsView: "complete", status: "completed", error: null, startedAt: 1778716800, completedAt: 1778716801, durationMs: 1000 } } });
+    return;
+  }
+  if (message.method === "turn/steer") {
+    if (message.params.expectedTurnId !== turnId) {
+      send({ id: message.id, error: { code: -32602, message: "turn mismatch" } });
+      return;
+    }
+    const text = message.params.input?.[0]?.text || "";
+    send({ id: message.id, result: { turnId } });
+    send({ method: "item/completed", params: { threadId: message.params.threadId, turnId, completedAtMs: Date.now(), item: { type: "agentMessage", id: "steer-msg-1", text: "steered " + text, phase: null, memoryCitation: null } } });
+    send({ method: "turn/completed", params: { threadId: message.params.threadId, turn: { id: turnId, items: [], itemsView: "complete", status: "completed", error: null, startedAt: 1778716800, completedAt: 1778716801, durationMs: 1000 } } });
     return;
   }
   if (message.method === "turn/interrupt") {
@@ -344,6 +358,42 @@ test("AppServerCodexAdapter cancel does not wait for app-server interrupt respon
   assert.ok(events.some((event) => event.type === "turn.started"));
   assert.ok(events.some((event) => event.type === "turn.completed"));
   assert.equal(events.some((event) => event.type === "turn.failed"), false);
+});
+
+test("AppServerCodexAdapter sends turn steer to the active app-server turn", async () => {
+  const root = tempDir();
+  const adapter = new AppServerCodexAdapter({ codexBin: fakeCodexBin(root) });
+  const session = await adapter.startSession({
+    routeKey: "route-1",
+    cwd: root,
+    title: "test",
+  });
+  const events: CodexEvent[] = [];
+
+  for await (const event of adapter.run(session.id, "hang until steer")) {
+    events.push(event);
+    if (event.type === "turn.started") {
+      await adapter.steer(session.id, "补充输入");
+    }
+  }
+  await adapter.stop();
+
+  assert.ok(events.some((event) => event.type === "turn.started"));
+  assert.ok(events.some((event) => event.type === "assistant.completed" && event.text === "steered 补充输入"));
+  assert.ok(events.some((event) => event.type === "turn.completed"));
+});
+
+test("AppServerCodexAdapter rejects steer without an active turn", async () => {
+  const root = tempDir();
+  const adapter = new AppServerCodexAdapter({ codexBin: fakeCodexBin(root) });
+  const session = await adapter.startSession({
+    routeKey: "route-1",
+    cwd: root,
+    title: "test",
+  });
+
+  await assert.rejects(() => adapter.steer(session.id, "补充输入"), /no active turn to steer/);
+  await adapter.stop();
 });
 
 test("AppServerCodexAdapter emits reasoning and plan progress from app-server notifications", async () => {

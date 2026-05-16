@@ -36,6 +36,9 @@ export interface BridgeOptions {
   unboundRoutePolicy?: UnboundRoutePolicy;
   progressMode?: ProgressDeliveryMode;
   approvalSendRetryDelayMs?: number;
+  steerDebounceMs?: number;
+  steerBatchMaxMessages?: number;
+  steerBatchMaxChars?: number;
 }
 
 interface QueuedPrompt {
@@ -44,6 +47,18 @@ interface QueuedPrompt {
   prompt: string;
   collaborationMode?: CodexCollaborationMode;
   sendFile: boolean;
+}
+
+interface QueuedSteer {
+  message: ChannelMessage;
+  target: ChannelTarget;
+  text: string;
+}
+
+interface RouteSteerState {
+  queue: QueuedSteer[];
+  draining: boolean;
+  timer?: ReturnType<typeof setTimeout>;
 }
 
 interface BackgroundTurnState {
@@ -82,6 +97,9 @@ export type UnboundRoutePolicy = "auto_new" | "ask";
 const PROGRESS_SEND_FAILURE_COOLDOWN_MS = 60_000;
 const APPROVAL_SEND_RETRY_DELAY_MS = 10_000;
 const SEND_FILE_MAX_FILES = 3;
+const STEER_DEBOUNCE_MS = 1000;
+const STEER_BATCH_MAX_MESSAGES = 5;
+const STEER_BATCH_MAX_CHARS = 4000;
 const ROUTE_BUSY_MUTATION_REJECT_TEXT = [
   "当前对话的 Codex 正在执行，不能修改会话、权限、模型、协作模式或 Goal。",
   "请等待完成，或发送 /stop 后再修改。",
@@ -99,11 +117,15 @@ export class Bridge {
   private readonly unboundRoutePolicy: UnboundRoutePolicy;
   private readonly defaultProgressMode: ProgressDeliveryMode;
   private readonly approvalSendRetryDelayMs: number;
+  private readonly steerDebounceMs: number;
+  private readonly steerBatchMaxMessages: number;
+  private readonly steerBatchMaxChars: number;
   private readonly routeProgressModes = new Map<string, ProgressDeliveryMode>();
   private readonly routeCollaborationModes = new Map<string, CodexCollaborationMode>();
   private readonly routeMessages = new Map<string, ChannelMessage>();
   private readonly routeTargets = new Map<string, ChannelTarget>();
   private readonly routeQueues = new Map<string, QueuedPrompt[]>();
+  private readonly routeSteerStates = new Map<string, RouteSteerState>();
   private readonly routeWorkers = new Map<string, Promise<void>>();
   private readonly routeSessionSelections = new Map<string, SessionSelectionState>();
   private readonly backgroundTurns = new Map<string, BackgroundTurnState>();
@@ -133,6 +155,9 @@ export class Bridge {
     this.unboundRoutePolicy = options.unboundRoutePolicy ?? "auto_new";
     this.defaultProgressMode = options.progressMode ?? "brief";
     this.approvalSendRetryDelayMs = options.approvalSendRetryDelayMs ?? APPROVAL_SEND_RETRY_DELAY_MS;
+    this.steerDebounceMs = Math.max(0, options.steerDebounceMs ?? STEER_DEBOUNCE_MS);
+    this.steerBatchMaxMessages = Math.max(1, Math.floor(options.steerBatchMaxMessages ?? STEER_BATCH_MAX_MESSAGES));
+    this.steerBatchMaxChars = Math.max(1, Math.floor(options.steerBatchMaxChars ?? STEER_BATCH_MAX_CHARS));
   }
 
   async start(): Promise<void> {
@@ -143,6 +168,7 @@ export class Bridge {
   }
 
   async stop(): Promise<void> {
+    this.clearAllRouteSteerStates();
     this.stopBackgroundEvents?.();
     this.stopBackgroundEvents = undefined;
     await this.channels.stop();
@@ -169,15 +195,16 @@ export class Bridge {
       await this.handleSessionSelectionReply(message, target, text, sessionSelection);
       return;
     }
+    if (await this.tryEnqueueSteer(message, target, text)) return;
     await this.enqueuePrompt(message, target, text);
   }
 
   async waitForIdle(): Promise<void> {
-    while (this.routeWorkers.size > 0 || this.backgroundTurns.size > 0) {
+    while (this.routeWorkers.size > 0 || this.backgroundTurns.size > 0 || this.hasPendingSteerWork()) {
       if (this.routeWorkers.size > 0) {
         await Promise.all([...this.routeWorkers.values()]);
       }
-      if (this.backgroundTurns.size > 0) {
+      if (this.backgroundTurns.size > 0 || this.hasPendingSteerWork()) {
         await sleep(10);
       }
     }
@@ -390,9 +417,151 @@ export class Bridge {
     return this.routeWorkers.has(routeKey) || this.hasBackgroundTurnForRoute(routeKey);
   }
 
+  private async tryEnqueueSteer(
+    message: ChannelMessage,
+    target: ChannelTarget,
+    text: string,
+  ): Promise<boolean> {
+    if (!(await this.canAttemptRouteSteer(message.routeKey))) return false;
+    const state = this.routeSteerStates.get(message.routeKey) ?? { queue: [], draining: false };
+    state.queue.push({ message, target, text });
+    this.routeSteerStates.set(message.routeKey, state);
+    this.scheduleRouteSteerDrain(message.routeKey, state);
+    return true;
+  }
+
+  private async canAttemptRouteSteer(routeKey: string): Promise<boolean> {
+    if (!this.codex.steer) return false;
+    if (!this.isRouteBusy(routeKey)) return false;
+    const binding = this.state.getBinding(routeKey);
+    if (!binding) return false;
+    try {
+      const status = await this.codex.getStatus(binding.sessionId);
+      return isSteerableStatus(status.type);
+    } catch (error) {
+      this.logger.warn("failed to read route status before steer", {
+        routeKey,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return false;
+    }
+  }
+
+  private scheduleRouteSteerDrain(routeKey: string, state: RouteSteerState): void {
+    if (state.draining) return;
+    if (state.timer) clearTimeout(state.timer);
+    state.timer = setTimeout(() => {
+      state.timer = undefined;
+      void this.drainRouteSteerQueue(routeKey);
+    }, this.steerDebounceMs);
+    state.timer.unref?.();
+  }
+
+  private async drainRouteSteerQueue(routeKey: string): Promise<void> {
+    const state = this.routeSteerStates.get(routeKey);
+    if (!state || state.draining) return;
+    if (state.timer) {
+      clearTimeout(state.timer);
+      state.timer = undefined;
+    }
+    state.draining = true;
+    try {
+      while (state.queue.length > 0) {
+        const batch = this.takeSteerBatch(state.queue);
+        try {
+          await this.sendSteerBatch(routeKey, batch);
+        } catch (error) {
+          this.logger.warn("route steer failed; falling back to prompt queue", {
+            routeKey,
+            count: batch.length + state.queue.length,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          const fallbackItems = [...batch, ...state.queue.splice(0)];
+          await this.enqueuePromptFallback(fallbackItems);
+          break;
+        }
+      }
+    } finally {
+      state.draining = false;
+      if (state.queue.length > 0) {
+        this.scheduleRouteSteerDrain(routeKey, state);
+      } else if (!state.timer) {
+        this.routeSteerStates.delete(routeKey);
+      }
+    }
+  }
+
+  private takeSteerBatch(queue: QueuedSteer[]): QueuedSteer[] {
+    const batch: QueuedSteer[] = [];
+    let chars = 0;
+    while (queue.length > 0 && batch.length < this.steerBatchMaxMessages) {
+      const item = queue[0];
+      if (!item) break;
+      const nextChars = item.text.length;
+      if (batch.length > 0 && chars + nextChars > this.steerBatchMaxChars) break;
+      queue.shift();
+      batch.push(item);
+      chars += nextChars;
+    }
+    return batch;
+  }
+
+  private async sendSteerBatch(routeKey: string, batch: QueuedSteer[]): Promise<void> {
+    if (batch.length === 0) return;
+    if (!(await this.canAttemptRouteSteer(routeKey))) {
+      throw new Error("route no longer has an active steerable Codex turn");
+    }
+    const binding = this.state.getBinding(routeKey);
+    const steer = this.codex.steer?.bind(this.codex);
+    if (!binding || !steer) {
+      throw new Error("Codex adapter does not support steer for this route");
+    }
+    await steer(binding.sessionId, composeSteerBatchText(batch));
+    await this.sendText(batch[batch.length - 1].target, steerAcceptedText(batch.length));
+  }
+
+  private async enqueuePromptFallback(items: QueuedSteer[]): Promise<void> {
+    for (const item of items) {
+      await this.enqueuePrompt(item.message, item.target, item.text);
+    }
+  }
+
+  private routeSteerPendingCount(routeKey: string): number {
+    return this.routeSteerStates.get(routeKey)?.queue.length ?? 0;
+  }
+
+  private hasPendingSteerWork(): boolean {
+    return [...this.routeSteerStates.keys()].some((routeKey) => this.hasPendingSteerWorkForRoute(routeKey));
+  }
+
+  private hasPendingSteerWorkForRoute(routeKey: string): boolean {
+    const state = this.routeSteerStates.get(routeKey);
+    return Boolean(state && (state.draining || state.timer || state.queue.length > 0));
+  }
+
+  private clearRouteSteerState(routeKey: string): number {
+    const state = this.routeSteerStates.get(routeKey);
+    if (!state) return 0;
+    if (state.timer) {
+      clearTimeout(state.timer);
+      state.timer = undefined;
+    }
+    const cleared = state.queue.length;
+    state.queue.length = 0;
+    if (!state.draining) this.routeSteerStates.delete(routeKey);
+    return cleared;
+  }
+
+  private clearAllRouteSteerStates(): void {
+    for (const routeKey of [...this.routeSteerStates.keys()]) {
+      this.clearRouteSteerState(routeKey);
+    }
+  }
+
   private async isRouteExecutionBusy(routeKey: string): Promise<boolean> {
     if (this.routeWorkers.has(routeKey) || this.hasBackgroundTurnForRoute(routeKey)) return true;
     if ((this.routeQueues.get(routeKey)?.length ?? 0) > 0) return true;
+    if (this.hasPendingSteerWorkForRoute(routeKey)) return true;
     if (this.approvals.list(routeKey).length > 0) return true;
     const binding = this.state.getBinding(routeKey);
     if (!binding) return false;
@@ -883,8 +1052,12 @@ export class Bridge {
     }
     const status = await this.codex.getStatus(binding.sessionId);
     const workerRunning = this.routeWorkers.has(message.routeKey);
+    const clearedSteers = this.clearRouteSteerState(message.routeKey);
     if (!workerRunning && status.type !== "running" && status.type !== "waiting_approval") {
-      await this.sendText(target, "当前没有正在运行的 Codex 任务。");
+      await this.sendText(target, [
+        "当前没有正在运行的 Codex 任务。",
+        clearedSteers > 0 ? `已清空 ${clearedSteers} 条待投递补充消息。` : undefined,
+      ].filter(Boolean).join("\n"));
       return;
     }
     if (!this.codex.cancel) {
@@ -901,6 +1074,7 @@ export class Bridge {
     await this.sendTyping(target, false);
     await this.sendText(target, [
       "已请求停止当前 Codex 任务。",
+      clearedSteers > 0 ? `已清空 ${clearedSteers} 条待投递补充消息。` : undefined,
       clearedQueued > 0 ? `已清空 ${clearedQueued} 条排队消息。` : undefined,
     ].filter(Boolean).join("\n"));
   }
@@ -1387,6 +1561,7 @@ export class Bridge {
       "**运行**",
       `- 处理状态: ${workerRunning ? "正在处理" : "空闲"}`,
       `- 排队消息: \`${this.routeQueues.get(routeKey)?.length ?? 0}\``,
+      `- 待投递补充消息: \`${this.routeSteerPendingCount(routeKey)}\``,
       `- 协作模式: ${formatCollaborationModeForStatus(this.collaborationModeForRoute(routeKey, binding?.sessionId))}`,
       ...formatGoalStatusLines(goal),
       `- 待审批: \`${approvals.length}\``,
@@ -1632,6 +1807,25 @@ function truncateForChannel(text: string, maxLength = 600): string {
   const normalized = text.trim();
   if (normalized.length <= maxLength) return normalized;
   return `${normalized.slice(0, maxLength)}...`;
+}
+
+function isSteerableStatus(status: CodexSessionStatus["type"]): boolean {
+  return status === "running" || status === "waiting_approval" || status === "waiting_input";
+}
+
+function composeSteerBatchText(batch: QueuedSteer[]): string {
+  if (batch.length === 1) return batch[0].text;
+  return batch.map((item, index) => [
+    `用户补充消息 ${index + 1}:`,
+    item.text,
+  ].join("\n")).join("\n\n");
+}
+
+function steerAcceptedText(count: number): string {
+  if (count === 1) {
+    return "已投递到当前 Codex 任务，会在下一次工具调用或模型继续推理时生效。";
+  }
+  return `已投递 ${count} 条补充消息到当前 Codex 任务，会在下一次工具调用或模型继续推理时生效。`;
 }
 
 function ownerConflictError(sessionId: string, ownerRouteKey: string): Error {

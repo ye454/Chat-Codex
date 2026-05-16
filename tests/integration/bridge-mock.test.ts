@@ -258,6 +258,59 @@ class BlockingModeCodexAdapter extends MockCodexAdapter {
   }
 }
 
+class SteerableBlockingCodexAdapter extends MockCodexAdapter {
+  private releaseFirst?: () => void;
+  private readonly localStatuses = new Map<string, CodexSessionStatus>();
+  readonly prompts: string[] = [];
+  readonly promptRuns: Array<{ sessionId: string; prompt: string }> = [];
+  readonly steers: Array<{ sessionId: string; prompt: string }> = [];
+  failSteer = false;
+  cancelled = false;
+
+  override async *run(sessionId: string, prompt: string): AsyncIterable<CodexEvent> {
+    this.prompts.push(prompt);
+    this.promptRuns.push({ sessionId, prompt });
+    const turnId = `steerable-turn-${this.prompts.length}`;
+    this.localStatuses.set(sessionId, { type: "running", turnId, task: prompt });
+    yield { type: "turn.started", sessionId, turnId };
+    if (this.prompts.length === 1) {
+      await new Promise<void>((resolve) => {
+        this.releaseFirst = resolve;
+      });
+    }
+    if (this.cancelled) {
+      this.localStatuses.set(sessionId, { type: "idle" });
+      yield { type: "turn.completed", sessionId, turnId };
+      return;
+    }
+    this.localStatuses.set(sessionId, { type: "idle" });
+    yield { type: "assistant.completed", sessionId, turnId, text: `完成: ${prompt}` };
+    yield { type: "turn.completed", sessionId, turnId };
+  }
+
+  async steer(sessionId: string, prompt: string): Promise<void> {
+    if (this.failSteer) throw new Error("steer rejected");
+    const status = this.localStatuses.get(sessionId);
+    if (!status || status.type !== "running") throw new Error("no active turn");
+    this.steers.push({ sessionId, prompt });
+  }
+
+  override async cancel(sessionId: string): Promise<void> {
+    this.cancelled = true;
+    this.localStatuses.set(sessionId, { type: "idle" });
+    this.release();
+  }
+
+  override async getStatus(sessionId: string): Promise<CodexSessionStatus> {
+    return this.localStatuses.get(sessionId) ?? await super.getStatus(sessionId);
+  }
+
+  release(): void {
+    this.releaseFirst?.();
+    this.releaseFirst = undefined;
+  }
+}
+
 class AdapterApprovalIdCodexAdapter extends MockCodexAdapter {
   override async *run(sessionId: string, _prompt: string): AsyncIterable<CodexEvent> {
     const turnId = "adapter-approval-turn-1";
@@ -747,6 +800,135 @@ test("Bridge rejects collaboration mode changes while a route is busy", async ()
 
   assert.deepEqual(codex.modeRuns, [undefined, undefined, undefined]);
   assert.ok(channel.sentMessages.some((message) => message.text.includes("不能修改会话、权限、模型、协作模式或 Goal")));
+});
+
+test("Bridge steers ordinary text into the active route turn", async () => {
+  const channel = new MockChannelAdapter();
+  const codex = new SteerableBlockingCodexAdapter();
+  const bridge = new Bridge({ channel, codex, cwd: process.cwd(), steerDebounceMs: 1 });
+
+  await bridge.start();
+  await channel.emitText("第一条");
+  await waitFor(() => codex.prompts.length === 1);
+  await channel.emitText("补充信息");
+  await waitFor(() => codex.steers.length === 1);
+
+  codex.release();
+  await bridge.waitForIdle();
+  await bridge.stop();
+
+  assert.deepEqual(codex.prompts, ["第一条"]);
+  assert.equal(codex.steers[0]?.prompt, "补充信息");
+  assert.ok(channel.sentMessages.some((message) => message.text.includes("已投递到当前 Codex 任务")));
+  assert.equal(channel.sentMessages.some((message) => message.text.includes("已加入队列")), false);
+});
+
+test("Bridge batches consecutive route steers in order", async () => {
+  const channel = new MockChannelAdapter();
+  const codex = new SteerableBlockingCodexAdapter();
+  const bridge = new Bridge({ channel, codex, cwd: process.cwd(), steerDebounceMs: 20, steerBatchMaxMessages: 5 });
+
+  await bridge.start();
+  await channel.emitText("第一条");
+  await waitFor(() => codex.prompts.length === 1);
+  await channel.emitText("补充 A");
+  await channel.emitText("补充 B");
+  await channel.emitText("补充 C");
+  await waitFor(() => codex.steers.length === 1);
+
+  codex.release();
+  await bridge.waitForIdle();
+  await bridge.stop();
+
+  assert.match(codex.steers[0]?.prompt ?? "", /用户补充消息 1:\n补充 A/);
+  assert.match(codex.steers[0]?.prompt ?? "", /用户补充消息 2:\n补充 B/);
+  assert.match(codex.steers[0]?.prompt ?? "", /用户补充消息 3:\n补充 C/);
+  assert.ok(channel.sentMessages.some((message) => message.text.includes("已投递 3 条补充消息")));
+});
+
+test("Bridge falls back to the route queue when steer is rejected", async () => {
+  const channel = new MockChannelAdapter();
+  const codex = new SteerableBlockingCodexAdapter();
+  codex.failSteer = true;
+  const bridge = new Bridge({ channel, codex, cwd: process.cwd(), steerDebounceMs: 1 });
+
+  await bridge.start();
+  await channel.emitText("第一条");
+  await waitFor(() => codex.prompts.length === 1);
+  await channel.emitText("补充信息");
+  await waitFor(() => channel.sentMessages.some((message) => message.text.includes("已加入队列")));
+
+  codex.release();
+  await bridge.waitForIdle();
+  await bridge.stop();
+
+  assert.deepEqual(codex.prompts, ["第一条", "补充信息"]);
+  assert.equal(codex.steers.length, 0);
+  assert.ok(channel.sentMessages.some((message) => message.text === "完成: 补充信息"));
+});
+
+test("Bridge keeps commands out of mid-turn steer while a route is busy", async () => {
+  const channel = new MockChannelAdapter();
+  const codex = new SteerableBlockingCodexAdapter();
+  const bridge = new Bridge({ channel, codex, cwd: process.cwd(), steerDebounceMs: 1 });
+
+  await bridge.start();
+  await channel.emitText("第一条");
+  await waitFor(() => codex.prompts.length === 1);
+  await channel.emitText("/plan");
+
+  codex.release();
+  await bridge.waitForIdle();
+  await bridge.stop();
+
+  assert.equal(codex.steers.length, 0);
+  assert.ok(channel.sentMessages.some((message) => message.text.includes("不能修改会话、权限、模型、协作模式或 Goal")));
+});
+
+test("Bridge reports and clears pending route steer messages with /stop", async () => {
+  const channel = new MockChannelAdapter();
+  const codex = new SteerableBlockingCodexAdapter();
+  const bridge = new Bridge({ channel, codex, cwd: process.cwd(), steerDebounceMs: 1000 });
+
+  await bridge.start();
+  await channel.emitText("第一条");
+  await waitFor(() => codex.prompts.length === 1);
+  await channel.emitText("补充信息");
+  await channel.emitText("/status");
+  const statusMessage = channel.sentMessages.at(-1)?.text ?? "";
+  await channel.emitText("/stop");
+  await bridge.waitForIdle();
+  await bridge.stop();
+
+  assert.match(statusMessage, /待投递补充消息: `1`/);
+  assert.equal(codex.steers.length, 0);
+  assert.deepEqual(codex.prompts, ["第一条"]);
+  assert.ok(channel.sentMessages.some((message) => message.text.includes("已清空 1 条待投递补充消息")));
+});
+
+test("Bridge scopes mid-turn steer to the originating route", async () => {
+  const channelA = new MockChannelAdapter({ id: "mock-a" });
+  const channelB = new MockChannelAdapter({ id: "mock-b" });
+  const registry = new ChannelRegistry({ channels: [channelA, channelB] });
+  const codex = new SteerableBlockingCodexAdapter();
+  const bridge = new Bridge({ channels: registry, codex, cwd: process.cwd(), steerDebounceMs: 1 });
+
+  await bridge.start();
+  await channelA.emitText("A 长任务");
+  await waitFor(() => codex.prompts.length === 1);
+  await channelA.emitText("A 补充");
+  await channelB.emitText("B 普通任务");
+  await waitFor(() => codex.steers.length === 1);
+  await waitFor(() => channelB.sentMessages.some((message) => message.text === "完成: B 普通任务"));
+
+  codex.release();
+  await bridge.waitForIdle();
+  await bridge.stop();
+
+  assert.deepEqual(codex.prompts, ["A 长任务", "B 普通任务"]);
+  assert.equal(codex.steers[0]?.prompt, "A 补充");
+  assert.notEqual(codex.steers[0]?.sessionId, codex.promptRuns.find((run) => run.prompt === "B 普通任务")?.sessionId);
+  assert.equal(channelB.sentMessages.some((message) => message.text.includes("已投递到当前 Codex 任务")), false);
 });
 
 test("Bridge rejects semantic mutations while the current route is busy", async () => {
