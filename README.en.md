@@ -1,176 +1,216 @@
-# Codex Chat Bridge
+<h1 align="center">Chat-Codex</h1>
 
-A lightweight middleware for connecting Codex to pluggable chat channels. It lets users drive Codex from chat apps, create or resume sessions, handle approvals, stop turns, inspect status, and receive final replies or files.
+<p align="center">
+A lightweight chat middleware that connects local Codex to Weixin and Feishu.
+</p>
 
-Weixin is the first and currently only real channel adapter. Lark/Feishu is planned as the next real channel adapter and will be adapted later. The project currently only targets Weixin and Lark/Feishu as real channels. Weixin communication behavior is adapted from the `@tencent-weixin/openclaw-weixin` package, but this project does not depend on the OpenClaw CLI, gateway, host runtime, or channel runtime at execution time.
+<p align="center">
+<a href="README.md">简体中文</a> ·
+<a href="docs/README.md">Docs</a> ·
+<a href="docs/development-and-test.zh-CN.md">Development Guide</a> ·
+<a href="https://linux.do/t/topic/2183744">LINUX DO Discussion</a>
+</p>
 
-- Default Simplified Chinese README: [README.md](README.md)
-- Documentation index: [docs/README.md](docs/README.md)
-- Multi-channel design: [docs/multi-channel-design.zh-CN.md](docs/multi-channel-design.zh-CN.md)
-- Agent development guide: [docs/agent-guide.zh-CN.md](docs/agent-guide.zh-CN.md)
+<p align="center">
+<img src="https://img.shields.io/badge/Node.js-22+-339933?logo=nodedotjs&logoColor=white" alt="Node.js">
+<img src="https://img.shields.io/badge/TypeScript-5.9-3178C6?logo=typescript&logoColor=white" alt="TypeScript">
+<img src="https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=111827" alt="React">
+<img src="https://img.shields.io/badge/TUI-Ink-0ea5e9" alt="Ink TUI">
+<img src="https://img.shields.io/badge/Runtime-Codex-111827" alt="Codex">
+<img src="https://img.shields.io/badge/Channel-Weixin-07C160?logo=wechat&logoColor=white" alt="Weixin">
+<img src="https://img.shields.io/badge/Channel-Feishu-2563EB" alt="Feishu">
+<img src="https://img.shields.io/badge/License-MIT-green" alt="License">
+</p>
 
-## Status
+## Table of Contents
 
-Implemented:
+- [Overview](#overview)
+- [Capabilities](#capabilities)
+- [Tech Stack](#tech-stack)
+- [Development Quick Start](#development-quick-start)
+- [Development Commands](#development-commands)
+- [Architecture](#architecture)
+- [Chat Commands](#chat-commands)
+- [File Sending](#file-sending)
+- [Documentation](#documentation)
+- [License](#license)
 
-- Generic `ChannelAdapter` protocol.
-- Mock, Terminal, and Weixin channel adapters.
-- Bridge Core with command routing, approval management, session binding, queues, and transcript logging.
-- Default `codex app-server` adapter with thread creation/resume, turn start/interrupt, token usage updates, and interactive approvals.
-- `codex exec --json` fallback adapter.
-- Weixin QR login, terminal QR rendering, fallback login link, local account state, text/media send, and `getupdates` polling.
-- Core multi-channel kernel: `ChannelRegistry`, `SessionBindings`, and `TurnScheduler`.
+## Overview
 
-Current boundaries:
+Chat-Codex is a lightweight middleware for connecting Weixin and Feishu private chats to a local Codex runtime. It normalizes messages from different chat platforms, binds each chat route to an independent Codex session, and sends Codex replies, approvals, progress, and files back to the correct conversation.
 
-- Weixin is currently treated as verified direct-chat only: `direct=true, group=false, thread=false`.
-- The multi-channel CLI wizard, channel configuration UI, and persistent local runtime state are still design-stage.
-- Lark/Feishu is planned as the next real adapter, targeting direct chats, group chats, and threads. Other real channel adapters are not currently planned.
-- macOS is the fully developed and verified platform today. Windows is expected to work in principle, but please verify it yourself before using it in a formal workflow.
+The core goal is to make Codex usable from chat windows while keeping routes, sessions, approvals, and files isolated across channels and users.
 
-## Architecture
+## Capabilities
 
-```text
-Codex Adapter
-      ^
-      |
-Bridge Core
-      |
-      +--> Channel Registry
-              +--> WeixinAdapter
-              +--> TerminalChannelAdapter
-              +--> MockChannelAdapter
-              +--> future channel adapters
-```
+- Unified `chat-codex` entry with a TUI for channel management, chat bindings, permissions, and startup.
+- Weixin account and Feishu bot integration.
+- Independent Codex session binding per chat route.
+- One Codex session can only belong to one route, preventing context, approval, and file delivery mix-ups.
+- Codex app-server as the default Codex integration, with `codex exec --json` as a fallback adapter.
+- Chat-side commands for creating/resuming sessions, inspecting status, stopping turns, handling approvals, switching permissions, switching models, and sending files.
+- Local persistence for channel instances, chat bindings, session owners, session policies, and pending bindings.
+- Runtime TUI log panel for inbound messages, outbound replies, progress, media, and errors.
 
-Bridge Core only deals with generic channel protocol objects:
+## Tech Stack
 
-- `ChannelMessage`
-- `ChannelTarget`
-- `ChannelCapabilities`
-- `ChannelDeliveryPolicy`
+| Area | Technology |
+| --- | --- |
+| Runtime | Node.js 22+ |
+| Language | TypeScript / ESM |
+| TUI | Ink + React |
+| Codex integration | Codex app-server, `codex exec --json` fallback |
+| Weixin channel | Adapted `@tencent-weixin/openclaw-weixin` communication capability |
+| Feishu channel | `@larksuiteoapi/node-sdk` + WebSocket |
+| State | Local JSON files |
+| Tests | Node.js test runner |
 
-Concrete adapters own platform login, tokens, cursors, raw message mapping, delivery throttling, retries, typing, and media upload. The stable route key is:
-
-```text
-<channelId>:<accountId>:<conversationKind>:<conversationId>
-```
-
-## Quick Start
-
-Requirements:
-
-- Node.js >= 22
-- npm
-- A working local Codex CLI
-- macOS is fully verified. On Windows, verify `npm test`, Weixin login, `weixin codex`, file paths, and Ctrl+C shutdown first.
-
-Install and test:
+## Development Quick Start
 
 ```bash
+git clone git@github.com:uluckyXH/Chat-Codex.git
+cd Chat-Codex
 npm install
 npm run build
 npm test
 ```
 
-Run local flows:
+Start the development TUI:
 
 ```bash
-npm run cli:mock
-npm run cli:terminal:mock
-npm run cli:terminal:codex
+npm run chat-codex
 ```
 
-Run Weixin + Codex:
+The TUI guides Codex checks, channel management, chat bindings, and service startup. This README intentionally does not duplicate Weixin or Feishu setup flows; the TUI is the source of truth for interactive setup.
 
-```bash
-npm run cli:weixin:status
-npm run cli:weixin:login
-npm run cli:weixin:codex
+## Development Commands
+
+| Command | Purpose |
+| --- | --- |
+| `npm run build` | Compile TypeScript into `dist/` |
+| `npm test` | Build and run all unit and integration tests |
+| `npm run test:unit` | Run unit tests |
+| `npm run test:integration` | Run integration tests |
+| `npm run chat-codex` | Start the development Chat-Codex TUI |
+| `npm run cli:chat-codex` | Equivalent development entry |
+| `npm run cli:mock` | Mock channel loop |
+| `npm run cli:terminal:mock` | Terminal channel + MockCodex |
+| `npm run cli:terminal:codex` | Terminal channel + real Codex |
+| `npm run cli:weixin:status` | Weixin helper status check |
+| `npm run cli:weixin:login` | Weixin helper QR login |
+| `npm run cli:feishu:status` | Feishu helper credential and bot identity check |
+
+## Architecture
+
+```text
+Chat User
+  |
+  v
+WeixinAdapter / FeishuAdapter
+  |
+  | ChannelMessage / ChannelTarget
+  v
+ChannelRegistry
+  |
+  v
+Bridge Core
+  |-- Command Router
+  |-- Route Queue
+  |-- ApprovalManager
+  |-- SessionBindings
+  |-- TurnScheduler
+  |
+  v
+CodexAdapter
+  |-- AppServerCodexAdapter (default)
+  |-- ExecCodexAdapter (fallback)
+  |
+  v
+Codex CLI / Codex app-server
 ```
 
-Common startup options:
+Core boundaries:
 
-```bash
-npm run cli:weixin:codex -- --session last --permission approval
-npm run cli:terminal:codex -- --session new --permission approval --cwd ./workspaces/demo
+- Codex integration only goes through `CodexAdapter`.
+- Chat channels only go through `ChannelAdapter`.
+- Bridge Core owns generic routing, queues, session binding, approvals, permissions, and Codex turn scheduling.
+- Login, platform tokens, cursors, rate limits, retries, typing, and media upload belong to concrete channel adapters.
+- Channel-specific delivery behavior is expressed through `ChannelCapabilities` and `ChannelDeliveryPolicy`.
+
+Stable route key:
+
+```text
+<channelId>:<accountId>:<conversationKind>:<conversationId>
 ```
 
-- `--session new|last|<id>` creates a new session, resumes the latest session, or binds a specific Codex session.
-- `--cwd <dir>` / `--workdir <dir>` applies only to new sessions.
-- `--codex-adapter app-server|exec` chooses the Codex adapter. Default: `app-server`.
-- `--permission approval|full` selects sandboxed approval mode or full permission mode.
-- `--yes-dangerously-full` confirms full permission mode non-interactively.
-- `--progress brief|detailed|silent` sets progress delivery mode for non-Weixin channels.
-
-Weixin login state is stored under `state/weixin/`, which is ignored by Git.
+Normal messages for the same route are serialized. Different routes can run different Codex sessions concurrently. A Codex session can only belong to one route.
 
 ## Chat Commands
 
-| Command | Description |
+These commands are sent from Weixin or Feishu private chats. Command messages bypass the normal prompt queue and are handled immediately.
+
+| Command | Purpose |
 | --- | --- |
-| `/help` | Show commands |
-| `/new` | Create a new Codex session for the current route |
-| `/resume <session>` / `/use <session>` | Resume and bind a Codex session |
-| `/sessions` | List sessions owned by the current route |
+| `/help` | Show available commands for the current channel |
+| `/new` | Create a new Codex session for the current chat route |
+| `/resume [session\|number]` | Resume and bind an existing Codex session |
+| `/use [session\|number]` | Switch the active session for the current route |
+| `/sessions` | List sessions owned or used by the current route |
+| `/sessions all` | List locally discoverable Codex sessions |
 | `/status` | Show session, model, token, queue, approval, permission, and channel status |
-| `/stop` | Stop the current Codex turn for this route |
-| `/OK` / `/P` / `/NO` | Approve, persist-approve, or deny the current approval |
-| `/permission [approval|full confirm]` | Show or switch permission mode |
-| `/plan [task]` / `/code [task]` | Switch collaboration mode |
-| `/goal [objective]` | Show or set the experimental Codex Goal |
-| `/model [model|number] [effort]` | List or switch model and reasoning effort |
-| `/sendfile <task>` | Allow Codex to declare final files for this turn |
-| `/progress [brief|detailed|silent]` | Progress mode command for non-Weixin channels |
+| `/whoami` | Show current channel, route, sender, and conversation identity |
+| `/debug` | Show debug state |
+| `/stop` | Stop the running Codex turn for the current route |
+| `/OK` | Approve the latest pending approval for the current route |
+| `/P` | Persist-approve the latest pending approval |
+| `/NO` | Deny the latest pending approval |
+| `/permission` | Show current session permission |
+| `/permission approval` | Switch back to approval mode |
+| `/permission full confirm` | Switch to full permission mode |
+| `/plan` / `/plan <task>` | Enter plan mode, or run a task in plan mode |
+| `/code` / `/code <task>` | Enter code mode, or run a task in code mode |
+| `/goal [objective]` | Show or set the experimental Goal |
+| `/goal pause` / `/goal resume` / `/goal clear` | Manage experimental Goal state |
+| `/model` | Show available models |
+| `/model <model or number> [effort]` | Switch model and reasoning effort |
+| `/model effort <effort>` | Switch reasoning effort only |
+| `/model default` | Clear the current session model override |
+| `/sendfile <task>` | Allow Codex to declare files for this turn |
+| `/progress [brief\|detailed\|silent]` | Progress delivery mode for non-Weixin channels |
 | `/fff` | Weixin-only silent refresh |
 
-Normal messages are serialized per route. Commands bypass the normal prompt queue. Different routes can run different Codex sessions concurrently.
+## File Sending
+
+Local paths, Markdown images, and `file://` references in ordinary replies are shown as text and are not sent automatically.
+
+To allow Codex to generate and send files for one turn, send:
+
+```text
+/sendfile <task>
+```
+
+Bridge only parses internal protocol lines at the end of the final Codex reply:
+
+```text
+BRIDGE_SEND_FILE: /absolute/path/to/file
+```
+
+At most 3 files are sent per turn. Protocol lines are not shown to chat users.
 
 ## Documentation
 
-- [docs/README.md](docs/README.md): documentation index.
+- [docs/README.md](docs/README.md): documentation index and recommended reading order.
 - [docs/requirements.zh-CN.md](docs/requirements.zh-CN.md): requirements and boundaries.
-- [docs/technical-design.zh-CN.md](docs/technical-design.zh-CN.md): technical architecture.
+- [docs/technical-design.zh-CN.md](docs/technical-design.zh-CN.md): technical design and architecture.
 - [docs/channel-delivery-policy.zh-CN.md](docs/channel-delivery-policy.zh-CN.md): channel delivery policy.
-- [docs/multi-channel-design.zh-CN.md](docs/multi-channel-design.zh-CN.md): multi-channel routing, bindings, concurrency, and configuration design.
+- [docs/multi-channel-design.zh-CN.md](docs/multi-channel-design.zh-CN.md): multi-channel route/session binding and concurrency design.
+- [docs/local-state-persistence.zh-CN.md](docs/local-state-persistence.zh-CN.md): local persistence and session owner constraints.
+- [docs/ink-tui-interaction-design.zh-CN.md](docs/ink-tui-interaction-design.zh-CN.md): TUI interaction design.
 - [docs/development-and-test.zh-CN.md](docs/development-and-test.zh-CN.md): development and testing rules.
-- [docs/git-management.zh-CN.md](docs/git-management.zh-CN.md): Git hygiene.
 - [reports/tests/](reports/tests/): Chinese test reports.
-- [references/README.md](references/README.md): local reference source instructions.
-
-## Development
-
-```bash
-npm run build
-npm test
-npm run test:unit
-npm run test:integration
-```
-
-Before committing:
-
-```bash
-git status --short --ignored
-npm test
-```
-
-Do not commit `node_modules/`, `dist/`, `state/`, tokens, cookies, logs, `.env`, `openclaw-weixin-npm/`, or local reference sources under `references/` except `references/README.md`.
-
-## Security
-
-- Full permission mode bypasses approvals and sandboxing.
-- Weixin tokens are local runtime state and must not be committed or shared.
-- Do not expose Codex app-server directly to the public internet.
-- A Codex session can only be owned by one route in multi-channel mode.
-
-## Roadmap
-
-- Multi-channel CLI startup wizard and channel instance management.
-- Persistent local runtime state.
-- Lark/Feishu direct, group, and thread adapter as the next real channel integration.
-- RouteRuntime extraction from Bridge Core.
-- Richer multi-channel transcript and admin status views.
 
 ## License
 
-[MIT License](LICENSE). Authors: 小黄 and Codex.
+[MIT License](LICENSE).
+
+Authors: 小黄 and Codex.

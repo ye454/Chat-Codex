@@ -1,6 +1,6 @@
 # 项目文档索引
 
-这个目录存放 Codex 微信通讯中间件的设计和执行依据。后续开发时先读本文档，再进入具体需求或技术设计。
+这个目录存放 Chat-Codex 的设计和执行依据。后续开发时先读本文档，再进入具体需求或技术设计。
 
 ## 文档用途
 
@@ -46,6 +46,9 @@
 - `tui-core-functionality-followups.zh-CN.md`
   TUI 核心功能完善设计。说明渠道删除、渠道备注、添加时间、禁用/删除绑定语义、session 最近活跃时间和运行期日志完整展示。
 
+- `runtime-single-instance-lock.zh-CN.md`
+  运行期单实例锁设计。说明如何避免同一个本地状态目录下重复启动多个中间件实例，导致通讯渠道重复消费和状态并发写入。
+
 - `feishu-adapter-design.zh-CN.md`
   飞书适配设计。说明第一阶段如何用飞书 WebSocket 长连接接入私聊文本消息，并默认投递 Codex 进度。
 
@@ -53,7 +56,7 @@
   早期英文需求草稿。保留作参考，不作为当前主设计依据。
 
 - `../README.md` 和 `../README.en.md`
-  项目根目录的默认简体中文 README 和英文 README，面向快速启动、命令说明、技术架构、项目结构和当前状态。
+  项目根目录的默认简体中文 README 和英文 README，面向项目介绍、能力概览、开发快速开始、技术架构和聊天命令。
 
 ## 当前项目定位
 
@@ -63,10 +66,11 @@
 Codex <-> Middleware Core <-> Channel Adapter <-> Concrete Channel
 ```
 
-第一条具体渠道是：
+当前真实渠道是：
 
 ```text
 Codex <-> Middleware Core <-> WeixinAdapter <-> openclaw-weixin extracted communication capability <-> WeChat
+Codex <-> Middleware Core <-> FeishuAdapter <-> Feishu Open Platform <-> Feishu
 ```
 
 明确不做：
@@ -108,11 +112,12 @@ secrets/feishu.local.md
 7. 读 `cli-core-interaction-design.zh-CN.md`，确认当前 CLI/TUI 首页、渠道配置、微信主聊天绑定和飞书多 chat_id 绑定边界。
 8. 做 TUI 相关开发时读 `ink-tui-interaction-design.zh-CN.md`，确认 Ink 页面、快捷键、状态栏和实现顺序。
 9. 做 TUI 核心功能补齐时读 `tui-core-functionality-followups.zh-CN.md`，确认渠道删除、备注、添加时间、session 活跃时间和运行日志全文展示语义。
-10. 读 `cli-interaction-redesign.zh-CN.md`，了解上一轮普通 CLI 重构背景和历史设计。
-11. 读 `development-and-test.zh-CN.md`，确认开发和测试报告要求。
-12. 读 `git-management.zh-CN.md`，确认提交边界和忽略规则。
-13. Agent 继续读 `agent-guide.zh-CN.md`，确认执行规范。
-14. 需要 Codex 协议或微信插件源码细节时，先读 `../references/README.md`，按里面的说明拉取本地参考源码。
+10. 做启动/运行期相关开发时读 `runtime-single-instance-lock.zh-CN.md`，确认重复启动检测、运行锁、心跳和残留锁清理语义。
+11. 读 `cli-interaction-redesign.zh-CN.md`，了解上一轮普通 CLI 重构背景和历史设计。
+12. 读 `development-and-test.zh-CN.md`，确认开发和测试报告要求。
+13. 读 `git-management.zh-CN.md`，确认提交边界和忽略规则。
+14. Agent 继续读 `agent-guide.zh-CN.md`，确认执行规范。
+15. 需要 Codex 协议或微信插件源码细节时，先读 `../references/README.md`，按里面的说明拉取本地参考源码。
 
 ## 分阶段工作顺序
 
