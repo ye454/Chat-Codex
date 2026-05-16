@@ -35,10 +35,10 @@
   CLI 交互重设计历史文档。记录上一轮普通 CLI 首页、子模式、返回/退出和首个 route 绑定语义修复方案。
 
 - `cli-core-interaction-design.zh-CN.md`
-  当前 CLI/TUI 核心交互设计。说明微信当前一个账号 + 一个主聊天绑定 session，飞书一个机器人 + 多个 `chat_id` 分别绑定 session；TUI 只负责展示，业务动作必须进入 actions/services。
+  当前 CLI/TUI 核心交互设计。说明微信当前一个账号 + 一个主聊天绑定 session，飞书一个机器人 + 多个 `chat_id` 分别绑定 session；工作目录是新 session 的一等配置；TUI 只负责展示，业务动作必须进入 actions/services。
 
 - `ink-tui-interaction-design.zh-CN.md`
-  Ink TUI 交互设计。说明 `chat-codex` TUI 的页面结构、键盘快捷键、状态栏、微信/飞书配置流程、聊天绑定流程、启动衔接和实施顺序。
+  Ink TUI 交互设计。说明 `chat-codex` TUI 的页面结构、键盘快捷键、状态栏、微信/飞书配置流程、聊天绑定流程、工作目录设置、启动衔接和实施顺序。
 
 - `feishu-adapter-design.zh-CN.md`
   飞书适配设计。说明第一阶段如何用飞书 WebSocket 长连接接入私聊文本消息，并默认投递 Codex 进度。

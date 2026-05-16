@@ -72,10 +72,11 @@
 1. 先选渠道，再处理该渠道适合的 session 绑定方式。
 2. 微信当前可以在渠道配置后引导选择 session，因为产品上只有一个主聊天。
 3. 飞书渠道配置后不进入 session 选择，等待真实 chat_id 出现。
-4. 首页不展示复杂的 Codex 默认设置。
+4. 首页不展示复杂的 Codex 默认设置，但必须展示“新 session 工作目录”摘要。
 5. Codex 接入方式固定为 `app-server`，普通用户不需要切换。
-6. 首页只展示权限摘要，不展示阶段进度、并发上限、adapter 模式。
+6. 首页只展示权限和工作目录摘要，不展示阶段进度、并发上限、adapter 模式。
 7. TUI 只负责展示和输入，不能直接读写 JSON、不能直接做 owner 冲突判断。
+8. TUI 是 TTY 默认交互层；普通 prompt CLI 仍保留给 `--no-tui`、非 TTY、自动化脚本和 TUI 故障排查使用。
 
 ## 架构分层
 
@@ -105,6 +106,23 @@ Bridge Runtime
 - 直接判断 session owner 冲突。
 - 把微信和飞书绑定逻辑写在 UI 组件里。
 
+### Prompt CLI 层
+
+普通 prompt CLI 不再作为主要推荐体验，但必须保留。
+
+使用场景：
+
+- 用户显式传入 `--no-tui`。
+- 当前环境不是 TTY，无法渲染 Ink TUI。
+- 自动化脚本、远程日志环境或终端能力异常。
+- 排查 TUI 渲染问题时需要回退到线性交互。
+
+要求：
+
+- Prompt CLI 和 TUI 必须调用同一套 actions/services。
+- 两者展示同一类核心信息：渠道、聊天绑定、默认权限、新 session 工作目录和启动状态。
+- 两者对工作目录、权限、绑定、session owner 冲突的业务语义必须一致。
+
 ### Actions / Services 层
 
 建议接口：
@@ -121,6 +139,8 @@ interface LauncherActions {
   unbindTarget(target: BindingTarget): Promise<UnbindResult>;
   getDefaultPermissionSettings(): Promise<PermissionSettings>;
   updateDefaultPermissionSettings(input: PermissionSettingsInput): Promise<void>;
+  getDefaultWorkdir(): Promise<string>;
+  updateDefaultWorkdir(input: { path: string; createIfMissing?: boolean }): Promise<WorkdirResult>;
   getSessionPermissionSettings(sessionId: string): Promise<PermissionSettings>;
   updateSessionPermissionSettings(sessionId: string, input: PermissionSettingsInput): Promise<void>;
   startRuntime(): Promise<void>;
@@ -149,12 +169,16 @@ Chat Codex
 权限
   审批模式（workspace-write 沙箱）
 
+工作目录
+  /Users/xiaohuang/codex-wechat/codex-openclaw-wechat
+
 操作
   1. 管理渠道
   2. 聊天绑定
   3. 权限设置
-  4. 状态详情
-  5. 启动服务
+  4. 工作目录
+  5. 状态详情
+  6. 启动服务
   0. 退出
 ```
 
@@ -165,6 +189,7 @@ Chat Codex
 - 不展示阶段进度。微信是否投递进度、飞书是否投递进度属于渠道策略，不是首页主信息。
 - 不展示并发上限。它是高级运行参数，后续可放到高级设置或配置文件。
 - “权限设置”只保留用户真正需要理解的权限风险。
+- “工作目录”是新 session 的默认运行目录，也决定审批模式下 Codex 可写根目录，必须作为一等配置展示。
 
 ## 初次启动流程
 
@@ -178,10 +203,10 @@ Chat Codex
 
 操作
   1. 管理渠道
-  2. 聊天绑定
-  3. 权限设置
-  4. 状态详情
-  5. 启动服务
+  2. 添加微信账号
+  3. 添加飞书机器人
+  4. 权限设置
+  5. 工作目录
   0. 退出
 ```
 
@@ -428,6 +453,48 @@ Session: CLI 交互重构 / 019e2ea9
 - 完全权限必须二次确认，文案要明确“跳过审批和沙箱，可以直接执行命令并修改文件”。
 - 权限修改成功后必须反馈当前聊天、session 和新权限。
 
+## 工作目录设置
+
+工作目录分两类：
+
+- 新 session 默认工作目录：用于以后通过 TUI、Prompt CLI 或聊天命令创建的新 Codex session。
+- 已有 session 工作目录：来自 Codex 历史 session 元数据，绑定已有 session 时不修改。
+
+默认值：
+
+- 未显式配置时，默认使用启动 `chat-codex` 时的 `process.cwd()`。
+- 如果用户通过启动参数或本地配置指定工作目录，则使用该目录。
+
+首页必须展示当前新 session 默认工作目录摘要：
+
+```text
+工作目录
+  /Users/xiaohuang/codex-wechat/codex-openclaw-wechat
+```
+
+工作目录设置页：
+
+```text
+工作目录设置
+
+当前新 session 工作目录:
+/Users/xiaohuang/codex-wechat/codex-openclaw-wechat
+
+操作:
+  1. 使用当前终端目录
+  2. 输入目录路径
+  0. 返回
+```
+
+规则：
+
+- 修改工作目录只影响以后新建的 session。
+- 已绑定 session 不迁移 cwd，不自动改变已有 session 的 sandbox writable root。
+- 用户输入不存在的目录时，必须提示确认后再创建。
+- 路径可以是绝对路径，也可以是相对路径；相对路径按启动 `chat-codex` 的终端目录解析。
+- 修改成功后，首页、启动确认页和运行日志页都必须展示新目录。
+- 工作目录应持久化到本地配置，例如 `state/bridge/config.json` 的 `codexDefaults.cwd`，避免重启后回到错误目录。
+
 不在普通界面展示：
 
 - Codex 接入方式。
@@ -520,8 +587,9 @@ docs/ink-tui-interaction-design.zh-CN.md
 │   飞书私聊     0 个已发现                   │
 │                                             │
 │ 权限: 审批模式（workspace-write 沙箱）       │
+│ 工作目录: /Users/xiaohuang/.../codex-openclaw-wechat │
 │                                             │
-│ Enter 启动  c 渠道  b 绑定  p 权限  q 退出  │
+│ Enter 启动  c 渠道  b 绑定  p 权限  d 目录  q 退出 │
 └─────────────────────────────────────────────┘
 ```
 
@@ -532,6 +600,7 @@ docs/ink-tui-interaction-design.zh-CN.md
 - `c`：管理渠道。
 - `b`：管理聊天绑定。
 - `p`：权限设置。
+- `d`：工作目录设置。
 - `r`：刷新。
 
 ### 后续 TUI 视觉与交互规范
@@ -540,7 +609,7 @@ TUI 只在 P3 之后做，不阻塞当前普通 CLI actions/services。
 
 视觉原则：
 
-- 首页使用清晰分区：渠道、聊天绑定、权限、运行状态。
+- 首页使用清晰分区：渠道、聊天绑定、权限、工作目录、运行状态。
 - 不把内部字段名直接暴露给普通用户，例如 `routeKey`、`ownerRouteKey`、`adapterMode` 默认折叠到详情里。
 - 状态用短中文标签：`已连接`、`未配置`、`未绑定`、`需处理`、`运行中`。
 - 列表当前项高亮，不可选项置灰或放入“不可选”折叠区。
@@ -570,6 +639,7 @@ TUI 只在 P3 之后做，不阻塞当前普通 CLI actions/services。
 - 已完成：首页去掉“Codex 默认设置”分区。
 - 已完成：固定 app-server，不展示 adapter 切换。
 - 已完成：只保留权限配置。
+- 待补齐：工作目录作为单独配置项，Prompt CLI 和 TUI 都要展示并可修改。
 - 已完成：微信配置后引导绑定主聊天 session。
 - 已完成：飞书配置后不要求选 session。
 - 已完成：启动服务时从本地配置启动所有 enabled 渠道实例。
@@ -596,5 +666,6 @@ TUI 只在 P3 之后做，不阻塞当前普通 CLI actions/services。
 - 飞书用户私聊机器人后，CLI 能在绑定管理中看到该 chat_id。
 - 飞书只能对具体 chat_id 绑定 session。
 - 首页不展示 Codex 接入方式、阶段进度、并发上限。
-- 首页只展示权限摘要；权限设置页只管理审批模式/完全权限。
+- 首页只展示权限和工作目录摘要；权限设置页只管理审批模式/完全权限。
+- 工作目录页只影响以后新建的 session，已有 session cwd 不被修改。
 - TUI 不直接读写 JSON，不直接做 owner 冲突判断。
