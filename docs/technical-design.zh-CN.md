@@ -354,8 +354,8 @@ type ChannelMessage = {
 - `/sessions`
 - `/sessions all`
 - `/all-sessions`
-- `/use <session>`
-- `/resume`
+- `/use [session|编号]`
+- `/resume [session|编号]`
 - `/whoami`
 - `/debug`
 - `/plan [任务]`
@@ -807,59 +807,63 @@ Status: idle
 
 - Bridge Core 状态。
 - Channel Adapter 状态。
-- Codex Adapter 状态，包括模型信息、reasoning effort，以及 app-server `thread/tokenUsage/updated` 提供的 token 用量。`tokenUsage.total` 是累计 API 用量，不能当作当前上下文窗口占用；`/status` 用 `tokenUsage.last` 近似当前窗口，并把累计量单独展示为 `Session API usage`。`Last turn tokens.output` 是最近一次 token usage 更新里的输出 token，累计输出看 `Session API usage.output`。
+- Codex Adapter 状态，包括模型信息、reasoning effort，以及 app-server `thread/tokenUsage/updated` 提供的 token 用量。`tokenUsage.total` 是累计 API 用量，不能当作当前上下文窗口占用；`/status` 用 `tokenUsage.last` 近似当前窗口，并把累计量单独展示为“本会话累计 token”。“最近一轮 token”的输出是最近一次 token usage 更新里的输出 token，累计输出看“本会话累计 token”的输出。
 
 普通用户输出：
 
 ```md
 **Codex 状态**
-- Session: `cdx-8f2a`
-- State: `running turn=exec-turn-123 task=修复测试`
-- Model: `gpt-5.1-codex` provider=`openai` effort=`medium`
-- Context: `164,171 / 258,400 tokens` (63.5%, remaining 94,229)
-- Last turn tokens: input `160,000`, cached `120,000`, output `4,171`, reasoning output `1,200`
-- Session API usage: total `34,375,973`, input `34,282,029`, cached `33,213,184`, output `93,944`, reasoning output `30,181`
-- Cwd: `/path/to/project`
 
-**Bridge**
-- Processing: `yes`
-- Queue: `0`
-- Pending approvals: `0`
-- Progress: `disabled` (微信渠道不投递进度)
-- Permission: `approval sandbox=workspace-write`
-- Action: `/stop` 终止当前任务
+**会话**
+- 当前会话: `cdx-8f2a`
+- 运行状态: 运行中（轮次 `exec-turn-123`，任务: 修复测试）
+- 当前模型: `gpt-5.1-codex`（服务商 `openai`，思考程度 `medium`）
+- 上下文: `164,171 / 258,400 token`（63.5%，剩余 94,229）
+- 最近一轮 token: 输入 `160,000`，缓存 `120,000`，输出 `4,171`，推理输出 `1,200`
+- 本会话累计 token: 总计 `34,375,973`，输入 `34,282,029`，缓存 `33,213,184`，输出 `93,944`，推理输出 `30,181`
+- 工作目录: `/path/to/project`
 
-**Channel**
-- Adapter: `weixin`
-- State: `connected`
+**运行**
+- 处理状态: 正在处理
+- 排队消息: `0`
+- 待审批: `0`
+- 进度投递: 已禁用（微信渠道不投递进度）
+- 权限模式: 审批模式（沙箱 `workspace-write`）
+- 可用操作: 发送 `/stop` 终止当前任务
+
+**渠道**
+- 渠道: `weixin`
+- 连接状态: 已连接
 ```
 
 管理员输出：
 
 ```md
 **Codex 状态**
-- Session: `cdx-8f2a`
-- State: `running`
-- Model: `gpt-5.1-codex` provider=`openai` effort=`medium`
-- Context: `164,171 / 258,400 tokens` (63.5%, remaining 94,229)
-- Last turn tokens: input `160,000`, cached `120,000`, output `4,171`, reasoning output `1,200`
-- Session API usage: total `34,375,973`, input `34,282,029`, cached `33,213,184`, output `93,944`, reasoning output `30,181`
-- Cwd: `/path/to/project`
 
-**Bridge**
-- Processing: `yes`
-- Queue: `0`
-- Pending approvals: `0`
-- Progress: `disabled` (微信渠道不投递进度)
-- Permission: `approval sandbox=workspace-write`
+**会话**
+- 当前会话: `cdx-8f2a`
+- 运行状态: 运行中
+- 当前模型: `gpt-5.1-codex`（服务商 `openai`，思考程度 `medium`）
+- 上下文: `164,171 / 258,400 token`（63.5%，剩余 94,229）
+- 最近一轮 token: 输入 `160,000`，缓存 `120,000`，输出 `4,171`，推理输出 `1,200`
+- 本会话累计 token: 总计 `34,375,973`，输入 `34,282,029`，缓存 `33,213,184`，输出 `93,944`，推理输出 `30,181`
+- 工作目录: `/path/to/project`
 
-**Channel**
-- Adapter: `openclaw-weixin`
-- State: `connected`
-- Last error: none
+**运行**
+- 处理状态: 正在处理
+- 排队消息: `0`
+- 待审批: `0`
+- 进度投递: 已禁用（微信渠道不投递进度）
+- 权限模式: 审批模式（沙箱 `workspace-write`）
+
+**渠道**
+- 渠道: `openclaw-weixin`
+- 连接状态: 已连接
+- 最近错误: 无
 ```
 
-`/status` 是命令消息，不进入普通 prompt 队列；Codex 正在执行时也应立即回复。`Processing` 来自 Bridge route worker，`State` 来自 Codex Adapter 状态，二者结合用于判断是否可用 `/stop`。微信账号、发送者、conversation 等身份信息不放入 `/status`，需要时用 `/whoami` 查看。
+`/status` 是命令消息，不进入普通 prompt 队列；Codex 正在执行时也应立即回复。“处理状态”来自 Bridge route worker，“运行状态”来自 Codex Adapter 状态，二者结合用于判断是否可用 `/stop`。微信账号、发送者、conversation 等身份信息不放入 `/status`，需要时用 `/whoami` 查看。
 
 ## 8.0.1 `/stop` 设计
 

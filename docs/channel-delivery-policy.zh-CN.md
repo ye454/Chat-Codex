@@ -71,7 +71,7 @@ WeixinAdapter 返回微信专属策略：
 - `progress: "suppress"`：不发送 `Codex 进度:`
 - `progressCommand: "disabled"`：微信中 `/progress` 返回拒绝说明，不改变模式。
 - `refreshCommands: [{ command: "fff", silent: true }]`：`/fff` 静默处理，不回复、不入队、不转发给 Codex。
-- `/status` 显示 `Progress: disabled (微信渠道不投递进度)`。
+- `/status` 显示 `进度投递: 已禁用（微信渠道不投递进度）`。
 
 微信仍发送关键消息：
 

@@ -1,6 +1,7 @@
 import type { ApprovalDecision, PendingApproval } from "../approvals/types.js";
 import { ApprovalManager } from "../approvals/approval-manager.js";
 import type { CodexRunPolicy, CodexRunPolicyStatus } from "../codex/codex-cli.js";
+import { truncateDisplayText } from "../codex/codex-cli.js";
 import type { CodexAdapter, CodexCollaborationMode, CodexEvent, CodexGoal, CodexGoalStatus, CodexModelOption, CodexModelPolicy, CodexProgressKind, CodexReasoningEffort, CodexSession, CodexSessionContextUsage, CodexSessionModelInfo, CodexSessionStatus } from "../codex/types.js";
 import { CODEX_REASONING_EFFORTS } from "../codex/types.js";
 import { parseCommand } from "../commands/parser.js";
@@ -30,6 +31,7 @@ export interface BridgeOptions {
   transcript?: TranscriptSink;
   cwd?: string;
   initialSessionId?: string;
+  initialRouteBinding?: InitialRouteBinding;
   unboundRoutePolicy?: UnboundRoutePolicy;
   progressMode?: ProgressDeliveryMode;
   approvalSendRetryDelayMs?: number;
@@ -50,6 +52,28 @@ interface BackgroundTurnState {
   finalText: string;
   finalPlanText: string;
 }
+
+interface SessionChoice {
+  id: string;
+  title?: string;
+  cwd?: string;
+  status: CodexSessionStatus;
+  updatedAt: string;
+  current: boolean;
+}
+
+interface SessionSelectionState {
+  choices: SessionChoice[];
+  createdAt: number;
+}
+
+type BindSessionResult =
+  | { ok: true }
+  | { ok: false; reason: "owner_conflict" | "resume_failed"; message: string };
+
+export type InitialRouteBinding =
+  | { type: "existing"; sessionId: string }
+  | { type: "new" };
 
 export type ProgressDeliveryMode = "brief" | "detailed" | "silent";
 export type UnboundRoutePolicy = "auto_new" | "ask";
@@ -76,11 +100,13 @@ export class Bridge {
   private readonly routeTargets = new Map<string, ChannelTarget>();
   private readonly routeQueues = new Map<string, QueuedPrompt[]>();
   private readonly routeWorkers = new Map<string, Promise<void>>();
+  private readonly routeSessionSelections = new Map<string, SessionSelectionState>();
   private readonly backgroundTurns = new Map<string, BackgroundTurnState>();
   private readonly routeAbortControllers = new Map<string, AbortController>();
   private readonly progressSendSuppressedUntil = new Map<string, number>();
   private stopBackgroundEvents?: () => void;
-  private initialSessionId?: string;
+  private pendingInitialRouteBinding?: InitialRouteBinding;
+  private pendingInitialRouteKey?: string;
 
   constructor(options: BridgeOptions) {
     if (Boolean(options.channel) === Boolean(options.channels)) {
@@ -97,7 +123,8 @@ export class Bridge {
     this.turnScheduler = options.turnScheduler ?? new UnlimitedTurnScheduler();
     this.transcript = options.transcript;
     this.cwd = options.cwd ?? process.cwd();
-    this.initialSessionId = options.initialSessionId;
+    this.pendingInitialRouteBinding = options.initialRouteBinding
+      ?? (options.initialSessionId ? { type: "existing", sessionId: options.initialSessionId } : undefined);
     this.unboundRoutePolicy = options.unboundRoutePolicy ?? "auto_new";
     this.defaultProgressMode = options.progressMode ?? "brief";
     this.approvalSendRetryDelayMs = options.approvalSendRetryDelayMs ?? APPROVAL_SEND_RETRY_DELAY_MS;
@@ -125,9 +152,15 @@ export class Bridge {
     const target = replyTargetFromMessage(message);
     this.routeMessages.set(message.routeKey, message);
     this.routeTargets.set(message.routeKey, target);
+    this.claimPendingInitialRouteBindingRoute(message);
     const command = parseCommand(text);
     if (command.isCommand) {
       await this.handleCommand(message, target, command.name ?? "", command.args, text);
+      return;
+    }
+    const sessionSelection = this.routeSessionSelections.get(message.routeKey);
+    if (sessionSelection) {
+      await this.handleSessionSelectionReply(message, target, text, sessionSelection);
       return;
     }
     await this.enqueuePrompt(message, target, text);
@@ -183,6 +216,13 @@ export class Bridge {
       case "use":
       case "resume":
         await this.resumeOrUseSession(message, target, args[0]);
+        return;
+      case "cancel":
+        if (this.routeSessionSelections.delete(message.routeKey)) {
+          await this.sendText(target, "已退出切换会话。");
+        } else {
+          await this.sendText(target, "当前没有需要取消的操作。");
+        }
         return;
       case "whoami":
         await this.sendText(target, this.whoamiText(message));
@@ -255,6 +295,8 @@ export class Bridge {
       title: `channel:${message.routeKey}`,
     });
     this.state.bindSession(message.routeKey, session);
+    this.routeSessionSelections.delete(message.routeKey);
+    this.clearPendingInitialRouteBindingIfApplies(message);
     this.applyRouteCollaborationModeToSession(message.routeKey, session.id);
     await this.sendText(target, [
       "已创建新 Codex 会话",
@@ -278,26 +320,8 @@ export class Bridge {
       }
       return session;
     }
-    if (this.initialSessionId) {
-      const sessionId = this.initialSessionId;
-      this.initialSessionId = undefined;
-      const claim = this.state.claimSessionOwner(message.routeKey, sessionId);
-      if (!claim.ok) throw ownerConflictError(sessionId, claim.owner.ownerRouteKey);
-      let session: CodexSession;
-      try {
-        session = await this.codex.resumeSession(sessionId);
-      } catch (error) {
-        if (claim.newlyClaimed) this.state.rollbackSessionOwnerClaim(message.routeKey, sessionId);
-        throw error;
-      }
-      const activated = this.state.activateOwnedSession(message.routeKey, session);
-      if (!activated.ok) throw ownerConflictError(sessionId, activated.owner?.ownerRouteKey ?? "unknown");
-      if (this.routeCollaborationModes.has(message.routeKey)) {
-        this.applyRouteCollaborationModeToSession(message.routeKey, session.id);
-      } else {
-        this.syncRouteCollaborationModeFromSession(message.routeKey, session.id);
-      }
-      return session;
+    if (this.shouldConsumePendingInitialRouteBinding(message)) {
+      return await this.consumePendingInitialRouteBinding(message);
     }
     const session = await this.codex.startSession({
       routeKey: message.routeKey,
@@ -360,13 +384,13 @@ export class Bridge {
   private shouldAskBeforeBindingSession(message: ChannelMessage): boolean {
     return this.unboundRoutePolicy === "ask"
       && !this.state.getBinding(message.routeKey)
-      && !this.initialSessionId;
+      && !this.shouldConsumePendingInitialRouteBinding(message);
   }
 
   private unboundRoutePromptText(message: ChannelMessage): string {
     return [
       "当前聊天还没有绑定 Codex 会话。",
-      "请先发送 /new 创建新会话，或发送 /resume <session-id> 绑定已有会话。",
+      "请先发送 /new 创建新会话，或发送 /resume 进入会话选择。",
       `Route: ${message.routeKey}`,
     ].join("\n");
   }
@@ -547,37 +571,234 @@ export class Bridge {
   private async resumeOrUseSession(
     message: ChannelMessage,
     target: ChannelTarget,
-    sessionId: string | undefined,
+    sessionRef: string | undefined,
   ): Promise<void> {
-    if (!sessionId) {
-      await this.sendText(target, "缺少 Session ID，例如 /resume cdx-123");
+    if (!sessionRef) {
+      await this.beginSessionSelection(message, target);
       return;
     }
+    const choiceIndex = parseSessionChoiceIndex(sessionRef);
+    if (choiceIndex !== undefined) {
+      const choices = await this.sessionChoicesForRoute(message.routeKey);
+      const choice = choices[choiceIndex - 1];
+      if (!choice) {
+        await this.beginSessionSelection(message, target, `没有第 ${choiceIndex} 项，请重新选择。`);
+        return;
+      }
+      const result = await this.bindSessionById(message, target, choice.id);
+      if (!result.ok) await this.sendText(target, result.message);
+      return;
+    }
+
+    const result = await this.bindSessionById(message, target, sessionRef);
+    if (result.ok) return;
+    if (result.reason === "owner_conflict") {
+      await this.sendText(target, result.message);
+      return;
+    }
+    await this.beginSessionSelection(message, target, `没有找到 session \`${sessionRef}\`，请从下面选择。`);
+  }
+
+  private async bindSessionById(
+    message: ChannelMessage,
+    target: ChannelTarget,
+    sessionId: string,
+  ): Promise<BindSessionResult> {
     const claim = this.state.claimSessionOwner(message.routeKey, sessionId);
     if (!claim.ok) {
-      await this.sendText(target, ownerConflictText(sessionId, claim.owner.ownerRouteKey));
-      return;
+      return { ok: false, reason: "owner_conflict", message: ownerConflictText(sessionId, claim.owner.ownerRouteKey) };
     }
     try {
       const session = await this.codex.resumeSession(sessionId);
       const activated = this.state.activateOwnedSession(message.routeKey, session);
       if (!activated.ok) {
         if (claim.newlyClaimed) this.state.rollbackSessionOwnerClaim(message.routeKey, sessionId);
-        await this.sendText(target, ownerConflictText(sessionId, activated.owner?.ownerRouteKey ?? "unknown"));
-        return;
+        return { ok: false, reason: "owner_conflict", message: ownerConflictText(sessionId, activated.owner?.ownerRouteKey ?? "unknown") };
       }
       const mode = this.syncRouteCollaborationModeFromSession(message.routeKey, session.id);
+      this.routeSessionSelections.delete(message.routeKey);
+      this.clearPendingInitialRouteBindingIfApplies(message);
       await this.sendText(target, [
         "已绑定 Codex 会话",
-        `Session: ${session.id}`,
-        `Cwd: ${session.cwd}`,
-        "Status: idle",
-        `Mode: ${mode}`,
+        `- 当前会话: \`${session.id}\``,
+        `- 工作目录: \`${session.cwd}\``,
+        `- 协作模式: ${formatCollaborationModeForStatus(mode)}`,
       ].join("\n"));
+      return { ok: true };
     } catch (error) {
       if (claim.newlyClaimed) this.state.rollbackSessionOwnerClaim(message.routeKey, sessionId);
-      await this.sendText(target, error instanceof Error ? error.message : String(error));
+      return { ok: false, reason: "resume_failed", message: error instanceof Error ? error.message : String(error) };
     }
+  }
+
+  private shouldConsumePendingInitialRouteBinding(message: ChannelMessage): boolean {
+    return Boolean(
+      this.pendingInitialRouteBinding
+      && message.conversation.kind === "direct"
+      && (!this.pendingInitialRouteKey || this.pendingInitialRouteKey === message.routeKey),
+    );
+  }
+
+  private async consumePendingInitialRouteBinding(message: ChannelMessage): Promise<CodexSession> {
+    const pending = this.pendingInitialRouteBinding;
+    this.pendingInitialRouteBinding = undefined;
+    this.pendingInitialRouteKey = undefined;
+    if (!pending || pending.type === "new") {
+      const session = await this.codex.startSession({
+        routeKey: message.routeKey,
+        cwd: this.cwd,
+        title: `channel:${message.routeKey}`,
+      });
+      this.state.bindSession(message.routeKey, session);
+      this.applyRouteCollaborationModeToSession(message.routeKey, session.id);
+      return session;
+    }
+
+    const sessionId = pending.sessionId;
+    const claim = this.state.claimSessionOwner(message.routeKey, sessionId);
+    if (!claim.ok) throw ownerConflictError(sessionId, claim.owner.ownerRouteKey);
+    let session: CodexSession;
+    try {
+      session = await this.codex.resumeSession(sessionId);
+    } catch (error) {
+      if (claim.newlyClaimed) this.state.rollbackSessionOwnerClaim(message.routeKey, sessionId);
+      throw error;
+    }
+    const activated = this.state.activateOwnedSession(message.routeKey, session);
+    if (!activated.ok) {
+      if (claim.newlyClaimed) this.state.rollbackSessionOwnerClaim(message.routeKey, sessionId);
+      throw ownerConflictError(sessionId, activated.owner?.ownerRouteKey ?? "unknown");
+    }
+    if (this.routeCollaborationModes.has(message.routeKey)) {
+      this.applyRouteCollaborationModeToSession(message.routeKey, session.id);
+    } else {
+      this.syncRouteCollaborationModeFromSession(message.routeKey, session.id);
+    }
+    return session;
+  }
+
+  private clearPendingInitialRouteBindingIfApplies(message: ChannelMessage): void {
+    if (this.shouldConsumePendingInitialRouteBinding(message)) {
+      this.pendingInitialRouteBinding = undefined;
+      this.pendingInitialRouteKey = undefined;
+    }
+  }
+
+  private claimPendingInitialRouteBindingRoute(message: ChannelMessage): void {
+    if (!this.pendingInitialRouteBinding) return;
+    if (this.pendingInitialRouteKey) return;
+    if (message.conversation.kind !== "direct") return;
+    if (this.state.getBinding(message.routeKey)) return;
+    this.pendingInitialRouteKey = message.routeKey;
+  }
+
+  private async beginSessionSelection(
+    message: ChannelMessage,
+    target: ChannelTarget,
+    intro?: string,
+  ): Promise<void> {
+    let choices: SessionChoice[];
+    try {
+      choices = await this.sessionChoicesForRoute(message.routeKey);
+    } catch (error) {
+      await this.sendText(target, `读取 Codex 会话列表失败: ${error instanceof Error ? error.message : String(error)}`);
+      return;
+    }
+    if (choices.length === 0) {
+      this.routeSessionSelections.delete(message.routeKey);
+      await this.sendText(target, [
+        intro,
+        "没有可切换的 Codex 会话。",
+        "可发送 /new 创建新会话。",
+      ].filter(Boolean).join("\n"));
+      return;
+    }
+    this.routeSessionSelections.set(message.routeKey, {
+      choices,
+      createdAt: Date.now(),
+    });
+    await this.sendText(target, this.sessionSelectionText(choices, intro));
+  }
+
+  private async handleSessionSelectionReply(
+    message: ChannelMessage,
+    target: ChannelTarget,
+    text: string,
+    selection: SessionSelectionState,
+  ): Promise<void> {
+    if (isCancelSessionSelectionText(text)) {
+      this.routeSessionSelections.delete(message.routeKey);
+      await this.sendText(target, "已退出切换会话。");
+      return;
+    }
+    const choiceIndex = parseSessionChoiceIndex(text);
+    if (choiceIndex === undefined) {
+      await this.sendText(target, [
+        "正在切换 Codex 会话。",
+        "请直接回复列表编号，例如 1；回复“取消”退出。",
+      ].join("\n"));
+      return;
+    }
+    const choice = selection.choices[choiceIndex - 1];
+    if (!choice) {
+      await this.sendText(target, this.sessionSelectionText(selection.choices, `没有第 ${choiceIndex} 项，请重新选择。`));
+      return;
+    }
+    const result = await this.bindSessionById(message, target, choice.id);
+    if (!result.ok) await this.sendText(target, result.message);
+  }
+
+  private async sessionChoicesForRoute(routeKey: string): Promise<SessionChoice[]> {
+    const currentSessionId = this.state.getBinding(routeKey)?.sessionId;
+    const choicesById = new Map<string, SessionChoice>();
+    const addChoice = (choice: Omit<SessionChoice, "current">): void => {
+      const owner = this.state.getSessionOwner(choice.id);
+      if (owner && owner.ownerRouteKey !== routeKey) return;
+      const existing = choicesById.get(choice.id);
+      choicesById.set(choice.id, {
+        id: choice.id,
+        title: choice.title ?? existing?.title,
+        cwd: choice.cwd ?? existing?.cwd,
+        status: choice.status ?? existing?.status ?? { type: "unknown" },
+        updatedAt: choice.updatedAt || existing?.updatedAt || "",
+        current: choice.id === currentSessionId,
+      });
+    };
+
+    for (const stored of this.state.listSessions()) {
+      addChoice({
+        id: stored.session.id,
+        title: stored.session.title,
+        cwd: stored.session.cwd,
+        status: stored.status,
+        updatedAt: stored.updatedAt,
+      });
+    }
+    for (const session of await this.codex.listSessions(undefined)) {
+      addChoice({
+        id: session.id,
+        title: session.title,
+        cwd: session.cwd,
+        status: session.status,
+        updatedAt: session.updatedAt,
+      });
+    }
+
+    return [...choicesById.values()].sort((left, right) => {
+      if (left.current !== right.current) return left.current ? -1 : 1;
+      return timestampValue(right.updatedAt) - timestampValue(left.updatedAt);
+    });
+  }
+
+  private sessionSelectionText(choices: SessionChoice[], intro?: string): string {
+    return [
+      "**切换 Codex 会话**",
+      intro,
+      "",
+      ...choices.map((choice, index) => formatSessionChoiceLine(choice, index)),
+      "",
+      "直接回复编号完成切换；回复“取消”退出。",
+    ].filter((line) => line !== undefined).join("\n");
   }
 
   private async resolveApproval(
@@ -1088,6 +1309,9 @@ export class Bridge {
     const routeKey = message.routeKey;
     const channelStatus = await this.channels.getStatus(message.channelId);
     const binding = this.state.getBinding(routeKey);
+    const pendingInitialBinding = !binding && this.shouldConsumePendingInitialRouteBinding(message)
+      ? this.pendingInitialRouteBinding
+      : undefined;
     const localSession = binding ? this.state.getSession(binding.sessionId) : undefined;
     const adapterStatus: CodexSessionStatus = binding
       ? await this.codex.getStatus(binding.sessionId)
@@ -1106,29 +1330,31 @@ export class Bridge {
       : undefined;
     return [
       "**Codex 状态**",
-      `- Session: \`${binding?.sessionId ?? "none"}\``,
-      `- State: \`${formatCodexStatus(sessionStatus)}\``,
-      `- Model: ${formatModelInfo(sessionStatus.model)}`,
-      ...formatContextUsageLines(sessionStatus.context),
-      binding ? `- Cwd: \`${localSession?.session.cwd ?? "unknown"}\`` : undefined,
       "",
-      "**Bridge**",
-      `- Processing: \`${workerRunning ? "yes" : "no"}\``,
-      `- Queue: \`${this.routeQueues.get(routeKey)?.length ?? 0}\``,
-      `- Mode: \`${this.collaborationModeForRoute(routeKey, binding?.sessionId)}\``,
+      "**会话**",
+      `- 当前会话: ${binding ? `\`${binding.sessionId}\`` : formatUnboundSessionForStatus(pendingInitialBinding)}`,
+      `- 运行状态: ${formatCodexStatus(sessionStatus)}`,
+      `- 当前模型: ${formatModelInfoForStatus(sessionStatus.model)}`,
+      ...formatContextUsageLines(sessionStatus.context),
+      binding ? `- 工作目录: \`${localSession?.session.cwd ?? "未知"}\`` : undefined,
+      "",
+      "**运行**",
+      `- 处理状态: ${workerRunning ? "正在处理" : "空闲"}`,
+      `- 排队消息: \`${this.routeQueues.get(routeKey)?.length ?? 0}\``,
+      `- 协作模式: ${formatCollaborationModeForStatus(this.collaborationModeForRoute(routeKey, binding?.sessionId))}`,
       ...formatGoalStatusLines(goal),
-      `- Pending approvals: \`${approvals.length}\``,
+      `- 待审批: \`${approvals.length}\``,
       ...formatPendingApprovalStatus(approvals.at(-1)),
       this.progressStatusLine(routeKey, deliveryPolicy),
-      modelPolicy ? `- Model override: ${formatModelPolicy(modelPolicy)}` : undefined,
-      policy ? `- Permission: \`${formatRunPolicy(policy)}\`` : undefined,
-      policyStatus && !policyStatus.interactiveApprovals ? `- Approval: \`${formatApprovalSupport(policyStatus)}\`` : undefined,
-      workerRunning && binding ? "- Action: `/stop` 终止当前任务" : undefined,
+      modelPolicy ? `- 模型覆盖: ${formatModelPolicyForStatus(modelPolicy)}` : undefined,
+      policy ? `- 权限模式: ${formatRunPolicyForStatus(policy)}` : undefined,
+      policyStatus && !policyStatus.interactiveApprovals ? `- 审批入口: ${formatApprovalSupport(policyStatus)}` : undefined,
+      workerRunning && binding ? "- 可用操作: 发送 `/stop` 终止当前任务" : undefined,
       "",
-      "**Channel**",
-      `- Adapter: \`${channelStatus.channelId}\``,
-      `- State: \`${channelStatus.state}\``,
-      channelStatus.lastError ? `- Last error: ${channelStatus.lastError}` : undefined,
+      "**渠道**",
+      `- 渠道: \`${channelStatus.channelId}\``,
+      `- 连接状态: ${formatChannelStateForStatus(channelStatus.state)}`,
+      channelStatus.lastError ? `- 最近错误: ${channelStatus.lastError}` : undefined,
     ].filter(Boolean).join("\n");
   }
 
@@ -1146,7 +1372,7 @@ export class Bridge {
       lines.push(this.formatSessionLine(session.id, session.status.type, session.updatedAt, session.cwd, session.title));
     }
     if (lines.length === 1) {
-      lines.push("无。发送 /new 创建新会话，或 /resume <session> 绑定已有会话。");
+      lines.push("无。发送 /new 创建新会话，或 /resume 进入会话选择。");
     }
     return lines.join("\n");
   }
@@ -1154,7 +1380,7 @@ export class Bridge {
   private formatSessionLine(id: string, status: string, updatedAt: string, cwd?: string, title?: string): string {
     const parts = [`- ${id}`, status];
     if (updatedAt) parts.push(updatedAt);
-    if (title) parts.push(title);
+    if (title) parts.push(truncateDisplayText(title));
     if (cwd) parts.push(`cwd=${cwd}`);
     return parts.join(" ");
   }
@@ -1192,8 +1418,8 @@ export class Bridge {
       ["/status", "查看状态、队列、审批和上下文 token 用量"],
       ["/sessions", "列出当前上下文会话"],
       ["/sessions all", "列出全部可发现 Codex 会话"],
-      ["/resume <session>", "恢复并绑定已有会话"],
-      ["/use <session>", "切换到已有会话"],
+      ["/resume [session|编号]", "恢复并绑定已有会话；不带参数时进入编号选择"],
+      ["/use [session|编号]", "切换到已有会话；不带参数时进入编号选择"],
       ["/whoami", "查看当前通道身份"],
       ["/debug", "查看调试状态"],
       ["/plan [任务]", "进入计划模式，或用计划模式处理任务"],
@@ -1281,11 +1507,11 @@ export class Bridge {
   private progressStatusLine(routeKey: string, policy: ChannelDeliveryPolicy): string {
     if (policy.progress === "suppress") {
       const label = policy.statusProgressLabel ?? "disabled";
-      const detail = policy.statusProgressDescription ? ` (${policy.statusProgressDescription})` : "";
-      return `- Progress: \`${label}\`${detail}`;
+      const detail = policy.statusProgressDescription ? `（${policy.statusProgressDescription}）` : "";
+      return `- 进度投递: ${formatProgressLabelForStatus(label)}${detail}`;
     }
-    const suffix = policy.progress === "aggregate" ? " policy=`aggregate`" : "";
-    return `- Progress: \`${this.progressModeFor(routeKey)}\`${suffix}`;
+    const suffix = policy.progress === "aggregate" ? "（渠道聚合）" : "";
+    return `- 进度投递: ${formatProgressModeForStatus(this.progressModeFor(routeKey))}${suffix}`;
   }
 
   private shouldDeliverProgress(routeKey: string, kind: CodexProgressKind | undefined): boolean {
@@ -1336,7 +1562,7 @@ export class Bridge {
       "**权限模式**",
       `- 作用范围: ${sessionId ? `当前会话 \`${sessionId}\`` : "默认策略（后续新会话）"}`,
       `- 当前模式: \`${policy ? formatRunPolicy(policy) : "unknown"}\``,
-      policyStatus ? `- 审批支持: \`${formatApprovalSupport(policyStatus)}\`` : undefined,
+      policyStatus ? `- 审批支持: ${formatApprovalSupport(policyStatus)}` : undefined,
       "- `approval`: 使用 `workspace-write` sandbox；是否能在微信里弹审批取决于 Codex adapter。",
       "- `full`: 完全权限，跳过审批和沙箱，风险很高。",
       "- 切回安全沙箱模式: `/permission approval`",
@@ -1369,6 +1595,49 @@ function ownerConflictText(sessionId: string, ownerRouteKey: string): string {
     "",
     "可发送 /new 创建当前上下文的新会话。",
   ].join("\n");
+}
+
+function formatUnboundSessionForStatus(pending?: InitialRouteBinding): string {
+  if (!pending) return "未绑定";
+  if (pending.type === "existing") {
+    return `待绑定首个私聊预设 \`${pending.sessionId}\`（发送普通消息后生效）`;
+  }
+  return "待创建首个私聊新 session（发送普通消息后生效）";
+}
+
+function parseSessionChoiceIndex(value: string): number | undefined {
+  const normalized = value.trim();
+  if (!/^\d+$/.test(normalized)) return undefined;
+  const index = Number(normalized);
+  return Number.isSafeInteger(index) && index > 0 ? index : undefined;
+}
+
+function isCancelSessionSelectionText(value: string): boolean {
+  const normalized = value.trim().toLowerCase();
+  return normalized === "取消" || normalized === "退出" || normalized === "cancel" || normalized === "q" || normalized === "quit";
+}
+
+function formatSessionChoiceLine(choice: SessionChoice, index: number): string {
+  const details = [
+    formatCodexStatus(choice.status),
+    choice.title ? `标题: ${truncateDisplayText(choice.title, 30)}` : undefined,
+    choice.cwd ? `目录: ${formatCompactPath(choice.cwd)}` : undefined,
+  ].filter(Boolean);
+  const current = choice.current ? "（当前）" : "";
+  return `${index + 1}. \`${choice.id}\`${current}${details.length > 0 ? ` - ${details.join("；")}` : ""}`;
+}
+
+function formatCompactPath(value: string): string {
+  const normalized = value.trim();
+  if (normalized.length <= 48) return normalized;
+  const parts = normalized.split(/[\\/]+/).filter(Boolean);
+  const tail = parts.slice(-2).join("/");
+  return tail ? `.../${tail}` : truncateForChannel(normalized, 48);
+}
+
+function timestampValue(value: string): number {
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? timestamp : 0;
 }
 
 function commandBody(rawText: string, command: string): string {
@@ -1406,12 +1675,26 @@ function composeFinalAnswer(planText: string, finalText: string): string {
 }
 
 function formatCodexStatus(status: CodexSessionStatus): string {
-  const parts: string[] = [status.type];
-  if ("turnId" in status && status.turnId) parts.push(`turn=${status.turnId}`);
-  if ("task" in status && status.task) parts.push(`task=${truncateForChannel(status.task, 80)}`);
-  if ("detail" in status && status.detail) parts.push(status.detail);
-  if ("error" in status && status.error) parts.push(status.error);
-  return parts.join(" ");
+  const details: string[] = [];
+  if ("turnId" in status && status.turnId) details.push(`轮次 \`${status.turnId}\``);
+  if ("task" in status && status.task) details.push(`任务: ${truncateForChannel(status.task, 80)}`);
+  if ("detail" in status && status.detail) details.push(formatStatusDetailForUser(status.detail));
+  if ("error" in status && status.error) details.push(status.error);
+  const suffix = details.length > 0 ? `（${details.join("，")}）` : "";
+  switch (status.type) {
+    case "idle": return `空闲${suffix}`;
+    case "running": return `运行中${suffix}`;
+    case "waiting_approval": return `等待审批${suffix}`;
+    case "waiting_input": return `等待输入${suffix}`;
+    case "failed": return `失败${suffix}`;
+    case "unknown": return `未知${suffix}`;
+  }
+}
+
+function formatStatusDetailForUser(detail: string): string {
+  if (detail === "no active session") return "未绑定会话";
+  if (detail === "session not found") return "会话不存在";
+  return detail;
 }
 
 function formatRunPolicy(policy: CodexRunPolicy): string {
@@ -1420,17 +1703,23 @@ function formatRunPolicy(policy: CodexRunPolicy): string {
     : `approval sandbox=${policy.sandbox ?? "workspace-write"}`;
 }
 
+function formatRunPolicyForStatus(policy: CodexRunPolicy): string {
+  return policy.permissionMode === "full"
+    ? "完全权限（跳过审批和沙箱）"
+    : `审批模式（沙箱 \`${policy.sandbox ?? "workspace-write"}\`）`;
+}
+
 function formatGoalStatusLines(goal: CodexGoal | null | undefined): string[] {
   if (goal === undefined) return [];
-  if (!goal) return ["- Goal: `none`"];
+  if (!goal) return ["- 长期目标: 未设置"];
   const budget = goal.tokenBudget !== null && goal.tokenBudget > 0
-    ? `\`${formatNumber(goal.tokensUsed)} / ${formatNumber(goal.tokenBudget)}\` (${formatPercent(goal.tokensUsed / goal.tokenBudget)}, remaining ${formatNumber(Math.max(goal.tokenBudget - goal.tokensUsed, 0))})`
+    ? `\`${formatNumber(goal.tokensUsed)} / ${formatNumber(goal.tokenBudget)}\`（${formatPercent(goal.tokensUsed / goal.tokenBudget)}，剩余 ${formatNumber(Math.max(goal.tokenBudget - goal.tokensUsed, 0))}）`
     : `\`${formatNumber(goal.tokensUsed)}\``;
   return [
-    `- Goal: \`${formatGoalStatus(goal.status)}\` ${truncateForChannel(goal.objective, 80)}`,
-    `- Goal tokens: ${budget}`,
-    `- Goal time: \`${formatDuration(goal.timeUsedSeconds)}\``,
-    `- Goal updated: \`${formatGoalTimestamp(goal.updatedAt)}\``,
+    `- 长期目标: ${formatGoalStatusForUser(goal.status)} - ${truncateForChannel(goal.objective, 80)}`,
+    `- 目标 token: ${budget}`,
+    `- 目标耗时: \`${formatDuration(goal.timeUsedSeconds)}\``,
+    `- 目标更新时间: \`${formatGoalTimestamp(goal.updatedAt)}\``,
   ];
 }
 
@@ -1443,24 +1732,33 @@ function formatGoalStatus(status: CodexGoalStatus): string {
   }
 }
 
+function formatGoalStatusForUser(status: CodexGoalStatus): string {
+  switch (status) {
+    case "active": return "进行中";
+    case "paused": return "已暂停";
+    case "budgetLimited": return "已达预算";
+    case "complete": return "已完成";
+  }
+}
+
 function formatApprovalSupport(status: CodexRunPolicyStatus): string {
   if (status.interactiveApprovals) {
-    return status.effectiveApprovalPolicy ? `interactive effective=${status.effectiveApprovalPolicy}` : "interactive";
+    return status.effectiveApprovalPolicy ? `支持微信内审批（实际策略 ${status.effectiveApprovalPolicy}）` : "支持微信内审批";
   }
-  return status.effectiveApprovalPolicy ? `not interactive effective=${status.effectiveApprovalPolicy}` : "not interactive";
+  return status.effectiveApprovalPolicy ? `不支持微信内审批（实际策略 ${status.effectiveApprovalPolicy}）` : "不支持微信内审批";
 }
 
 function formatContextUsageLines(context: CodexSessionContextUsage | undefined): string[] {
-  if (!context) return ["- Context: `unavailable`"];
+  if (!context) return ["- 上下文: 暂无数据"];
   const current = context.last.totalTokens;
   const window = context.modelContextWindow;
   const contextUsage = window && window > 0
-    ? `\`${formatNumber(current)} / ${formatNumber(window)} tokens\` (${formatPercent(current / window)}, remaining ${formatNumber(Math.max(window - current, 0))})`
-    : `\`${formatNumber(current)} tokens\``;
+    ? `\`${formatNumber(current)} / ${formatNumber(window)} token\`（${formatPercent(current / window)}，剩余 ${formatNumber(Math.max(window - current, 0))}）`
+    : `\`${formatNumber(current)} token\``;
   return [
-    `- Context: ${contextUsage}`,
-    `- Last turn tokens: input \`${formatNumber(context.last.inputTokens)}\`, cached \`${formatNumber(context.last.cachedInputTokens)}\`, output \`${formatNumber(context.last.outputTokens)}\`, reasoning output \`${formatNumber(context.last.reasoningOutputTokens)}\``,
-    `- Session API usage: total \`${formatNumber(context.total.totalTokens)}\`, input \`${formatNumber(context.total.inputTokens)}\`, cached \`${formatNumber(context.total.cachedInputTokens)}\`, output \`${formatNumber(context.total.outputTokens)}\`, reasoning output \`${formatNumber(context.total.reasoningOutputTokens)}\``,
+    `- 上下文: ${contextUsage}`,
+    `- 最近一轮 token: 输入 \`${formatNumber(context.last.inputTokens)}\`，缓存 \`${formatNumber(context.last.cachedInputTokens)}\`，输出 \`${formatNumber(context.last.outputTokens)}\`，推理输出 \`${formatNumber(context.last.reasoningOutputTokens)}\``,
+    `- 本会话累计 token: 总计 \`${formatNumber(context.total.totalTokens)}\`，输入 \`${formatNumber(context.total.inputTokens)}\`，缓存 \`${formatNumber(context.total.cachedInputTokens)}\`，输出 \`${formatNumber(context.total.outputTokens)}\`，推理输出 \`${formatNumber(context.total.reasoningOutputTokens)}\``,
   ];
 }
 
@@ -1473,6 +1771,17 @@ function formatModelInfo(model: CodexSessionModelInfo | undefined): string {
     model.reasoningEffort !== undefined ? `effort=\`${model.reasoningEffort ?? "default"}\`` : undefined,
   ].filter(Boolean);
   return parts.join(" ");
+}
+
+function formatModelInfoForStatus(model: CodexSessionModelInfo | undefined): string {
+  if (!model?.model && !model?.provider && !model?.serviceTier && model?.reasoningEffort === undefined) return "未知";
+  const name = model.model ? `\`${model.model}\`` : "未知模型";
+  const details = [
+    model.provider ? `服务商 \`${model.provider}\`` : undefined,
+    model.serviceTier ? `服务档 \`${model.serviceTier}\`` : undefined,
+    model.reasoningEffort !== undefined ? `思考程度 \`${model.reasoningEffort ?? "默认"}\`` : undefined,
+  ].filter(Boolean);
+  return details.length > 0 ? `${name}（${details.join("，")}）` : name;
 }
 
 type ParsedModelCommand =
@@ -1624,6 +1933,49 @@ function formatModelPolicy(policy: CodexModelPolicy): string {
   return parts.length > 0 ? parts.join(" ") : "`none`";
 }
 
+function formatModelPolicyForStatus(policy: CodexModelPolicy): string {
+  const parts = [
+    policy.model ? `模型 \`${policy.model}\`` : undefined,
+    policy.reasoningEffort ? `思考程度 \`${policy.reasoningEffort}\`` : undefined,
+    policy.serviceTier ? `服务档 \`${policy.serviceTier}\`` : undefined,
+  ].filter(Boolean);
+  return parts.length > 0 ? parts.join("，") : "无";
+}
+
+function formatCollaborationModeForStatus(mode: CodexCollaborationMode): string {
+  return mode === "plan" ? "计划模式" : "默认执行模式";
+}
+
+function formatProgressModeForStatus(mode: ProgressDeliveryMode): string {
+  switch (mode) {
+    case "brief": return "摘要模式";
+    case "detailed": return "详细模式";
+    case "silent": return "静默模式";
+  }
+}
+
+function formatProgressLabelForStatus(label: string): string {
+  switch (label) {
+    case "disabled": return "已禁用";
+    case "brief": return "摘要模式";
+    case "detailed": return "详细模式";
+    case "silent": return "静默模式";
+    default: return `\`${label}\``;
+  }
+}
+
+function formatChannelStateForStatus(state: string): string {
+  switch (state) {
+    case "stopped": return "已停止";
+    case "starting": return "启动中";
+    case "login_required": return "需要登录";
+    case "connected": return "已连接";
+    case "degraded": return "部分可用";
+    case "failed": return "失败";
+    default: return state;
+  }
+}
+
 function formatModelScope(sessionId?: string): string {
   return sessionId ? `当前会话 \`${sessionId}\`` : "默认策略（后续新会话）";
 }
@@ -1691,15 +2043,28 @@ function formatPendingApprovalStatus(approval: PendingApproval | undefined): Arr
   if (!approval) return [];
   return [
     "",
-    "**Pending Approval**",
-    `- Type: \`${approval.kind}\``,
-    approval.cwd ? `- Cwd: \`${approval.cwd}\`` : undefined,
-    approval.reason ? `- Reason: ${approval.reason}` : undefined,
+    "**待处理审批**",
+    `- 类型: ${formatApprovalKindForUser(approval.kind)}`,
+    approval.cwd ? `- 工作目录: \`${approval.cwd}\`` : undefined,
+    approval.reason ? `- 原因: ${approval.reason}` : undefined,
     approval.command ? "```shell\n" + approval.command + "\n```" : undefined,
+    "快捷回复：",
     "```text\n/OK\n```",
     "```text\n/P\n```",
     "```text\n/NO\n```",
   ];
+}
+
+function formatApprovalKindForUser(kind: string): string {
+  switch (kind) {
+    case "command": return "命令执行";
+    case "file_change": return "文件变更";
+    case "permissions": return "权限变更";
+    case "network": return "网络访问";
+    case "legacy_exec": return "旧版命令审批";
+    case "legacy_patch": return "旧版补丁审批";
+    default: return kind;
+  }
 }
 
 function sleep(ms: number): Promise<void> {

@@ -147,7 +147,7 @@ sessionId -> ownerRouteKey
 绑定行为：
 
 - `/new`：为当前 route 创建新的 Codex session，并把它设置为当前 route 的 active session；该 session 的 owner 是当前 route。
-- `/resume <session>` 或 `/use <session>`：只有当该 session 未被 Bridge 记录为其他 route 拥有，或已经属于当前 route 时，才允许绑定。
+- `/resume [session|编号]` 或 `/use [session|编号]`：只有当该 session 未被 Bridge 记录为其他 route 拥有，或已经属于当前 route 时，才允许绑定；不带参数时进入会话选择模式，用户回复编号完成切换，回复“取消”退出。
 - 如果 session 已属于其他 route，必须拒绝绑定，并提示该 session 已被其他上下文占用。
 - 当前 route 切换 active session 时，旧 session 仍然归当前 route 所有，只是不再 active。
 - 未被 Bridge 记录过的 Codex 历史 session 可以被第一个执行 `/resume` 的 route 认领；认领后进入唯一归属规则。
@@ -170,7 +170,7 @@ codex-wechat-bridge channel login lark-work
 codex-wechat-bridge channel status
 ```
 
-现有 `weixin login`、`weixin codex` 可以继续作为单渠道快捷入口。多渠道模式下，推荐由 `serve` 读取本地状态或进入 CLI 启动向导，选择多个渠道实例并启动；需要扫码或授权的渠道由控制台输出二维码、授权链接或提示。
+现有 `weixin login` 继续作为单独登录入口。`weixin codex` 不再走旧版“启动前先选 Codex session”的直连流程，而是进入与 `serve` 相同的轻量渠道管理向导；旧版 `weixin codex-direct` 全局直连入口已移除。多渠道模式下，推荐由 `serve`/`weixin codex` 读取本地状态或进入 CLI 启动向导，选择渠道实例并启动；需要扫码或授权的渠道由控制台输出二维码、授权链接或提示。
 
 聊天内用户不负责“把飞书接入系统”或“把微信账号接入系统”。用户在微信、飞书或其他渠道里发消息时，Bridge 根据入站消息自动生成 routeKey。这个 route 第一次收到普通 prompt 时可以自动创建 Codex session，也可以由用户显式发送 `/new` 创建。后续 `/resume`、`/use`、`/new` 都只改变当前 route 的 active session。
 
@@ -305,12 +305,12 @@ Terminal/Mock 使用默认完整投递策略。飞书等后续渠道应由各自
 - `ChannelRegistry` 已经可以管理多个 adapter，入站汇聚并按 `target.channelId` 做出站路由。
 - `SessionBindings` 已经补上 `sessionId -> ownerRouteKey`，用于阻止跨 route 复用同一个 Codex session。
 - `TurnScheduler` 已经作为可插拔全局背压层落位，默认 unlimited。
-- `npm run cli:serve` 已经落地轻量启动向导：配置阶段不启动真实长轮询，可检查 Codex、引导微信登录、设置首个 route 绑定策略，并在首页确认后启动服务。
+- `npm run codex` / `npm run cli:codex` 已经落地为推荐主启动入口；`npm run cli:serve` 保留为兼容入口。配置阶段不启动真实长轮询，可检查 Codex、引导微信登录、设置首个 route 绑定策略，并在首页确认后启动服务。
 
 后续治理点：
 
 - `MemoryStateStore` 仍是内存实现，CLI 运行状态持久化需要后续独立落地。
-- 完整渠道实例管理、route/session 管理页和持久化状态还没有做；当前 `cli:serve` 只覆盖微信 MVP 启动路径。
+- 完整渠道实例管理、route/session 管理页和持久化状态还没有做；当前主入口和 `cli:serve` 只覆盖微信 MVP 启动路径。
 - 真实第二渠道、飞书群聊/thread、微信群聊真实链路都还没有验证。
 - `RouteRuntime` 还没有从 `bridge.ts` 拆出，route 级队列、进度模式、active turn 状态后续应独立成模块。
 - 当前 `src/bridge/bridge.ts`、`src/codex/app-server-codex-adapter.ts`、`src/channels/weixin/weixin-adapter.ts` 都已经超过开发规范里的拆分触发线，多渠道实现不能继续把逻辑堆进现有大文件。
@@ -496,10 +496,13 @@ CLI 用户可见提示默认使用简体中文。渠道类型、能力字段和 
 
 ### 12.1 启动首页
 
-`npm run cli:serve` 建议作为多渠道交互入口：
+`npm run codex` 和 `npm run cli:codex` 是推荐主入口；`npm run cli:serve`、`npm run cli:weixin:codex` 保留兼容：
 
 ```bash
+npm run codex
+npm run cli:codex
 npm run cli:serve
+npm run cli:weixin:codex
 npm run cli:serve -- --no-interactive
 ```
 
@@ -712,7 +715,7 @@ Channels:
 4. 用户选择该渠道的未绑定 route 策略。
 5. 用户可以选择“首个私聊 route 绑定方式”：
    - `auto_new`：首个微信私聊发来普通消息时自动创建 Codex session 并持久化绑定。
-   - `ask`：首个微信私聊发来普通消息时提示 `/new` 或 `/resume <session>`。
+   - `ask`：首个微信私聊发来普通消息时提示 `/new` 或 `/resume` 进入会话选择。
    - `bind_existing_first_route`：启动前选择一个已有 Codex session；第一个入站微信私聊 route 认领该 session。
    - `new_first_route`：启动前创建一个 Codex session；第一个入站微信私聊 route 绑定它。
 
@@ -964,7 +967,7 @@ type ChannelPersistencePolicy = {
 
 可用操作：
 /new 创建新会话
-/resume <session> 绑定已有会话
+/resume 进入会话选择，或 /resume [session] 绑定已有会话
 /whoami 查看当前 route
 ```
 
@@ -1013,7 +1016,7 @@ codex-wechat-bridge route policy ask|auto_new|reject
 ```text
 /whoami
 /new
-/resume <session>
+/resume [session|编号]
 /sessions
 /status
 /stop
@@ -1367,7 +1370,7 @@ export interface BridgeOptions {
   logger?: Logger;
   transcript?: TranscriptSink;
   cwd?: string;
-  initialSessionId?: string;
+  initialRouteBinding?: { type: "existing"; sessionId: string } | { type: "new" };
   progressMode?: ProgressDeliveryMode;
   approvalSendRetryDelayMs?: number;
 }

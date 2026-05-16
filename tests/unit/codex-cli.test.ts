@@ -4,7 +4,7 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { buildCodexRootArgs, discoverCodexSessions, displayCodexSessionTitle, findCodexSessionById, parseSessionIndexLine } from "../../src/codex/codex-cli.js";
+import { buildCodexRootArgs, discoverCodexSessions, displayCodexSessionTitle, findCodexSessionById, formatCodexSessionTitleForDisplay, parseSessionIndexLine, truncateDisplayText } from "../../src/codex/codex-cli.js";
 
 function tempDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "codex-cli-test-"));
@@ -108,4 +108,13 @@ test("discoverCodexSessions reads friendly titles from Codex sqlite state", (t) 
   assert.equal(displayCodexSessionTitle(session), "友好标题");
   assert.equal(session.preview, "第一条用户消息");
   assert.equal(session.cwd, "/tmp/sqlite-project");
+});
+
+test("formatCodexSessionTitleForDisplay truncates long one-line titles without mutating the raw title", () => {
+  const longTitle = "这是一个很长的 Codex 会话标题，用来验证终端和渠道列表不会被长标题撑开。".repeat(3);
+  const session = { id: "thread-long-title", threadName: longTitle };
+
+  assert.equal(displayCodexSessionTitle(session), longTitle);
+  assert.equal(formatCodexSessionTitleForDisplay(session, 24), "这是一个很长的 Codex 会话标题，用来...");
+  assert.equal(truncateDisplayText("第一行\n第二行\t第三行", 20), "第一行 第二行 第三行");
 });

@@ -4,6 +4,7 @@ import { Bridge } from "../../src/bridge/bridge.js";
 import { ChannelRegistry } from "../../src/channels/registry.js";
 import { MockChannelAdapter } from "../../src/channels/mock/mock-channel-adapter.js";
 import { MockCodexAdapter } from "../../src/codex/mock-codex-adapter.js";
+import { truncateDisplayText } from "../../src/codex/codex-cli.js";
 import type { CodexAdapter, CodexBackgroundEventHandler, CodexCollaborationMode, CodexEvent, CodexGoal, CodexRunOptions, CodexSession, CodexSessionContextUsage, CodexSessionStatus, CodexSessionSummary, StartSessionInput } from "../../src/codex/types.js";
 import type { TranscriptSink } from "../../src/logging/transcript.js";
 import type { ChannelCapabilities, ChannelMedia, ChannelMessage, ChannelTarget, SendResult } from "../../src/protocol/channel.js";
@@ -441,6 +442,46 @@ test("Bridge handles new session, prompt, status, and approval over mock channel
   assert.equal(codex.resolvedApprovals[0].decision, "approve");
 });
 
+test("Bridge can switch sessions by entering a numbered selection mode", async () => {
+  const channel = new MockChannelAdapter();
+  const codex = new MockCodexAdapter();
+  const bridge = new Bridge({ channel, codex, cwd: process.cwd() });
+
+  await bridge.start();
+  await channel.emitText("/new");
+  await channel.emitText("/new");
+  await channel.emitText("/use");
+  const selection = channel.sentMessages.at(-1)?.text ?? "";
+  assert.ok(selection.includes("**切换 Codex 会话**"));
+  assert.ok(selection.includes("1. `mock-codex-2`（当前）"));
+  assert.ok(selection.includes("2. `mock-codex-1`"));
+
+  await channel.emitText("2");
+  await channel.emitText("/status");
+  await bridge.stop();
+
+  assert.ok(channel.sentMessages.some((message) => message.text.includes("已绑定 Codex 会话")));
+  assert.ok(channel.sentMessages.at(-1)?.text.includes("当前会话: `mock-codex-1`"));
+});
+
+test("Bridge turns an unknown session id into a recoverable selection prompt", async () => {
+  const channel = new MockChannelAdapter();
+  const codex = new MockCodexAdapter();
+  const bridge = new Bridge({ channel, codex, cwd: process.cwd() });
+
+  await bridge.start();
+  await channel.emitText("/new");
+  await channel.emitText("/use missing-session-id");
+  const selection = channel.sentMessages.at(-1)?.text ?? "";
+  await channel.emitText("取消");
+  await bridge.stop();
+
+  assert.ok(selection.includes("没有找到 session `missing-session-id`"));
+  assert.ok(selection.includes("**切换 Codex 会话**"));
+  assert.equal(selection.includes("mock session not found"), false);
+  assert.ok(channel.sentMessages.at(-1)?.text.includes("已退出切换会话"));
+});
+
 test("Bridge exposes all sessions command for channel users", async () => {
   const channel = new MockChannelAdapter();
   const codex = new MockCodexAdapter();
@@ -471,6 +512,26 @@ test("Bridge exposes all sessions command for channel users", async () => {
   assert.ok(allSessionsMessages.every((message) => message.text.includes("mock-codex-2")));
 });
 
+test("Bridge truncates long session titles in all sessions output", async () => {
+  const channel = new MockChannelAdapter();
+  const codex = new MockCodexAdapter();
+  const longTitle = "这是一个很长的会话标题，会来自 Codex 保存的标题或第一条用户消息。".repeat(4);
+  await codex.startSession({
+    routeKey: "seed",
+    cwd: process.cwd(),
+    title: longTitle,
+  });
+  const bridge = new Bridge({ channel, codex, cwd: process.cwd() });
+
+  await bridge.start();
+  await channel.emitText("/sessions all");
+  await bridge.stop();
+
+  const sessions = channel.sentMessages.at(-1)?.text ?? "";
+  assert.ok(sessions.includes(truncateDisplayText(longTitle)));
+  assert.equal(sessions.includes(longTitle), false);
+});
+
 test("Bridge status includes session token context without channel identity details", async () => {
   const channel = new MockChannelAdapter();
   const codex = new ContextUsageCodexAdapter();
@@ -483,11 +544,11 @@ test("Bridge status includes session token context without channel identity deta
 
   const statusMessage = channel.sentMessages.at(-1)?.text ?? "";
   assert.match(statusMessage, /\*\*Codex 状态\*\*/);
-  assert.match(statusMessage, /Session: `mock-codex-1`/);
-  assert.match(statusMessage, /Model: `gpt-test` provider=`openai` tier=`default` effort=`high`/);
-  assert.match(statusMessage, /Context: `164,171 \/ 258,400 tokens` \(63\.5%, remaining 94,229\)/);
-  assert.match(statusMessage, /Last turn tokens: input `160,000`, cached `120,000`, output `4,171`, reasoning output `1,200`/);
-  assert.match(statusMessage, /Session API usage: total `34,375,973`, input `34,282,029`, cached `33,213,184`, output `93,944`, reasoning output `30,181`/);
+  assert.match(statusMessage, /当前会话: `mock-codex-1`/);
+  assert.match(statusMessage, /当前模型: `gpt-test`（服务商 `openai`，服务档 `default`，思考程度 `high`）/);
+  assert.match(statusMessage, /上下文: `164,171 \/ 258,400 token`（63\.5%，剩余 94,229）/);
+  assert.match(statusMessage, /最近一轮 token: 输入 `160,000`，缓存 `120,000`，输出 `4,171`，推理输出 `1,200`/);
+  assert.match(statusMessage, /本会话累计 token: 总计 `34,375,973`，输入 `34,282,029`，缓存 `33,213,184`，输出 `93,944`，推理输出 `30,181`/);
   assert.doesNotMatch(statusMessage, /13303\.4%/);
   assert.doesNotMatch(statusMessage, /mock:mock-account:direct:project-room/);
   assert.doesNotMatch(statusMessage, /Mock User \(alice\)/);
@@ -531,7 +592,7 @@ test("Bridge model command switches model and effort for the current session", a
   assert.deepEqual(codex.getModelPolicy("mock-codex-1"), { model: "gpt-next", reasoningEffort: "high" });
   assert.ok(channel.sentMessages.some((message) => message.text.includes("已设置 Codex 模型")));
   const status = channel.sentMessages.find((message) => message.text.includes("**Codex 状态**"))?.text ?? "";
-  assert.ok(status.includes("Model override: model=`gpt-next` effort=`xhigh`"));
+  assert.ok(status.includes("模型覆盖: 模型 `gpt-next`，思考程度 `xhigh`"));
 });
 
 test("Bridge model command rejects unknown models and invalid or unsupported efforts", async () => {
@@ -576,7 +637,7 @@ test("Bridge switches persistent collaboration mode with /plan and /code", async
   assert.ok(channel.sentMessages.some((message) => message.text.includes("已进入 Plan mode")));
   assert.ok(channel.sentMessages.some((message) => message.text.includes("已切回默认执行模式")));
   const status = channel.sentMessages.find((message) => message.text.includes("**Codex 状态**"))?.text ?? "";
-  assert.ok(status.includes("Mode: `plan`"));
+  assert.ok(status.includes("协作模式: 计划模式"));
   assert.deepEqual(codex.runs.map((run) => run.collaborationMode), ["plan", "default", "default"]);
   assert.equal(codex.runs[1].prompt, "按计划实现");
   assert.equal(codex.runs[2].prompt, "默认别名任务");
@@ -625,10 +686,10 @@ test("Bridge manages experimental goal commands for the current session", async 
   assert.ok(channel.sentMessages.some((message) => message.text.includes("当前没有绑定 Codex 会话，也没有 Goal")));
   assert.ok(channel.sentMessages.some((message) => message.text.includes("已设置 Goal")));
   const status = channel.sentMessages.find((message) => message.text.includes("**Codex 状态**"))?.text ?? "";
-  assert.ok(status.includes("Goal: `active` 完成微信 Goal 适配并保持测试通过"));
-  assert.ok(status.includes("Goal tokens: `0`"));
-  assert.ok(status.includes("Goal time: `0s`"));
-  assert.match(status, /Goal updated: `20\d\d-/);
+  assert.ok(status.includes("长期目标: 进行中 - 完成微信 Goal 适配并保持测试通过"));
+  assert.ok(status.includes("目标 token: `0`"));
+  assert.ok(status.includes("目标耗时: `0s`"));
+  assert.match(status, /目标更新时间: `20\d\d-/);
   assert.ok(channel.sentMessages.some((message) => message.text.includes("已暂停 Goal") && message.text.includes("Status: `paused`")));
   assert.ok(channel.sentMessages.some((message) => message.text.includes("已恢复 Goal") && message.text.includes("Status: `active`")));
   assert.ok(channel.sentMessages.some((message) => message.text.includes("已清除 Goal")));
@@ -749,7 +810,7 @@ test("Bridge stops retrying approval notification after approval is resolved", a
   await waitForTest(() => channel.approvalAttempts > 0);
   await channel.emitText("/status");
   const statusMessage = channel.sentMessages.at(-1)?.text ?? "";
-  assert.ok(statusMessage.includes("**Pending Approval**"));
+  assert.ok(statusMessage.includes("**待处理审批**"));
   assert.ok(statusMessage.includes("```text\n/OK\n```"));
   assert.ok(statusMessage.includes("```text\n/P\n```"));
   assert.ok(statusMessage.includes("```text\n/NO\n```"));
@@ -1036,7 +1097,7 @@ test("Bridge reports progress disabled in weixin status", async () => {
   await channel.emitText("/status");
   await bridge.stop();
 
-  assert.match(channel.sentMessages[0].text, /Progress: `disabled`/);
+  assert.match(channel.sentMessages[0].text, /进度投递: 已禁用/);
 });
 
 test("Bridge hides progress command and shows /fff in weixin help", async () => {
@@ -1092,7 +1153,7 @@ test("Bridge permission command shows and changes Codex run policy", async () =>
   assert.ok(channel.sentMessages.some((message) => message.text.includes("当前模式: `approval sandbox=workspace-write`")));
   assert.ok(channel.sentMessages.some((message) => message.text.includes("/permission full confirm")));
   assert.ok(channel.sentMessages.some((message) => message.text.includes("已切换 Codex 权限模式: full")));
-  assert.ok(channel.sentMessages.some((message) => message.text.includes("Permission: `full`")));
+  assert.ok(channel.sentMessages.some((message) => message.text.includes("权限模式: 完全权限")));
   assert.equal(codex.getRunPolicy().permissionMode, "approval");
 });
 
@@ -1117,8 +1178,8 @@ test("Bridge permission command scopes changes to the current bound session", as
   const otherStatus = channel.sentMessages
     .filter((message) => message.target.conversation.id === "other" && message.text.includes("**Codex 状态**"))
     .at(-1)?.text ?? "";
-  assert.ok(mainStatus.includes("Permission: `full`"));
-  assert.ok(otherStatus.includes("Permission: `approval sandbox=workspace-write`"));
+  assert.ok(mainStatus.includes("权限模式: 完全权限"));
+  assert.ok(otherStatus.includes("权限模式: 审批模式（沙箱 `workspace-write`）"));
 });
 
 test("Bridge sends typing state while Codex is running", async () => {
@@ -1147,9 +1208,9 @@ test("Bridge status reports running work and /stop cancels the current task", as
 
   await channel.emitText("/status");
   const statusMessage = channel.sentMessages.at(-1)?.text ?? "";
-  assert.match(statusMessage, /Processing: `yes`/);
-  assert.match(statusMessage, /State: `running/);
-  assert.match(statusMessage, /Action: `\/stop`/);
+  assert.match(statusMessage, /处理状态: 正在处理/);
+  assert.match(statusMessage, /运行状态: 运行中/);
+  assert.match(statusMessage, /可用操作: 发送 `\/stop`/);
 
   await channel.emitText("/stop");
   await bridge.waitForIdle();
@@ -1190,7 +1251,7 @@ test("Bridge queues normal prompts for the same route while keeping commands res
   await bridge.stop();
 
   assert.ok(channel.sentMessages.some((message) => message.text.includes("已加入队列")));
-  assert.ok(channel.sentMessages.some((message) => message.text.includes("Queue:")));
+  assert.ok(channel.sentMessages.some((message) => message.text.includes("排队消息:")));
   const firstIndex = channel.sentMessages.findIndex((message) => message.text === "Mock Codex 回复: 第一条");
   const secondIndex = channel.sentMessages.findIndex((message) => message.text === "Mock Codex 回复: 第二条");
   assert.ok(firstIndex >= 0);
@@ -1219,7 +1280,86 @@ test("Bridge binds first route to initial session when provided", async () => {
   await bridge.stop();
 
   assert.ok(channel.sentMessages.some((message) => message.text.includes("Mock Codex 回复: 继续已有会话")));
-  assert.ok(channel.sentMessages.some((message) => message.text.includes(`Session: \`${initial.id}\``)));
+  assert.ok(channel.sentMessages.some((message) => message.text.includes(`当前会话: \`${initial.id}\``)));
+});
+
+test("Bridge clears pending initial session when route explicitly creates a session first", async () => {
+  const channel = new MockChannelAdapter();
+  const codex = new MockCodexAdapter();
+  const initial = await codex.startSession({
+    routeKey: "bootstrap",
+    cwd: process.cwd(),
+    title: "existing",
+  });
+  const bridge = new Bridge({
+    channel,
+    codex,
+    cwd: process.cwd(),
+    initialSessionId: initial.id,
+  });
+
+  await bridge.start();
+  await channel.emitText("/new", { conversationId: "main" });
+  await channel.emitText("不要误用预设 session", { conversationId: "other" });
+  await bridge.waitForIdle();
+  await bridge.stop();
+
+  assert.equal(codex.runs.at(-1)?.sessionId, "mock-codex-3");
+  assert.notEqual(codex.runs.at(-1)?.sessionId, initial.id);
+});
+
+test("Bridge keeps pending initial session scoped to the first direct route", async () => {
+  const channel = new MockChannelAdapter();
+  const codex = new MockCodexAdapter();
+  const initial = await codex.startSession({
+    routeKey: "bootstrap",
+    cwd: process.cwd(),
+    title: "existing",
+  });
+  const bridge = new Bridge({
+    channel,
+    codex,
+    cwd: process.cwd(),
+    initialRouteBinding: { type: "existing", sessionId: initial.id },
+  });
+
+  await bridge.start();
+  await channel.emitText("/status", { conversationId: "main" });
+  await channel.emitText("其他私聊不要误用预设", { conversationId: "other" });
+  await bridge.waitForIdle();
+  await channel.emitText("首个私聊继续已有会话", { conversationId: "main" });
+  await bridge.waitForIdle();
+  await bridge.stop();
+
+  assert.ok(channel.sentMessages.some((message) => message.text.includes("待绑定首个私聊预设")));
+  assert.deepEqual(codex.runs.map((run) => run.prompt), [
+    "其他私聊不要误用预设",
+    "首个私聊继续已有会话",
+  ]);
+  assert.equal(codex.runs[0]?.sessionId, "mock-codex-2");
+  assert.equal(codex.runs[1]?.sessionId, initial.id);
+});
+
+test("Bridge initial new route binding bypasses ask policy for the first direct route only", async () => {
+  const channel = new MockChannelAdapter();
+  const codex = new MockCodexAdapter();
+  const bridge = new Bridge({
+    channel,
+    codex,
+    cwd: process.cwd(),
+    unboundRoutePolicy: "ask",
+    initialRouteBinding: { type: "new" },
+  });
+
+  await bridge.start();
+  await channel.emitText("第一个私聊直接创建", { conversationId: "main" });
+  await bridge.waitForIdle();
+  await channel.emitText("第二个私聊仍需选择", { conversationId: "other" });
+  await bridge.waitForIdle();
+  await bridge.stop();
+
+  assert.deepEqual(codex.runs.map((run) => run.prompt), ["第一个私聊直接创建"]);
+  assert.ok(channel.sentMessages.some((message) => message.text.includes("请先发送 /new 创建新会话")));
 });
 
 test("Bridge asks unbound routes to choose a session when policy is ask", async () => {

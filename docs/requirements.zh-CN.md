@@ -47,7 +47,7 @@ Codex <-> Codex Adapter <-> Middleware Core <-> Weixin Adapter <-> WeChat
 - 真实 Codex 模式启动时必须先选择新会话或历史会话，再选择权限模式：安全沙箱模式或完全权限；完全权限必须明确提示危险并要求确认。默认 app-server 接入下，安全沙箱模式必须支持把 Codex 审批请求推送到微信，并保持与本机 Codex CLI `workspace-write` 一致的网络访问能力。
 - 真实 Codex 模式启动时，如果选择创建新会话，必须展示默认工作目录；用户可以输入新工作目录，目录不存在时由中间件创建。
 - 真实 Codex 模式启动时，如果选择历史会话，不再询问新工作目录，必须尽量恢复该 Codex 会话历史记录中的原工作目录。
-- 历史会话列表和微信 `/sessions all` 必须优先展示 Codex 已保存的标题或首条用户消息，方便用户辨认会话 ID。
+- 历史会话列表和微信 `/sessions all` 必须优先展示 Codex 已保存的标题或首条用户消息，方便用户辨认会话 ID；展示时应压缩换行并省略过长标题，避免终端和聊天窗口被长标题撑开。
 - `WeixinAdapter` 第一版：已实现二维码登录 API 入口、登录确认轮询、账号 token 本地存储、文本 `sendmessage` 请求、微信入站消息到通用 `ChannelMessage` 的转换、媒体上传发送、typing 和限流重试。
 - `WeixinAdapter` 真实扫码登录和真实微信收发仍需用户后续协助测试。
 - 本地单元测试、集成测试和中文测试报告。
@@ -201,8 +201,8 @@ Git 管理要求：
 - `/stop`：立刻终止当前 Codex 任务，不结束 Codex 会话。
 - `/resume`：恢复或重新绑定已有 Codex 会话。
 - `/sessions`：列出当前微信上下文最近的 Codex 会话。
-- `/sessions all` 或 `/all-sessions`：列出全部可发现 Codex 历史会话，方便微信用户获得会话 ID 后执行 `/resume` 或 `/use`。
-- `/use <session>`：切换到指定会话。
+- `/sessions all` 或 `/all-sessions`：列出全部可发现 Codex 历史会话，方便微信用户获得会话 ID 或用编号选择后执行 `/resume` 或 `/use`。
+- `/use [session|编号]`：切换到指定会话；不带参数时进入会话选择模式，用户直接回复编号完成切换，回复“取消”退出。
 - `/clear`：清理微信侧临时状态，不删除持久化 Codex 历史。
 - `/debug`：管理员诊断命令，输出更详细的通道、状态和错误信息。
 - `/config`：管理员查看当前非敏感配置。
@@ -358,48 +358,52 @@ Codex 状态：
 
 ```md
 **Codex 状态**
-- Session: `cdx-8f2a`
-- State: `running turn=exec-turn-123 task=processing your last message`
-- Model: `gpt-5.1-codex` provider=`openai` effort=`medium`
-- Context: `164,171 / 258,400 tokens` (63.5%, remaining 94,229)
-- Last turn tokens: input `160,000`, cached `120,000`, output `4,171`, reasoning output `1,200`
-- Session API usage: total `34,375,973`, input `34,282,029`, cached `33,213,184`, output `93,944`, reasoning output `30,181`
-- Cwd: `codex-openclaw-wechat`
 
-**Bridge**
-- Processing: `yes`
-- Queue: `0`
-- Pending approvals: `0`
-- Progress: `disabled` (微信渠道不投递进度)
-- Permission: `approval sandbox=workspace-write`
-- Action: `/stop` 终止当前任务
+**会话**
+- 当前会话: `cdx-8f2a`
+- 运行状态: 运行中（轮次 `exec-turn-123`，任务: processing your last message）
+- 当前模型: `gpt-5.1-codex`（服务商 `openai`，思考程度 `medium`）
+- 上下文: `164,171 / 258,400 token`（63.5%，剩余 94,229）
+- 最近一轮 token: 输入 `160,000`，缓存 `120,000`，输出 `4,171`，推理输出 `1,200`
+- 本会话累计 token: 总计 `34,375,973`，输入 `34,282,029`，缓存 `33,213,184`，输出 `93,944`，推理输出 `30,181`
+- 工作目录: `codex-openclaw-wechat`
 
-**Channel**
-- Adapter: `weixin`
-- State: `connected`
+**运行**
+- 处理状态: 正在处理
+- 排队消息: `0`
+- 待审批: `0`
+- 进度投递: 已禁用（微信渠道不投递进度）
+- 权限模式: 审批模式（沙箱 `workspace-write`）
+- 可用操作: 发送 `/stop` 终止当前任务
+
+**渠道**
+- 渠道: `weixin`
+- 连接状态: 已连接
 ```
 
 管理员版示例：
 
 ```md
 **Codex 状态**
-- Session: `cdx-8f2a`
-- State: `running`
-- Model: `gpt-5.1-codex` provider=`openai` effort=`medium`
-- Context: `164,171 / 258,400 tokens` (63.5%, remaining 94,229)
-- Last turn tokens: input `160,000`, cached `120,000`, output `4,171`, reasoning output `1,200`
-- Session API usage: total `34,375,973`, input `34,282,029`, cached `33,213,184`, output `93,944`, reasoning output `30,181`
-- Cwd: `codex-openclaw-wechat`
 
-**Bridge**
-- Processing: `yes`
-- Queue: `0`
-- Pending approvals: `0`
+**会话**
+- 当前会话: `cdx-8f2a`
+- 运行状态: 运行中
+- 当前模型: `gpt-5.1-codex`（服务商 `openai`，思考程度 `medium`）
+- 上下文: `164,171 / 258,400 token`（63.5%，剩余 94,229）
+- 最近一轮 token: 输入 `160,000`，缓存 `120,000`，输出 `4,171`，推理输出 `1,200`
+- 本会话累计 token: 总计 `34,375,973`，输入 `34,282,029`，缓存 `33,213,184`，输出 `93,944`，推理输出 `30,181`
+- 工作目录: `codex-openclaw-wechat`
 
-**Channel**
-- Adapter: `weixin`
-- State: `connected`
-- Last error: none
+**运行**
+- 处理状态: 正在处理
+- 排队消息: `0`
+- 待审批: `0`
+
+**渠道**
+- 渠道: `weixin`
+- 连接状态: 已连接
+- 最近错误: 无
 ```
 
 ## 7. 权限与安全需求

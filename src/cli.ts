@@ -6,15 +6,21 @@ import { MockChannelAdapter } from "./channels/mock/mock-channel-adapter.js";
 import { TerminalChannelAdapter } from "./channels/terminal/terminal-channel-adapter.js";
 import { WeixinAdapter } from "./channels/weixin/weixin-adapter.js";
 import { displayWeixinQrCode } from "./channels/weixin/weixin-qr-display.js";
-import { checkCodexCli, discoverCodexSessions, displayCodexSessionTitle, findCodexSessionById, type CodexPermissionMode, type CodexRunPolicy, type DiscoveredCodexSession } from "./codex/codex-cli.js";
+import { checkCodexCli, discoverCodexSessions, displayCodexSessionTitle, findCodexSessionById, formatCodexSessionTitleForDisplay, truncateDisplayText, type CodexPermissionMode, type CodexRunPolicy, type DiscoveredCodexSession } from "./codex/codex-cli.js";
 import { runServe } from "./cli/serve.js";
+import { runFeishuCodex, runFeishuStatus } from "./cli/feishu.js";
+import {
+  formatAdapterModeForUser,
+  formatChannelStatusDetails,
+  formatPermissionModeForUser,
+  formatProgressModeForUser,
+} from "./cli/serve-wizard.js";
 import { AppServerCodexAdapter } from "./codex/app-server-codex-adapter.js";
 import { ExecCodexAdapter } from "./codex/exec-codex-adapter.js";
 import { MockCodexAdapter } from "./codex/mock-codex-adapter.js";
 import type { CodexAdapter } from "./codex/types.js";
 import { resolveNewSessionWorkdir } from "./codex/workdir.js";
 import { ConsoleLogger } from "./logging/logger.js";
-import { ConsoleTranscriptSink } from "./logging/transcript.js";
 
 interface StartupOptions {
   session?: string;
@@ -49,6 +55,11 @@ async function main(argv: string[]): Promise<void> {
     return;
   }
 
+  if (area === "codex") {
+    await runServe(parseStartupOptions([command, ...rest].filter((item): item is string => Boolean(item))));
+    return;
+  }
+
   if (area === "terminal" && (command === "mock" || command === "codex")) {
     await runTerminalBridge(command, parseStartupOptions(rest));
     return;
@@ -57,12 +68,12 @@ async function main(argv: string[]): Promise<void> {
   if (area === "weixin" && command === "status") {
     const adapter = new WeixinAdapter({ pollOnStart: false });
     await adapter.start();
-    console.log(JSON.stringify(await adapter.getStatus(), null, 2));
+    console.log(formatChannelStatusDetails(await adapter.getStatus(), adapter.getCapabilities()));
     return;
   }
 
   if (area === "weixin" && command === "codex") {
-    await runWeixinCodexBridge(parseStartupOptions(rest));
+    await runServe(parseStartupOptions(rest));
     return;
   }
 
@@ -75,6 +86,16 @@ async function main(argv: string[]): Promise<void> {
     }
     const result = await adapter.waitLogin(started.sessionKey);
     console.log(result.message);
+    return;
+  }
+
+  if (area === "feishu" && command === "status") {
+    await runFeishuStatus();
+    return;
+  }
+
+  if (area === "feishu" && command === "codex") {
+    await runFeishuCodex(parseStartupOptions(rest));
     return;
   }
 
@@ -195,63 +216,6 @@ async function runTerminalBridge(mode: "mock" | "codex", options: StartupOptions
   await bridge.stop();
 }
 
-async function runWeixinCodexBridge(options: StartupOptions = {}): Promise<void> {
-  const startup = await prepareCodexStartup(options, { progressDisabled: true });
-  const channel = new WeixinAdapter({ verifyCodeProvider: askStdin });
-  const codex = createRealCodexAdapter(startup);
-  const bridge = new Bridge({
-    channel,
-    codex,
-    logger: new ConsoleLogger(false),
-    transcript: new ConsoleTranscriptSink(),
-    cwd: startup.cwd,
-    initialSessionId: startup.sessionId,
-    progressMode: options.progressMode,
-  });
-
-  await bridge.start();
-  await ensureWeixinLoggedIn(channel);
-  printRuntimeSummary("微信 Codex 中间件", startup, options.progressMode, { progressDisabled: true });
-  await waitForShutdownSignal();
-  await bridge.stop();
-}
-
-async function ensureWeixinLoggedIn(channel: WeixinAdapter): Promise<void> {
-  let status = await channel.getStatus();
-  if (status.state === "connected") {
-    console.log(`微信已登录: ${status.account ?? "default"}`);
-    return;
-  }
-  console.log("微信未登录，开始二维码登录。");
-  const started = await channel.startLogin();
-  console.log(started.message);
-  if (started.qrCodeText) {
-    await displayWeixinQrCode(started.qrCodeText);
-  }
-  const loginResult = await channel.waitLogin(started.sessionKey);
-  console.log(loginResult.message);
-  if (loginResult.state !== "connected") {
-    throw new Error(`微信登录未完成: ${loginResult.message}`);
-  }
-  await channel.start();
-  status = await channel.getStatus();
-  if (status.state !== "connected") {
-    throw new Error(`微信登录后启动失败: ${status.lastError ?? status.state}`);
-  }
-}
-
-function waitForShutdownSignal(): Promise<void> {
-  return new Promise((resolve) => {
-    const done = () => {
-      process.off("SIGINT", done);
-      process.off("SIGTERM", done);
-      resolve();
-    };
-    process.once("SIGINT", done);
-    process.once("SIGTERM", done);
-  });
-}
-
 async function prepareCodexStartup(
   options: StartupOptions,
   display: { progressDisabled?: boolean } = {},
@@ -310,8 +274,8 @@ async function resolvePermissionMode(options: StartupOptions, rl?: Interface): P
   if (!rl) return "approval";
   console.log("");
   console.log("Codex 权限模式（作用于本次启动后的后续任务）");
-  console.log("1. approval - 使用 workspace-write sandbox；app-server 可把审批推送到微信 /OK 或 /NO");
-  console.log("2. full - 完全权限，跳过审批和沙箱，非常危险");
+  console.log("1. 审批模式 - 使用 workspace-write 沙箱；app-server 可把审批推送到微信 /OK 或 /NO");
+  console.log("2. 完全权限 - 跳过审批和沙箱，非常危险");
   const answer = (await rl.question("请选择权限模式 [1]: ")).trim();
   if (answer === "2" || answer.toLowerCase() === "full") {
     await confirmFullPermission(rl, false);
@@ -388,10 +352,10 @@ function resolveExistingSessionCwd(
     console.log("已选择已有 Codex 会话，启动参数 --cwd/--workdir 将被忽略。");
   }
   const cwd = choice.session?.cwd ?? process.cwd();
-  const title = choice.session ? displayCodexSessionTitle(choice.session) : undefined;
+  const title = choice.session ? formatCodexSessionTitleForDisplay(choice.session) : undefined;
   console.log("");
   console.log("已选择已有 Codex 会话");
-  console.log(`- Session: ${choice.sessionId}`);
+  console.log(`- Session ID: ${choice.sessionId}`);
   if (title) console.log(`- 标题: ${title}`);
   if (choice.session?.cwd) {
     console.log(`- 工作目录: ${cwd}`);
@@ -413,11 +377,11 @@ function printStartupSelection(params: {
   console.log("");
   console.log("启动选择");
   console.log(`- 会话: ${params.sessionId ? `恢复 ${params.sessionId}` : "新建"}`);
-  if (params.sessionTitle) console.log(`- 标题: ${params.sessionTitle}`);
+  if (params.sessionTitle) console.log(`- 标题: ${truncateDisplayText(params.sessionTitle)}`);
   console.log(`- 工作目录: ${params.cwd}`);
-  console.log(`- Codex Adapter: ${formatAdapterForCli(params.adapterMode)}`);
-  console.log(`- 权限: ${formatPolicyForCli(params.policy)}`);
-  console.log(`- 进度: ${formatProgressForCli(params.progressMode, params.progressDisabled)}`);
+  console.log(`- Codex 接入: ${formatAdapterForCli(params.adapterMode)}`);
+  console.log(`- 权限模式: ${formatPolicyForCli(params.policy)}`);
+  console.log(`- 阶段进度: ${formatProgressForCli(params.progressMode, params.progressDisabled)}`);
 }
 
 function printRuntimeSummary(
@@ -429,37 +393,34 @@ function printRuntimeSummary(
   console.log("");
   console.log(`${title}已启动`);
   console.log(`- 会话: ${startup.sessionId ? `首个聊天绑定 ${startup.sessionId}` : "首条消息自动新建"}`);
-  if (startup.sessionTitle) console.log(`- 标题: ${startup.sessionTitle}`);
+  if (startup.sessionTitle) console.log(`- 标题: ${truncateDisplayText(startup.sessionTitle)}`);
   console.log(`- 工作目录: ${startup.cwd}`);
-  if (startup.adapterMode) console.log(`- Codex Adapter: ${formatAdapterForCli(startup.adapterMode)}`);
-  if (startup.policy) console.log(`- 权限: ${formatPolicyForCli(startup.policy)}`);
-  console.log(`- 进度: ${formatProgressForCli(progressMode, display.progressDisabled)}`);
+  if (startup.adapterMode) console.log(`- Codex 接入: ${formatAdapterForCli(startup.adapterMode)}`);
+  if (startup.policy) console.log(`- 权限模式: ${formatPolicyForCli(startup.policy)}`);
+  console.log(`- 阶段进度: ${formatProgressForCli(progressMode, display.progressDisabled)}`);
   console.log("- 退出: Ctrl+C");
 }
 
 function formatSessionChoice(index: number, session: DiscoveredCodexSession): string {
-  const title = displayCodexSessionTitle(session);
+  const title = formatCodexSessionTitleForDisplay(session);
   const parts = [`${index}. ${title ?? session.id}`];
-  parts.push(`   id: ${session.id}`);
-  if (session.updatedAt) parts.push(`   updated: ${session.updatedAt}`);
-  if (session.cwd) parts.push(`   cwd: ${session.cwd}`);
+  parts.push(`   Session ID: ${session.id}`);
+  if (session.updatedAt) parts.push(`   最近更新: ${session.updatedAt}`);
+  if (session.cwd) parts.push(`   工作目录: ${session.cwd}`);
   return parts.join("\n");
 }
 
 function formatPolicyForCli(policy: CodexRunPolicy): string {
-  if (policy.permissionMode === "full") {
-    return "full（跳过审批和沙箱）";
-  }
-  return `approval（sandbox=${policy.sandbox ?? "workspace-write"}）`;
+  if (policy.permissionMode === "full") return formatPermissionModeForUser(policy.permissionMode);
+  return `审批模式（${policy.sandbox ?? "workspace-write"} 沙箱，推荐）`;
 }
 
 function formatAdapterForCli(adapterMode: RealCodexAdapterMode): string {
-  if (adapterMode === "app-server") return "app-server（支持微信交互审批）";
-  return "exec（非交互；不支持微信审批，仅作为回退）";
+  return formatAdapterModeForUser(adapterMode);
 }
 
 function formatProgressForCli(progressMode: ProgressDeliveryMode | undefined, disabled?: boolean): string {
-  return disabled ? "disabled（微信渠道不投递）" : progressMode ?? "brief";
+  return formatProgressModeForUser(progressMode, disabled);
 }
 
 function createRealCodexAdapter(startup: PreparedCodexStartup | { policy?: CodexRunPolicy; adapterMode?: RealCodexAdapterMode }): CodexAdapter {
@@ -475,11 +436,12 @@ function printHelp(): void {
     "Codex Weixin Middleware",
     "",
     "Commands:",
+    "  codex-wechat-bridge codex          启动统一交互入口（管理渠道并启动 Codex）",
     "  codex-wechat-bridge codex test     运行本地 mock Codex/Channel 流程",
     "  codex-wechat-bridge terminal mock  启动本地终端通道 + MockCodex",
     "  codex-wechat-bridge terminal codex 启动本地终端通道 + Codex",
     "  codex-wechat-bridge serve          启动多渠道配置向导（当前真实渠道支持微信）",
-    "    --session new|last|<id>          选择新会话或已有 Codex 会话",
+    "    --session new|last|<id>          serve 下作为首个微信私聊预设；不会绑定整个微信账号",
     "    --cwd <dir>, --workdir <dir>     设置新会话工作目录；目录不存在会自动创建",
     "    --permission approval|full       设置安全沙箱或完全权限",
     "    --codex-adapter app-server|exec  设置 Codex 接入方式；默认 app-server，支持微信审批",
@@ -487,9 +449,11 @@ function printHelp(): void {
     "    --progress brief|detailed|silent 设置默认进度投递模式（微信渠道固定禁用）",
     "    --max-concurrent-turns <n>       设置全局 Codex turn 并发上限；默认不限制",
     "    --no-interactive                 非交互启动；需要已有微信登录态",
-    "  codex-wechat-bridge weixin codex   启动真实微信通道 + Codex app-server",
+    "  codex-wechat-bridge weixin codex   启动微信渠道管理向导（当前等同 serve）",
     "  codex-wechat-bridge weixin status  查看 WeixinAdapter 当前状态",
     "  codex-wechat-bridge weixin login   显示终端二维码并等待微信扫码登录",
+    "  codex-wechat-bridge feishu codex   启动飞书私聊通道 + Codex",
+    "  codex-wechat-bridge feishu status  查看飞书配置和连接状态",
     "  codex-wechat-bridge start          当前等同 terminal mock",
   ].join("\n"));
 }

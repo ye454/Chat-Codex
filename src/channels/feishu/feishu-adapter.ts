@@ -1,0 +1,508 @@
+import {
+  AppType,
+  Client,
+  Domain,
+  EventDispatcher,
+  LoggerLevel,
+  WSClient,
+} from "@larksuiteoapi/node-sdk";
+import type {
+  ChannelAdapter,
+  ChannelCapabilities,
+  ChannelLoginResult,
+  ChannelMessageHandler,
+  ChannelStatus,
+  ChannelTarget,
+  SendOptions,
+  SendResult,
+} from "../../protocol/channel.js";
+import type { ChannelDeliveryPolicy } from "../../protocol/delivery-policy.js";
+import { DEFAULT_CHANNEL_DELIVERY_POLICY } from "../../protocol/delivery-policy.js";
+import {
+  DEFAULT_FEISHU_ACCOUNT_ID,
+  DEFAULT_FEISHU_DOMAIN,
+  DEFAULT_FEISHU_STALE_MESSAGE_MS,
+  FEISHU_CHANNEL_ID,
+  buildFeishuMessageUuid,
+  buildFeishuPostContent,
+  feishuEventToChannelMessage,
+  feishuStatusDetails,
+  formatFeishuApiError,
+  missingFeishuCredentials,
+  normalizeFeishuCredentials,
+} from "./feishu-message.js";
+import type {
+  FeishuAdapterOptions,
+  FeishuApiResponse,
+  FeishuBotIdentity,
+  FeishuCredentials,
+  FeishuEventDispatcher,
+  FeishuEventHandlers,
+  FeishuMessageReceiveEvent,
+  FeishuProbeResult,
+  FeishuSdkClient,
+  FeishuSentMessageData,
+  FeishuTransportFactory,
+  FeishuWsCallbacks,
+  FeishuWsClient,
+} from "./feishu-types.js";
+
+const DEFAULT_SOURCE_VERSION = "node-sdk";
+const DEFAULT_DEDUP_TTL_MS = 10 * 60 * 1000;
+const SILENT_FEISHU_SDK_LOGGER = {
+  fatal: () => undefined,
+  error: () => undefined,
+  warn: () => undefined,
+  info: () => undefined,
+  debug: () => undefined,
+  trace: () => undefined,
+};
+
+export class FeishuAdapter implements ChannelAdapter {
+  readonly id: string;
+  readonly label = "Feishu Adapter";
+  private readonly credentials: FeishuCredentials;
+  private readonly sourceVersion: string;
+  private readonly connectOnStart: boolean;
+  private readonly probeOnStart: boolean;
+  private readonly staleMessageMs: number;
+  private readonly dedupTtlMs: number;
+  private readonly transportFactory: FeishuTransportFactory;
+  private readonly now: () => number;
+  private handler?: ChannelMessageHandler;
+  private status: ChannelStatus;
+  private client?: FeishuSdkClient;
+  private dispatcher?: FeishuEventDispatcher;
+  private wsClient?: FeishuWsClient;
+  private botOpenId?: string;
+  private botName?: string;
+  private readonly seenMessages = new Map<string, number>();
+
+  constructor(options: FeishuAdapterOptions = {}) {
+    this.id = options.id ?? FEISHU_CHANNEL_ID;
+    this.credentials = normalizeFeishuCredentials(options);
+    this.sourceVersion = options.sourceVersion ?? DEFAULT_SOURCE_VERSION;
+    this.connectOnStart = options.connectOnStart ?? true;
+    this.probeOnStart = options.probeOnStart ?? true;
+    this.staleMessageMs = options.staleMessageMs ?? DEFAULT_FEISHU_STALE_MESSAGE_MS;
+    this.dedupTtlMs = options.dedupTtlMs ?? DEFAULT_DEDUP_TTL_MS;
+    this.transportFactory = options.transportFactory ?? new DefaultFeishuTransportFactory();
+    this.now = options.now ?? Date.now;
+    this.status = {
+      channelId: this.id,
+      state: missingFeishuCredentials(this.credentials).length > 0 ? "login_required" : "stopped",
+      account: this.credentials.accountId ?? DEFAULT_FEISHU_ACCOUNT_ID,
+      details: this.statusDetails("adapter-ready"),
+    };
+  }
+
+  async start(): Promise<void> {
+    const missing = missingFeishuCredentials(this.credentials);
+    if (missing.length > 0) {
+      this.status = {
+        ...this.status,
+        state: "login_required",
+        lastError: `缺少飞书配置: ${missing.join(", ")}`,
+        details: this.statusDetails("missing-credentials"),
+      };
+      return;
+    }
+    const required = this.requiredCredentials();
+    this.status = {
+      ...this.status,
+      state: "starting",
+      lastError: undefined,
+      details: this.statusDetails("starting"),
+    };
+    this.client = this.transportFactory.createClient(required);
+    if (this.probeOnStart) {
+      const probe = await this.probeBotIdentity();
+      if (!probe.ok) {
+        this.status = {
+          ...this.status,
+          state: "failed",
+          lastError: probe.error ?? "飞书机器人配置检查失败",
+          details: this.statusDetails("probe-failed"),
+        };
+        return;
+      }
+    }
+    if (!this.connectOnStart) {
+      this.status = {
+        ...this.status,
+        state: "connected",
+        details: this.statusDetails("configuration-checked"),
+      };
+      return;
+    }
+    this.dispatcher = this.transportFactory.createDispatcher(this.credentials);
+    this.dispatcher.register(this.eventHandlers());
+    this.wsClient = this.transportFactory.createWsClient(required, this.wsCallbacks());
+    await this.wsClient.start({ eventDispatcher: this.dispatcher });
+    this.status = {
+      ...this.status,
+      state: this.status.state === "connected" ? "connected" : "starting",
+      details: this.statusDetails("websocket-started"),
+    };
+  }
+
+  async stop(): Promise<void> {
+    this.wsClient?.close({ force: true });
+    this.wsClient = undefined;
+    this.dispatcher = undefined;
+    this.status = {
+      ...this.status,
+      state: "stopped",
+      details: this.statusDetails("stopped"),
+    };
+  }
+
+  async login(): Promise<ChannelLoginResult> {
+    const missing = missingFeishuCredentials(this.credentials);
+    if (missing.length > 0) {
+      return {
+        state: "login_required",
+        message: `飞书没有扫码登录流程。请配置 ${missing.join(", ")} 后重新启动。`,
+      };
+    }
+    return {
+      state: "connected",
+      message: "飞书使用 App ID / App Secret 连接，当前配置已存在。",
+    };
+  }
+
+  async getStatus(): Promise<ChannelStatus> {
+    const details = this.status.details;
+    const lastSkipReason = stringDetail(details, "lastSkipReason");
+    return {
+      ...this.status,
+      details: {
+        ...this.statusDetails(stringDetail(details, "phase") ?? "status"),
+        ...(lastSkipReason ? { lastSkipReason } : {}),
+      },
+    };
+  }
+
+  getCapabilities(): ChannelCapabilities {
+    return {
+      text: true,
+      media: false,
+      typing: false,
+      direct: true,
+      group: false,
+      thread: false,
+      login: "token",
+      messageUpdate: false,
+      streamingHint: true,
+    };
+  }
+
+  getDeliveryPolicy(): ChannelDeliveryPolicy {
+    return DEFAULT_CHANNEL_DELIVERY_POLICY;
+  }
+
+  onMessage(handler: ChannelMessageHandler): void {
+    this.handler = handler;
+  }
+
+  async sendText(target: ChannelTarget, text: string, options?: SendOptions): Promise<SendResult> {
+    const client = this.ensureClient();
+    const content = buildFeishuPostContent(text);
+    const uuid = buildFeishuMessageUuid();
+    const sourceMessageId = options?.replyToMessageId ?? stringDetail(target.context, "sourceMessageId");
+    let response: FeishuApiResponse<FeishuSentMessageData> | undefined;
+    if (sourceMessageId) {
+      try {
+        response = await client.im.message.reply({
+          path: { message_id: sourceMessageId },
+          data: {
+            content,
+            msg_type: "post",
+            uuid,
+          },
+        });
+        if (response.code === undefined || response.code === 0) {
+          return this.recordSendResult(response, uuid);
+        }
+      } catch (error) {
+        this.recordSendError(error, "reply-failed");
+      }
+    }
+    response = await client.im.message.create({
+      params: { receive_id_type: "chat_id" },
+      data: {
+        receive_id: target.conversation.id,
+        msg_type: "post",
+        content,
+        uuid,
+      },
+    });
+    if (response.code !== undefined && response.code !== 0) {
+      const errorText = formatFeishuApiError(response, "飞书消息发送失败");
+      this.recordSendError(new Error(errorText), "create-failed");
+      throw new Error(errorText);
+    }
+    return this.recordSendResult(response, uuid);
+  }
+
+  private eventHandlers(): FeishuEventHandlers {
+    return {
+      "im.message.receive_v1": (event) => this.handleIncomingEvent(event),
+    };
+  }
+
+  private async handleIncomingEvent(event: FeishuMessageReceiveEvent): Promise<void> {
+    const mapped = feishuEventToChannelMessage(event, {
+      channelId: this.id,
+      accountId: this.credentials.accountId ?? DEFAULT_FEISHU_ACCOUNT_ID,
+      botOpenId: this.botOpenId,
+      expectedAppId: this.credentials.appId,
+      now: this.now(),
+      staleMessageMs: this.staleMessageMs,
+    });
+    if (!mapped.ok) {
+      this.status = {
+        ...this.status,
+        details: {
+          ...this.statusDetails("event-skipped"),
+          lastSkipReason: mapped.reason,
+        },
+      };
+      return;
+    }
+    if (!this.recordMessageId(mapped.message.id)) {
+      this.status = {
+        ...this.status,
+        details: {
+          ...this.statusDetails("duplicate-skipped"),
+          lastSkipReason: "duplicate_message",
+        },
+      };
+      return;
+    }
+    this.status = {
+      ...this.status,
+      lastInboundAt: mapped.message.timestamp,
+      details: this.statusDetails("message-received"),
+    };
+    try {
+      await this.handler?.(mapped.message);
+    } catch (error) {
+      this.status = {
+        ...this.status,
+        state: "degraded",
+        lastError: error instanceof Error ? error.message : String(error),
+        details: this.statusDetails("handler-failed"),
+      };
+    }
+  }
+
+  private async probeBotIdentity(): Promise<FeishuProbeResult> {
+    const client = this.ensureClient();
+    if (!client.request) return { ok: true, appId: this.credentials.appId };
+    try {
+      const response = await client.request<FeishuApiResponse<{
+        pingBotInfo?: {
+          botID?: string;
+          botName?: string;
+        };
+      }>>({
+        method: "POST",
+        url: "/open-apis/bot/v1/openclaw_bot/ping",
+        data: { needBotInfo: true },
+      });
+      if (response.code !== undefined && response.code !== 0) {
+        return {
+          ok: false,
+          appId: this.credentials.appId,
+          error: formatFeishuApiError(response, "飞书机器人配置检查失败"),
+        };
+      }
+      const identity: FeishuBotIdentity = {
+        appId: this.credentials.appId,
+        botOpenId: response.data?.pingBotInfo?.botID,
+        botName: response.data?.pingBotInfo?.botName,
+      };
+      this.botOpenId = identity.botOpenId;
+      this.botName = identity.botName;
+      this.status = {
+        ...this.status,
+        account: this.credentials.accountId ?? DEFAULT_FEISHU_ACCOUNT_ID,
+        details: this.statusDetails("probe-ok"),
+      };
+      return { ok: true, ...identity };
+    } catch (error) {
+      return {
+        ok: false,
+        appId: this.credentials.appId,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
+  private wsCallbacks(): FeishuWsCallbacks {
+    return {
+      onReady: () => {
+        this.status = {
+          ...this.status,
+          state: "connected",
+          account: this.credentials.accountId ?? DEFAULT_FEISHU_ACCOUNT_ID,
+          lastError: undefined,
+          details: this.statusDetails("websocket-connected"),
+        };
+      },
+      onError: (error) => {
+        this.status = {
+          ...this.status,
+          state: this.status.state === "connected" ? "degraded" : "failed",
+          lastError: error.message,
+          details: this.statusDetails("websocket-error"),
+        };
+      },
+      onReconnecting: () => {
+        this.status = {
+          ...this.status,
+          state: "degraded",
+          details: this.statusDetails("websocket-reconnecting"),
+        };
+      },
+      onReconnected: () => {
+        this.status = {
+          ...this.status,
+          state: "connected",
+          lastError: undefined,
+          details: this.statusDetails("websocket-reconnected"),
+        };
+      },
+    };
+  }
+
+  private ensureClient(): FeishuSdkClient {
+    if (this.client) return this.client;
+    const missing = missingFeishuCredentials(this.credentials);
+    if (missing.length > 0) {
+      throw new Error(`飞书渠道未配置: ${missing.join(", ")}`);
+    }
+    this.client = this.transportFactory.createClient(this.requiredCredentials());
+    return this.client;
+  }
+
+  private requiredCredentials(): Required<Pick<FeishuCredentials, "appId" | "appSecret">> & FeishuCredentials {
+    const appId = this.credentials.appId;
+    const appSecret = this.credentials.appSecret;
+    if (!appId || !appSecret) {
+      throw new Error(`飞书渠道未配置: ${missingFeishuCredentials(this.credentials).join(", ")}`);
+    }
+    return {
+      ...this.credentials,
+      appId,
+      appSecret,
+      domain: this.credentials.domain ?? DEFAULT_FEISHU_DOMAIN,
+      accountId: this.credentials.accountId ?? DEFAULT_FEISHU_ACCOUNT_ID,
+    };
+  }
+
+  private recordSendResult(response: FeishuApiResponse<FeishuSentMessageData>, fallbackMessageId: string): SendResult {
+    const deliveredAt = new Date(this.now()).toISOString();
+    this.status = {
+      ...this.status,
+      lastOutboundAt: deliveredAt,
+      lastError: undefined,
+      details: this.statusDetails("message-sent"),
+    };
+    return {
+      channelId: this.id,
+      messageId: response.data?.message_id ?? fallbackMessageId,
+      deliveredAt,
+      raw: response,
+    };
+  }
+
+  private recordSendError(error: unknown, phase: string): void {
+    this.status = {
+      ...this.status,
+      state: this.status.state === "connected" ? "degraded" : this.status.state,
+      lastError: error instanceof Error ? error.message : String(error),
+      details: this.statusDetails(phase),
+    };
+  }
+
+  private recordMessageId(messageId: string): boolean {
+    const now = this.now();
+    for (const [id, expiresAt] of this.seenMessages) {
+      if (expiresAt <= now) this.seenMessages.delete(id);
+    }
+    if (this.seenMessages.has(messageId)) return false;
+    this.seenMessages.set(messageId, now + this.dedupTtlMs);
+    return true;
+  }
+
+  private statusDetails(phase: string): Record<string, unknown> {
+    const connection = this.wsClient?.getConnectionStatus?.();
+    return feishuStatusDetails({
+      phase,
+      sourceVersion: this.sourceVersion,
+      credentials: this.credentials,
+      botOpenId: this.botOpenId,
+      botName: this.botName,
+      connectionState: connection?.state,
+      reconnectAttempts: connection?.reconnectAttempts,
+      dedupSize: this.seenMessages.size,
+    });
+  }
+}
+
+class DefaultFeishuTransportFactory implements FeishuTransportFactory {
+  createClient(credentials: Required<Pick<FeishuCredentials, "appId" | "appSecret">> & FeishuCredentials): FeishuSdkClient {
+    return new Client({
+      appId: credentials.appId,
+      appSecret: credentials.appSecret,
+      appType: AppType.SelfBuild,
+      domain: resolveSdkDomain(credentials.domain),
+      logger: SILENT_FEISHU_SDK_LOGGER,
+      loggerLevel: LoggerLevel.error,
+    }) as unknown as FeishuSdkClient;
+  }
+
+  createDispatcher(credentials: FeishuCredentials): FeishuEventDispatcher {
+    return new EventDispatcher({
+      verificationToken: credentials.verificationToken ?? "",
+      encryptKey: credentials.encryptKey ?? "",
+      logger: SILENT_FEISHU_SDK_LOGGER,
+      loggerLevel: LoggerLevel.error,
+    }) as unknown as FeishuEventDispatcher;
+  }
+
+  createWsClient(
+    credentials: Required<Pick<FeishuCredentials, "appId" | "appSecret">> & FeishuCredentials,
+    callbacks: FeishuWsCallbacks,
+  ): FeishuWsClient {
+    return new WSClient({
+      appId: credentials.appId,
+      appSecret: credentials.appSecret,
+      domain: resolveSdkDomain(credentials.domain),
+      logger: SILENT_FEISHU_SDK_LOGGER,
+      loggerLevel: LoggerLevel.error,
+      autoReconnect: true,
+      source: "codex-wechat-middleware",
+      onReady: callbacks.onReady,
+      onError: callbacks.onError,
+      onReconnecting: callbacks.onReconnecting,
+      onReconnected: callbacks.onReconnected,
+      handshakeTimeoutMs: 30_000,
+      wsConfig: { pingTimeout: 10 },
+    }) as unknown as FeishuWsClient;
+  }
+}
+
+function resolveSdkDomain(domain: string | undefined): Domain | string {
+  const normalized = (domain ?? DEFAULT_FEISHU_DOMAIN).trim().toLowerCase();
+  if (normalized === "feishu") return Domain.Feishu;
+  if (normalized === "lark") return Domain.Lark;
+  return domain ?? DEFAULT_FEISHU_DOMAIN;
+}
+
+function stringDetail(details: Record<string, unknown> | undefined, key: string): string | undefined {
+  const value = details?.[key];
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}

@@ -39,6 +39,8 @@ export interface DiscoverCodexSessionsOptions {
   limit?: number;
 }
 
+export const CODEX_SESSION_TITLE_DISPLAY_MAX_LENGTH = 60;
+
 export function buildCodexRootArgs(policy: CodexRunPolicy): string[] {
   if (policy.permissionMode === "full") {
     return ["--dangerously-bypass-approvals-and-sandbox"];
@@ -97,6 +99,22 @@ export function discoverCodexSessions(options: DiscoverCodexSessionsOptions = {}
 
 export function displayCodexSessionTitle(session: DiscoveredCodexSession): string | undefined {
   return session.threadName ?? session.preview;
+}
+
+export function formatCodexSessionTitleForDisplay(
+  session: DiscoveredCodexSession,
+  maxLength = CODEX_SESSION_TITLE_DISPLAY_MAX_LENGTH,
+): string | undefined {
+  const title = displayCodexSessionTitle(session);
+  return title ? truncateDisplayText(title, maxLength) : undefined;
+}
+
+export function truncateDisplayText(text: string, maxLength = CODEX_SESSION_TITLE_DISPLAY_MAX_LENGTH): string {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  const chars = Array.from(normalized);
+  if (chars.length <= maxLength) return normalized;
+  if (maxLength <= 3) return chars.slice(0, maxLength).join("");
+  return `${chars.slice(0, maxLength - 3).join("")}...`;
 }
 
 export function findCodexSessionById(

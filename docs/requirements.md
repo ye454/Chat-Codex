@@ -84,7 +84,7 @@ The project should be designed to support more practical commands over time. Ini
 - `/stop`: cancel or interrupt the active Codex task if supported.
 - `/resume`: resume or reattach to the active Codex session.
 - `/sessions`: list recent sessions for the current WeChat context.
-- `/use <session>`: switch to a known session.
+- `/use [session|number]`: switch to a known session; without arguments, enter a numbered selection flow.
 - `/clear`: clear WeChat-side transient state without deleting durable Codex history.
 - `/debug`: show diagnostic information for administrators.
 
