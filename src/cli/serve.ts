@@ -26,7 +26,7 @@ import { ConsoleLogger } from "../logging/logger.js";
 import { ConsoleTranscriptSink } from "../logging/transcript.js";
 import type { ChannelLoginResult, ChannelStatus } from "../protocol/channel.js";
 import { BindingActions, formatOwnerRouteLabel, formatRunPolicyForUser, type BindingSummary, type SessionChoices } from "./actions/binding-actions.js";
-import { ChannelActions, formatManagedChannelList, type ManagedChannelSummary } from "./actions/channel-actions.js";
+import { ChannelActions, feishuChannelId, formatManagedChannelList, type ManagedChannelSummary } from "./actions/channel-actions.js";
 import { LauncherActions } from "./actions/launcher-actions.js";
 import type { PreparedServeStartup, RealCodexAdapterMode, ServeChannelPlan, ServeStartupOptions } from "./launcher-types.js";
 import { runChatCodexTui } from "./tui/run-tui.js";
@@ -321,6 +321,8 @@ async function addFeishuBot(rl: Interface, channelActions: ChannelActions): Prom
     "添加飞书机器人",
     "",
     "请手动输入这次要添加的 App ID / App Secret。",
+    "账号标识必填，是本地名称，用来区分多个飞书机器人。",
+    `飞书域默认 ${DEFAULT_FEISHU_DOMAIN}，普通用户可直接回车。`,
     "凭证会保存到本机 state/ 目录的 credentials.local.json，不会写入 Git 跟踪文件。",
     "也可以在启动前通过 FEISHU_APP_ID / FEISHU_APP_SECRET 环境变量覆盖。",
     "输入 0 返回上一级。",
@@ -334,10 +336,11 @@ async function addFeishuBot(rl: Interface, channelActions: ChannelActions): Prom
   }
   const adapter = new FeishuAdapter({
     ...credentials,
-    id: `feishu-${credentials.accountId ?? DEFAULT_FEISHU_ACCOUNT_ID}`,
+    id: feishuChannelId(credentials.accountId ?? DEFAULT_FEISHU_ACCOUNT_ID),
     connectOnStart: false,
-    probeOnStart: false,
+    probeOnStart: true,
   });
+  console.log("正在校验飞书机器人连通性...");
   await adapter.start();
   const status = await adapter.getStatus();
   if (status.state !== "connected") {
@@ -362,8 +365,9 @@ async function askFeishuCredentials(rl: Interface): Promise<FeishuCredentials | 
   if (!appId) return undefined;
   const appSecret = await askRequired(rl, "请输入 FEISHU_APP_SECRET（输入会显示在终端）: ");
   if (!appSecret) return undefined;
-  const domain = await askOptional(rl, `飞书域 [${DEFAULT_FEISHU_DOMAIN}]: `, DEFAULT_FEISHU_DOMAIN);
-  const accountId = await askOptional(rl, `账号标识 [${DEFAULT_FEISHU_ACCOUNT_ID}]: `, DEFAULT_FEISHU_ACCOUNT_ID);
+  const accountId = await askRequired(rl, "请输入账号标识（本地名称，必填）: ");
+  if (!accountId) return undefined;
+  const domain = await askOptional(rl, `飞书域 [${DEFAULT_FEISHU_DOMAIN}，普通用户直接回车]: `, DEFAULT_FEISHU_DOMAIN);
   return normalizeFeishuCredentials({ appId, appSecret, domain, accountId });
 }
 
@@ -1181,9 +1185,9 @@ async function startServeBridge(
     if (runtimeLogs) {
       runtimeLogs.add("system", "Bridge", "多渠道 Codex 中间件已启动，正在等待微信 / 飞书消息。");
       runtimeLogs.add("system", "渠道", adapters.map((adapter) => adapter.id).join(", "));
-      runtimeLogs.add("system", "退出", "按 q 或 Esc 停止服务。");
+      runtimeLogs.add("system", "退出", "按 Ctrl+C 停止服务。");
       await runRuntimeLogTui({
-        title: "Chat Codex 运行日志",
+        title: "Chat Codex 运行中",
         channels: adapters.map((adapter) => adapter.id),
         cwd: startup.cwd,
         policy: startup.policy,

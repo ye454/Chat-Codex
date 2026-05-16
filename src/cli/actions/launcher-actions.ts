@@ -1,6 +1,5 @@
 import { FeishuAdapter } from "../../channels/feishu/feishu-adapter.js";
 import {
-  DEFAULT_FEISHU_ACCOUNT_ID,
   DEFAULT_FEISHU_DOMAIN,
   missingFeishuCredentials,
   normalizeFeishuCredentials,
@@ -31,7 +30,7 @@ import {
   type SessionDisplay,
   type UnbindSessionResult,
 } from "./binding-actions.js";
-import { ChannelActions, type ManagedChannelSummary } from "./channel-actions.js";
+import { ChannelActions, feishuChannelId, type ManagedChannelSummary } from "./channel-actions.js";
 
 const WEIXIN_LOGIN_CHECK_TIMEOUT_MS = 15_000;
 
@@ -169,7 +168,11 @@ export class LauncherActions {
   }
 
   async addFeishuBot(input: FeishuCredentials): Promise<FeishuBotSetupResult> {
-    const credentials = normalizeFeishuCredentials(input);
+    const accountId = input.accountId?.trim();
+    if (!accountId) {
+      return { ok: false, reason: "missing_credentials", message: "账号标识不能为空。它是本地名称，用来区分多个飞书机器人。" };
+    }
+    const credentials = normalizeFeishuCredentials({ ...input, accountId });
     const missing = missingFeishuCredentials(credentials);
     if (missing.length > 0) {
       return { ok: false, reason: "missing_credentials", message: `缺少飞书配置: ${missing.join(", ")}。请重新输入完整配置。` };
@@ -177,9 +180,9 @@ export class LauncherActions {
     try {
       const adapter = new FeishuAdapter({
         ...credentials,
-        id: `feishu-${credentials.accountId ?? DEFAULT_FEISHU_ACCOUNT_ID}`,
+        id: feishuChannelId(accountId),
         connectOnStart: false,
-        probeOnStart: false,
+        probeOnStart: true,
       });
       await adapter.start();
       const status = await adapter.getStatus();
@@ -471,9 +474,8 @@ async function renderQrCode(text: string): Promise<string | undefined> {
   }
 }
 
-export function feishuCredentialDefaults(): Pick<FeishuCredentials, "domain" | "accountId"> {
+export function feishuCredentialDefaults(): Pick<FeishuCredentials, "domain"> {
   return {
     domain: DEFAULT_FEISHU_DOMAIN,
-    accountId: DEFAULT_FEISHU_ACCOUNT_ID,
   };
 }

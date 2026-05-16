@@ -189,7 +189,16 @@ export function formatManagedChannelList(channels: ManagedChannelSummary[]): str
       if (channel.status.lastError) lines.push(`   最近错误: ${channel.status.lastError}`);
     });
   }
-  lines.push("", "操作", "w. 添加微信账号", "f. 添加飞书机器人", "0. 返回");
+  const nextIndex = channels.length + 1;
+  lines.push(
+    "",
+    "操作",
+    `${nextIndex}. 添加微信账号`,
+    `${nextIndex + 1}. 添加飞书机器人`,
+    "w. 添加微信账号",
+    "f. 添加飞书机器人",
+    "0. 返回",
+  );
   return lines.join("\n");
 }
 

@@ -30,7 +30,7 @@ export type Screen =
   | { name: "startConfirm" }
   | { name: "help" };
 
-export type FeishuInputStep = "appId" | "appSecret" | "domain" | "accountId";
+export type FeishuInputStep = "appId" | "appSecret" | "accountId";
 
 export type SessionTarget =
   | { kind: "route"; routeKey: string }

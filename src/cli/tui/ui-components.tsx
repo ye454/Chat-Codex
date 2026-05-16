@@ -6,11 +6,11 @@ import type { Flash, Screen } from "./types.js";
 
 const FIELD_WIDTH = 22;
 
-export function Frame({ title, subtitle, children }: { title: string; subtitle?: string; children: React.ReactNode }): React.JSX.Element {
+export function Frame({ title, subtitle, children, borderColor = "cyan" }: { title: string; subtitle?: string; children: React.ReactNode; borderColor?: string }): React.JSX.Element {
   return (
-    <Box borderStyle="round" borderColor="cyan" paddingX={1} flexDirection="column" width={92}>
+    <Box borderStyle="round" borderColor={borderColor} paddingX={1} flexDirection="column" width={92}>
       <Box justifyContent="space-between">
-        <Text bold color="cyan">{title}</Text>
+        <Text bold color={borderColor}>{title}</Text>
         {subtitle ? <Text color="gray">{subtitle}</Text> : null}
       </Box>
       <Box marginTop={1} flexDirection="column">{children}</Box>
@@ -21,17 +21,18 @@ export function Frame({ title, subtitle, children }: { title: string; subtitle?:
 export function Section({ title, children }: { title: string; children: React.ReactNode }): React.JSX.Element {
   return (
     <Box marginTop={1} flexDirection="column">
-      <Text bold>{title}</Text>
+      <Text bold color="blue">{title}</Text>
       {children}
     </Box>
   );
 }
 
-export function ListRow({ active, left, right }: { active: boolean; left: string; right?: string }): React.JSX.Element {
+export function ListRow({ active, left, right, tone }: { active: boolean; left: string; right?: string; tone?: "default" | "primary" | "success" | "warning" | "danger" | "muted" }): React.JSX.Element {
+  const color = rowColor(active, tone);
   return (
     <Box>
-      <Text color={active ? "cyan" : undefined}>{active ? "> " : "  "}{padRight(truncate(left, 52), 54)}</Text>
-      {right ? <Text color={active ? "cyan" : undefined}>{truncate(right, 32)}</Text> : null}
+      <Text color={color} bold={active || tone === "primary" || tone === "success"}>{active ? "> " : "  "}{padRight(truncate(left, 52), 54)}</Text>
+      {right ? <Text color={color}>{truncate(right, 32)}</Text> : null}
     </Box>
   );
 }
@@ -41,7 +42,7 @@ export function SessionRow({ active, index, session }: { active: boolean; index:
 }
 
 export function KeyValue({ label, value }: { label: string; value: string }): React.JSX.Element {
-  return <Text>{padRight(truncate(label, FIELD_WIDTH), FIELD_WIDTH)}  {truncate(value, 66)}</Text>;
+  return <Text><Text color="gray">{padRight(truncate(label, FIELD_WIDTH), FIELD_WIDTH)}</Text>  {truncate(value, 66)}</Text>;
 }
 
 export function Footer({ loading, flash, screen, context }: { loading: boolean; flash: Flash; screen: Screen["name"]; context?: "firstRun" | "emptyChannels" }): React.JSX.Element {
@@ -79,6 +80,23 @@ export function channelStatus(state: string): string {
   return state;
 }
 
+export function statusColor(state: string): string {
+  if (state === "connected") return "green";
+  if (state === "login_required") return "yellow";
+  if (state === "failed") return "red";
+  if (state === "stopped") return "gray";
+  return "cyan";
+}
+
+function rowColor(active: boolean, tone: "default" | "primary" | "success" | "warning" | "danger" | "muted" = "default"): string | undefined {
+  if (tone === "primary") return active ? "cyanBright" : "cyan";
+  if (tone === "success") return active ? "greenBright" : "green";
+  if (tone === "warning") return active ? "yellowBright" : "yellow";
+  if (tone === "danger") return active ? "redBright" : "red";
+  if (tone === "muted") return "gray";
+  return active ? "cyan" : undefined;
+}
+
 export function truncate(value: string, width: number): string {
   if (displayWidth(value) <= width) return value;
   return `${sliceToWidth(value, Math.max(0, width - 1))}…`;
@@ -93,7 +111,7 @@ function footerHint(screen: Screen["name"], context?: "firstRun" | "emptyChannel
   if (context === "firstRun") return "↑↓ 选择  Enter 执行  1/w 微信  2/f 飞书  3/p 权限  4/d 工作目录  0/q 退出";
   if (context === "emptyChannels") return "↑↓ 选择  Enter 执行  1/w 微信  2/f 飞书  Esc/q 返回";
   if (screen === "home") return "↑↓ 选择  Enter 执行  w 微信  f 飞书  c 渠道  b 绑定  p 权限  d 目录  q 退出";
-  if (screen === "channels") return "↑↓ 选择  Enter 详情  w 添加微信  f 添加飞书  e 启停  Esc 返回";
+  if (screen === "channels") return "↑↓ 选择  Enter 执行  w 添加微信  f 添加飞书  e 启停  Esc 返回";
   if (screen === "bindings") return "↑↓ 选择  Enter 详情  n 新建  m 手动绑定  u 解绑  p 权限  Esc 返回";
   if (screen === "addWeixin") return "Enter 获取/检查二维码  Esc 返回";
   if (screen === "addFeishu") return "输入后 Enter 下一步  Secret 不回显  Esc 返回";

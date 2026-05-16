@@ -17,6 +17,7 @@ import {
   Muted,
   Section,
   SessionRow,
+  statusColor,
   truncate,
 } from "./ui-components.js";
 
@@ -53,19 +54,33 @@ export function HomeView({ dashboard, selected }: { dashboard: LauncherDashboard
     ["3. 权限设置", formatPermission(dashboard.startup.policy)],
     ["4. 工作目录", dashboard.startup.cwd],
     ["5. 状态详情", "查看渠道和绑定明细"],
-    ["6. 启动服务", dashboard.canStart.ok ? "可以启动" : "需处理配置"],
+    ["6. 启动服务", dashboard.canStart.ok ? "启动并进入运行日志" : "需处理配置"],
   ];
   return (
-    <Frame title="Chat Codex" subtitle={`状态: ${dashboard.canStart.ok ? "可启动" : "需配置"}  权限: ${dashboard.startup.policy.permissionMode === "full" ? "完全" : "审批"}`}>
+    <Frame title="Chat Codex" subtitle={`状态: ${dashboard.canStart.ok ? "可启动" : "需配置"}  权限: ${dashboard.startup.policy.permissionMode === "full" ? "完全" : "审批"}`} borderColor={dashboard.canStart.ok ? "green" : "yellow"}>
+      <Section title="启动服务">
+        <Text color={dashboard.canStart.ok ? "green" : "yellow"} bold>
+          {dashboard.canStart.ok ? "已准备好。按 Enter 启动 Bridge，并进入运行日志面板。" : dashboard.canStart.message}
+        </Text>
+        <KeyValue label="启动后" value="显示运行中状态、已启动渠道、工作目录和 Ctrl+C 停止方式" />
+      </Section>
       <Section title="操作">
-        {rows.map(([label, value], index) => <ListRow key={label} active={selected === index} left={label} right={value} />)}
+        {rows.map(([label, value], index) => (
+          <ListRow
+            key={label}
+            active={selected === index}
+            left={label}
+            right={value}
+            tone={index === 5 ? (dashboard.canStart.ok ? "success" : "warning") : undefined}
+          />
+        ))}
       </Section>
       <Section title="渠道">
         {dashboard.channels.length === 0
           ? <Muted text="暂无渠道。按 w 添加微信账号，或按 f 添加飞书机器人。" />
           : dashboard.channels.map((channel) => (
             <Text key={channel.record.id}>
-              {channel.record.type === "weixin" ? "微信" : "飞书"} / {channel.status.account ?? channel.record.defaultAccountId ?? "default"}    {channel.record.enabled ? "已启用" : "已停用"}    {channelStatus(channel.status.state)}
+              {channel.record.type === "weixin" ? "微信" : "飞书"} / {channel.status.account ?? channel.record.defaultAccountId ?? "default"}    {channel.record.enabled ? "已启用" : "已停用"}    <Text color={statusColor(channel.status.state)}>{channelStatus(channel.status.state)}</Text>
             </Text>
           ))}
       </Section>
@@ -82,7 +97,7 @@ export function HomeView({ dashboard, selected }: { dashboard: LauncherDashboard
   );
 }
 
-export function ChannelsView({ channels, selected }: { channels: LauncherDashboard["channels"]; selected: number }): React.JSX.Element {
+export function ChannelsView({ channels, selected, channelCursor = 0 }: { channels: LauncherDashboard["channels"]; selected: number; channelCursor?: number }): React.JSX.Element {
   if (channels.length === 0) {
     const actions = [
       ["1. 添加微信账号", "扫码登录微信"],
@@ -97,16 +112,41 @@ export function ChannelsView({ channels, selected }: { channels: LauncherDashboa
       </Frame>
     );
   }
+  const actionOffset = channels.length;
+  const targetChannel = channels[Math.min(channelCursor, channels.length - 1)];
+  const targetName = targetChannel
+    ? `${targetChannel.record.type === "weixin" ? "微信" : "飞书"} / ${targetChannel.status.account ?? targetChannel.record.defaultAccountId ?? "default"}`
+    : "未选择";
+  const actions = [
+    ["添加微信账号", "扫码登录微信"],
+    ["添加飞书机器人", "输入凭证并校验连通性"],
+    [targetChannel?.record.enabled ? "停用选中渠道" : "启用选中渠道", targetName],
+    ["查看选中渠道详情", targetName],
+    ["返回首页", "回到启动页"],
+  ];
   return (
-    <Frame title="管理渠道" subtitle="Enter 详情  w 微信  f 飞书  e 启停">
-      {channels.map((channel, index) => (
-        <ListRow
-          key={channel.record.id}
-          active={selected === index}
-          left={`${index + 1}. ${channel.record.type === "weixin" ? "微信" : "飞书"} / ${channel.status.account ?? channel.record.defaultAccountId ?? "default"}`}
-          right={`${channel.record.enabled ? "已启用" : "已停用"}   ${channelStatus(channel.status.state)}`}
-        />
-      ))}
+    <Frame title="管理渠道" subtitle="Enter 执行  w 微信  f 飞书  e 启停">
+      <Section title="已配置渠道">
+        {channels.map((channel, index) => (
+          <ListRow
+            key={channel.record.id}
+            active={selected === index}
+            left={`${index + 1}. ${channel.record.type === "weixin" ? "微信" : "飞书"} / ${channel.status.account ?? channel.record.defaultAccountId ?? "default"}`}
+            right={`${channel.record.enabled ? "已启用" : "已停用"}   ${channelStatus(channel.status.state)}`}
+            tone={channel.status.state === "connected" ? "success" : channel.status.state === "failed" ? "danger" : channel.status.state === "login_required" ? "warning" : undefined}
+          />
+        ))}
+      </Section>
+      <Section title="操作">
+        {actions.map(([label, value], index) => (
+          <ListRow
+            key={label}
+            active={selected === actionOffset + index}
+            left={`${actionOffset + index + 1}. ${label}`}
+            right={value}
+          />
+        ))}
+      </Section>
     </Frame>
   );
 }
@@ -152,7 +192,8 @@ export function AddFeishuView({ screen, onSubmit }: { screen: Extract<Screen, { 
   const defaultValue = defaultForFeishuStep(screen.step);
   return (
     <Frame title="添加飞书机器人" subtitle="Secret 不落盘，Esc 返回">
-      <Text>请手动输入这次要添加的 App ID / App Secret。</Text>
+      <Text>请手动输入 App ID、App Secret 和账号标识；飞书域默认 feishu。</Text>
+      {screen.step === "accountId" ? <Muted text="账号标识是本地名称，用来区分多个飞书机器人；不能为空。" /> : null}
       <Box marginTop={1}>
         <Text>{label}: </Text>
         {screen.step === "appSecret"
@@ -322,9 +363,10 @@ export function StatusView({ dashboard }: { dashboard: LauncherDashboard }): Rea
 export function StartConfirmView({ validation, lines }: { validation: StartValidation; lines: string[] }): React.JSX.Element {
   const groups = parseStartSummary(lines);
   return (
-    <Frame title="启动服务" subtitle={validation.ok ? "Enter 启动  Esc 返回" : "Esc 返回"}>
+    <Frame title="启动服务" subtitle={validation.ok ? "Enter 启动并进入运行日志  Esc 返回" : "Esc 返回"} borderColor={validation.ok ? "green" : "yellow"}>
       <Section title={validation.ok ? "确认启动" : "需要处理"}>
-        <Text>{validation.ok ? "确认后会启动 Bridge，并进入运行日志面板。" : lines[0]}</Text>
+        <Text color={validation.ok ? "green" : "yellow"} bold>{validation.ok ? "确认后会启动 Bridge，并进入 Chat Codex 运行中面板。" : lines[0]}</Text>
+        {validation.ok ? <KeyValue label="运行中面板" value="展示已启动渠道、工作目录、默认权限、聊天日志和 Ctrl+C 停止方式" /> : null}
       </Section>
       {validation.ok ? groups.map((group) => (
         <Section key={group.title} title={group.title}>
@@ -358,13 +400,10 @@ export function LoadingView({ title, message }: { title: string; message: string
 function feishuStepLabel(step: Extract<Screen, { name: "addFeishu" }>["step"]): string {
   if (step === "appId") return "FEISHU_APP_ID";
   if (step === "appSecret") return "FEISHU_APP_SECRET";
-  if (step === "domain") return "飞书域";
   return "账号标识";
 }
 
 function defaultForFeishuStep(step: Extract<Screen, { name: "addFeishu" }>["step"]): string {
-  if (step === "domain") return "feishu";
-  if (step === "accountId") return "default";
   return "";
 }
 

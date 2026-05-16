@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { Box, Text, useApp, useInput } from "ink";
+import { Box, Text } from "ink";
 import type { ChannelMedia, ChannelMessage, ChannelTarget } from "../../protocol/channel.js";
 import type { TranscriptSink } from "../../logging/transcript.js";
 import type { Logger } from "../../logging/logger.js";
@@ -96,16 +96,15 @@ export class RuntimeTuiLogger implements Logger {
 }
 
 export function RuntimeLogView({ summary, store }: { summary: RuntimeLogSummary; store: RuntimeLogStore }): React.JSX.Element {
-  const { exit } = useApp();
   const [logs, setLogs] = useState<RuntimeLogEntry[]>(store.snapshot());
   useEffect(() => store.subscribe(() => setLogs(store.snapshot())), [store]);
-  useInput((input, key) => {
-    if (input === "q" || key.escape) exit();
-  });
   const visibleLogs = useMemo(() => logs.slice(-12), [logs]);
   return (
     <Box flexDirection="column">
-      <Frame title={summary.title} subtitle="运行中  q/Esc 退出">
+      <Frame title={summary.title} subtitle="已启动  Ctrl+C 停止" borderColor="green">
+        <Section title="运行状态">
+          <Text color="green" bold>Chat Codex 已启动，正在等待微信 / 飞书消息。</Text>
+        </Section>
         <Section title="服务">
           <KeyValue label="渠道" value={summary.channels.length ? summary.channels.join(", ") : "无"} />
           <KeyValue label="新聊天策略" value={summary.routePolicy} />
@@ -118,7 +117,7 @@ export function RuntimeLogView({ summary, store }: { summary: RuntimeLogSummary;
       </Frame>
       <Box marginTop={1} flexDirection="column">
         <Text color="gray">等待微信 / 飞书消息。收到消息、回复、进度和媒体发送都会在这里追加。</Text>
-        <Text color="gray">q/Esc 停止服务并退出。</Text>
+        <Text color="gray">按 Ctrl+C 停止服务并退出。</Text>
       </Box>
     </Box>
   );

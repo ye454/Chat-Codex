@@ -50,9 +50,10 @@ test("ChannelActions registers independent Weixin accounts and Feishu bots", asy
   assert.equal(summaries.find((channel) => channel.record.id === feishuB.id)?.record.enabled, false);
   const channelList = formatManagedChannelList(summaries);
   assert.match(channelList, /1\. 飞书 \/ bot-a/);
+  assert.match(channelList, /5\. 添加微信账号/);
+  assert.match(channelList, /6\. 添加飞书机器人/);
   assert.match(channelList, /w\. 添加微信账号/);
   assert.match(channelList, /f\. 添加飞书机器人/);
-  assert.doesNotMatch(channelList, /5\. 添加微信账号|6\. 添加飞书机器人/);
 
   const weixinAccountPath = path.join(baseDir, "state", "channels", "weixin", weixinA.id, "accounts", "wx-account-a.json");
   assert.equal(fs.existsSync(weixinAccountPath), true);

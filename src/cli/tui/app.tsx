@@ -37,10 +37,14 @@ export function ChatCodexTui({ actions, onDone }: ChatCodexTuiProps): React.JSX.
   const [dashboard, setDashboard] = useState<LauncherDashboard>();
   const [loading, setLoading] = useState(false);
   const [selected, setSelected] = useState(0);
+  const [channelCursor, setChannelCursor] = useState(0);
   const [flash, setFlash] = useState<Flash>({ kind: "info", message: "按 ? 查看快捷键。" });
   const [confirm, setConfirm] = useState<{ message: string; yes: () => void | Promise<void> }>();
   const [manualValue, setManualValue] = useState("");
   const weixinLoginRequest = useRef(0);
+  const channels = dashboard?.channels ?? [];
+  const bindings = dashboard?.bindings ?? [];
+  const pendingBindings = dashboard?.pendingBindings ?? [];
 
   const refresh = async (message?: string): Promise<void> => {
     setLoading(true);
@@ -64,9 +68,16 @@ export function ChatCodexTui({ actions, onDone }: ChatCodexTuiProps): React.JSX.
     setManualValue("");
   }, [screen.name, dashboard?.channels.length]);
 
-  const channels = dashboard?.channels ?? [];
-  const bindings = dashboard?.bindings ?? [];
-  const pendingBindings = dashboard?.pendingBindings ?? [];
+  useEffect(() => {
+    if (screen.name === "channels" && selected < channels.length) {
+      setChannelCursor(selected);
+    }
+  }, [channels.length, screen.name, selected]);
+
+  useEffect(() => {
+    setChannelCursor((value) => Math.min(value, Math.max(0, channels.length - 1)));
+  }, [channels.length]);
+
   const bindingItems = [
     ...bindings.map((binding) => ({ kind: "route" as const, binding })),
     ...pendingBindings.map((pending) => ({ kind: "pending" as const, pending })),
@@ -263,24 +274,51 @@ export function ChatCodexTui({ actions, onDone }: ChatCodexTuiProps): React.JSX.
   };
 
   const handleChannelsInput = async (input: string, enter: boolean): Promise<void> => {
-    const emptyAction = numericPick(input, 2) ?? selected;
-    if (input === "w" || (channels.length === 0 && emptyAction === 0 && (enter || input === "1"))) {
+    const actionCount = channels.length === 0 ? 2 : channels.length + 5;
+    const picked = numericPick(input, actionCount);
+    const actionIndex = picked ?? selected;
+    const actionRequested = enter || picked !== undefined;
+    if (input === "w" || (channels.length === 0 && actionIndex === 0 && (enter || input === "1"))) {
       void openAddWeixinLogin();
       return;
     }
-    if (input === "f" || (channels.length === 0 && emptyAction === 1 && (enter || input === "2"))) {
+    if (input === "f" || (channels.length === 0 && actionIndex === 1 && (enter || input === "2"))) {
       setScreen({ name: "addFeishu", step: "appId", values: feishuCredentialDefaults() });
       return;
     }
     if (channels.length === 0) return;
-    const picked = numericPick(input, channels.length);
-    const channel = channels[picked ?? selected];
-    if (!channel) return;
-    if (input === "e") {
-      const updated = await actions.setChannelEnabled(channel.record.id, !channel.record.enabled);
+    if (input === "w" || (actionIndex === channels.length && actionRequested)) {
+      void openAddWeixinLogin();
+      return;
+    }
+    if (input === "f" || (actionIndex === channels.length + 1 && actionRequested)) {
+      setScreen({ name: "addFeishu", step: "appId", values: feishuCredentialDefaults() });
+      return;
+    }
+    const targetChannel = channels[Math.min(channelCursor, channels.length - 1)];
+    if (actionIndex === channels.length + 2 && actionRequested) {
+      if (!targetChannel) return;
+      const updated = await actions.setChannelEnabled(targetChannel.record.id, !targetChannel.record.enabled);
       await refresh(updated?.record.enabled ? "已启用渠道。" : "已停用渠道。");
       return;
     }
+    if (actionIndex === channels.length + 3 && actionRequested) {
+      if (targetChannel) setScreen({ name: "channelDetail", channelId: targetChannel.record.id });
+      return;
+    }
+    if (actionIndex === channels.length + 4 && actionRequested) {
+      goHome();
+      return;
+    }
+    const channel = actionIndex < channels.length ? channels[actionIndex] : undefined;
+    if (input === "e") {
+      const toggleTarget = channel ?? targetChannel;
+      if (!toggleTarget) return;
+      const updated = await actions.setChannelEnabled(toggleTarget.record.id, !toggleTarget.record.enabled);
+      await refresh(updated?.record.enabled ? "已启用渠道。" : "已停用渠道。");
+      return;
+    }
+    if (!channel) return;
     if (enter || picked !== undefined) setScreen({ name: "channelDetail", channelId: channel.record.id });
   };
 
@@ -490,18 +528,21 @@ export function ChatCodexTui({ actions, onDone }: ChatCodexTuiProps): React.JSX.
   const submitFeishuValue = async (value: string): Promise<void> => {
     if (!screenIs("addFeishu", screen)) return;
     const trimmed = value.trim();
-    if (!trimmed && (screen.step === "appId" || screen.step === "appSecret")) {
+    if (!trimmed) {
       setFlash({ kind: "error", message: "这里不能为空；按 Esc 返回。" });
       return;
     }
-    const values = { ...screen.values, [screen.step]: trimmed || defaultForFeishuStep(screen.step) };
+    const values = { ...screen.values, [screen.step]: trimmed };
     const next = nextFeishuStep(screen.step);
     if (next) {
       setScreen({ name: "addFeishu", step: next, values });
       return;
     }
     setLoading(true);
-    const result: FeishuBotSetupResult = await actions.addFeishuBot(values as FeishuCredentials);
+    const result: FeishuBotSetupResult = await actions.addFeishuBot({
+      ...values,
+      domain: values.domain || feishuCredentialDefaults().domain,
+    } as FeishuCredentials);
     setLoading(false);
     setFlash({ kind: result.ok ? "success" : "error", message: result.message });
     if (result.ok) {
@@ -582,7 +623,7 @@ export function ChatCodexTui({ actions, onDone }: ChatCodexTuiProps): React.JSX.
   const body = useMemo(() => {
     if (!dashboard) return <LoadingView title="Chat Codex" message="正在加载状态..." />;
     if (screen.name === "home") return <HomeView dashboard={dashboard} selected={selected} />;
-    if (screen.name === "channels") return <ChannelsView channels={channels} selected={selected} />;
+    if (screen.name === "channels") return <ChannelsView channels={channels} selected={selected} channelCursor={channelCursor} />;
     if (screen.name === "channelDetail") return <ChannelDetailView channel={currentChannel} selected={selected} />;
     if (screen.name === "addWeixin") return <AddWeixinView screen={screen} loading={loading} />;
     if (screen.name === "weixinBinding") {
@@ -606,7 +647,7 @@ export function ChatCodexTui({ actions, onDone }: ChatCodexTuiProps): React.JSX.
     if (screen.name === "status") return <StatusView dashboard={dashboard} />;
     if (screen.name === "startConfirm") return <StartConfirmView validation={dashboard.canStart} lines={dashboard.canStart.ok ? actions.startConfirmationSummary(dashboard.canStart.channels) : [dashboard.canStart.message]} />;
     return <HelpView />;
-  }, [actions, bindings, channels, currentBinding, currentChannel, dashboard, loading, manualValue, screen, selected]);
+  }, [actions, bindings, channelCursor, channels, currentBinding, currentChannel, dashboard, loading, manualValue, screen, selected]);
   const footerContext = screen.name === "home" && channels.length === 0
     ? "firstRun"
     : screen.name === "channels" && channels.length === 0
@@ -629,7 +670,7 @@ export function ChatCodexTui({ actions, onDone }: ChatCodexTuiProps): React.JSX.
 }
 
 function maxSelectableIndex(screen: Screen, channels: LauncherDashboard["channels"], bindingItemCount: number): number {
-  if (screen.name === "channels") return channels.length > 0 ? Math.max(0, channels.length - 1) : 1;
+  if (screen.name === "channels") return channels.length > 0 ? channels.length + 4 : 1;
   if (screen.name === "bindings") return Math.max(0, bindingItemCount - 1);
   if (screen.name === "home") return channels.length === 0 ? 4 : 5;
   if (screen.name === "channelDetail" || screen.name === "bindingDetail") return 3;
@@ -647,14 +688,10 @@ function numericPick(input: string, length: number): number | undefined {
 
 function nextFeishuStep(step: Extract<Screen, { name: "addFeishu" }>["step"]): Extract<Screen, { name: "addFeishu" }>["step"] | undefined {
   if (step === "appId") return "appSecret";
-  if (step === "appSecret") return "domain";
-  if (step === "domain") return "accountId";
+  if (step === "appSecret") return "accountId";
   return undefined;
 }
 
 function defaultForFeishuStep(step: Extract<Screen, { name: "addFeishu" }>["step"]): string {
-  const defaults = feishuCredentialDefaults();
-  if (step === "domain") return defaults.domain ?? "feishu";
-  if (step === "accountId") return defaults.accountId ?? "default";
   return "";
 }

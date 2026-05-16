@@ -1,9 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { Writable } from "node:stream";
 import React from "react";
 import { render } from "ink-testing-library";
 import { ChatCodexTui } from "../../src/cli/tui/app.js";
 import { RuntimeLogStore, RuntimeLogView, RuntimeTuiTranscriptSink } from "../../src/cli/tui/runtime-log.js";
+import { runRuntimeLogTui } from "../../src/cli/tui/run-runtime-log.js";
 import type { LauncherActions, LauncherDashboard } from "../../src/cli/actions/launcher-actions.js";
 
 test("Ink TUI renders dashboard and navigates to core pages", async () => {
@@ -12,6 +14,8 @@ test("Ink TUI renders dashboard and navigates to core pages", async () => {
   await waitForInk();
 
   assert.match(view.lastFrame() ?? "", /Chat Codex/);
+  assert.match(view.lastFrame() ?? "", /启动服务/);
+  assert.match(view.lastFrame() ?? "", /已准备好。按 Enter 启动 Bridge，并进入运行日志面板/);
   assert.match(view.lastFrame() ?? "", /渠道/);
   assert.match(view.lastFrame() ?? "", /聊天绑定/);
   assert.match(view.lastFrame() ?? "", /权限/);
@@ -21,6 +25,8 @@ test("Ink TUI renders dashboard and navigates to core pages", async () => {
   view.stdin.write("c");
   await waitForInk();
   assert.match(view.lastFrame() ?? "", /管理渠道/);
+  assert.match(view.lastFrame() ?? "", /2\. 添加微信账号/);
+  assert.match(view.lastFrame() ?? "", /3\. 添加飞书机器人/);
   assert.match(view.lastFrame() ?? "", /w 微信/);
   assert.match(view.lastFrame() ?? "", /f 飞书/);
 
@@ -75,12 +81,89 @@ test("Ink TUI handles help, Feishu form back, and start confirmation", async () 
   startView.stdin.write("\r");
   await waitForInk();
   assert.match(startView.lastFrame() ?? "", /启动服务/);
-  assert.match(startView.lastFrame() ?? "", /确认后会启动 Bridge，并进入运行日志面板/);
+  assert.match(startView.lastFrame() ?? "", /确认后会启动 Bridge，并进入 Chat Codex 运行中面板/);
   assert.match(startView.lastFrame() ?? "", /新聊天策略\s+首条消息自动创建新 session/);
   startView.stdin.write("\r");
   await waitForInk();
   assert.deepEqual(result, { start: true });
   startView.unmount();
+});
+
+test("Ink TUI exposes add channel actions when channels already exist", async () => {
+  const view = render(<ChatCodexTui actions={mockActions(dashboardFixture())} onDone={() => undefined} />);
+  await waitForInk();
+
+  view.stdin.write("c");
+  await waitForInk();
+  assert.match(view.lastFrame() ?? "", /已配置渠道/);
+  assert.match(view.lastFrame() ?? "", /2\. 添加微信账号/);
+  assert.match(view.lastFrame() ?? "", /3\. 添加飞书机器人/);
+
+  view.stdin.write("\u001B[B");
+  view.stdin.write("\u001B[B");
+  await waitForInk();
+  view.stdin.write("\r");
+  await waitForInk();
+  assert.match(view.lastFrame() ?? "", /添加飞书机器人/);
+
+  view.unmount();
+});
+
+test("Ink TUI requires Feishu account label and submits with default domain", async () => {
+  const submitted: unknown[] = [];
+  const view = render(<ChatCodexTui actions={mockActions(emptyDashboardFixture(), {
+    addFeishuBot: async (input) => {
+      submitted.push(input);
+      return {
+        ok: true,
+        record: {
+          id: "feishu-dalongxia",
+          type: "feishu",
+          enabled: true,
+          stateDir: "state/channels/feishu/feishu-dalongxia",
+          defaultAccountId: "dalongxia",
+          credentialSource: "interactive",
+          createdAt: "2026-05-16T00:00:00.000Z",
+          updatedAt: "2026-05-16T00:00:00.000Z",
+        },
+        message: "飞书机器人已添加。",
+      };
+    },
+  })} onDone={() => undefined} />);
+  await waitForInk();
+
+  view.stdin.write("2");
+  await waitForInk();
+  assert.match(view.lastFrame() ?? "", /FEISHU_APP_ID/);
+  view.stdin.write("cli_test");
+  await waitForInk();
+  view.stdin.write("\r");
+  await waitForInk();
+  assert.match(view.lastFrame() ?? "", /FEISHU_APP_SECRET/);
+  view.stdin.write("secret");
+  await waitForInk();
+  view.stdin.write("\r");
+  await waitForInk();
+  assert.match(view.lastFrame() ?? "", /账号标识/);
+
+  view.stdin.write("\r");
+  await waitForInk();
+  assert.equal(submitted.length, 0);
+  assert.match(view.lastFrame() ?? "", /这里不能为空/);
+
+  view.stdin.write("dalongxia");
+  await waitForInk();
+  view.stdin.write("\r");
+  await waitForInk();
+  assert.equal(submitted.length, 1);
+  assert.deepEqual(submitted[0], {
+    appId: "cli_test",
+    appSecret: "secret",
+    accountId: "dalongxia",
+    domain: "feishu",
+  });
+
+  view.unmount();
 });
 
 test("Ink TUI first run guides user to add channels with Enter and number shortcuts", async () => {
@@ -196,7 +279,7 @@ test("Runtime TUI renders startup summary and transcript logs", async () => {
   }, "收到");
 
   const view = render(<RuntimeLogView summary={{
-    title: "Chat Codex 运行日志",
+    title: "Chat Codex 运行中",
     channels: ["feishu-default"],
     cwd: "/repo",
     policy: { permissionMode: "approval", sandbox: "workspace-write" },
@@ -204,17 +287,48 @@ test("Runtime TUI renders startup summary and transcript logs", async () => {
   }} store={store} />);
   await waitForInk();
 
-  assert.match(view.lastFrame() ?? "", /Chat Codex 运行日志/);
-  assert.match(view.lastFrame() ?? "", /运行中/);
+  assert.match(view.lastFrame() ?? "", /Chat Codex 运行中/);
+  assert.match(view.lastFrame() ?? "", /已启动\s+Ctrl\+C 停止/);
+  assert.match(view.lastFrame() ?? "", /Chat Codex 已启动/);
   assert.match(view.lastFrame() ?? "", /feishu-default/);
   assert.match(view.lastFrame() ?? "", /收到/);
   assert.match(view.lastFrame() ?? "", /发送/);
   assert.match(view.lastFrame() ?? "", /你好/);
+  assert.match(view.lastFrame() ?? "", /Ctrl\+C 停止服务/);
+  assert.doesNotMatch(view.lastFrame() ?? "", /q\/Esc 停止/);
 
   view.unmount();
 });
 
-function mockActions(dashboard: LauncherDashboard): LauncherActions {
+test("Runtime TUI exits on Ctrl+C signal so Bridge can stop", async () => {
+  const store = new RuntimeLogStore();
+  const stdout = new Writable({
+    write(_chunk, _encoding, callback) {
+      callback();
+    },
+  }) as NodeJS.WriteStream;
+  stdout.columns = 100;
+  stdout.rows = 30;
+
+  const done = runRuntimeLogTui({
+    title: "Chat Codex 运行中",
+    channels: ["feishu-default"],
+    cwd: "/repo",
+    policy: { permissionMode: "approval", sandbox: "workspace-write" },
+    routePolicy: "首条消息自动创建新 session",
+  }, store, { stdout, interactive: false });
+  await waitForInk();
+
+  process.emit("SIGINT");
+  await done;
+});
+
+function mockActions(
+  dashboard: LauncherDashboard,
+  overrides: {
+    addFeishuBot?: (input: { appId?: string; appSecret?: string; domain?: string; accountId?: string }) => Promise<unknown>;
+  } = {},
+): LauncherActions {
   return {
     getDashboard: async () => dashboard,
     getStartup: () => dashboard.startup,
@@ -231,6 +345,7 @@ function mockActions(dashboard: LauncherDashboard): LauncherActions {
     }),
     checkWeixinLogin: async () => ({ state: "pending", message: "还没有检测到扫码确认。" }),
     cancelWeixinLogin: () => ({ state: "cancelled", message: "已返回管理渠道，未添加微信账号。" }),
+    addFeishuBot: overrides.addFeishuBot ?? (async () => ({ ok: true, message: "飞书机器人已添加。" })),
     listSessionChoices: () => ({ selectable: [], unavailable: [] }),
     listWeixinPrimaryChoices: () => ({ selectable: [], unavailable: [] }),
     formatRunPolicy: () => "审批模式（workspace-write 沙箱）",
