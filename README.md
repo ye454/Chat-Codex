@@ -176,7 +176,7 @@ npm run cli:feishu:status
 npm run chat-codex
 ```
 
-统一交互里的“添加飞书机器人”会直接提示手动输入 App ID / App Secret；输入值只用于本次进程，不会写入仓库。重启后长期运行建议在本机 `secrets/` 文件里记录导出命令，并通过 `FEISHU_APP_ID` / `FEISHU_APP_SECRET` 环境变量提供。
+统一交互里的“添加飞书机器人”会直接提示手动输入 App ID / App Secret；输入值会保存到本机 `state/channels/feishu/<channelId>/accounts/<accountId>/credentials.local.json`，重启后自动读取。`state/` 已被 `.gitignore` 忽略，不会写入 Git 跟踪文件；环境变量 `FEISHU_APP_ID` / `FEISHU_APP_SECRET` 仍可作为覆盖或手动运行来源。
 
 飞书出站消息优先使用 `im.message.reply`，也就是基于用户刚发来的消息做上下文回复；如果 reply 因平台限制或上下文失效失败，会回退到 `im.message.create`，直接向当前 `chat_id` 发送一条新消息。这样做的目的是优先保留对话上下文，同时避免最终回复因为 reply 失败而丢失。
 
@@ -534,7 +534,7 @@ npm test
 
 - `full` 权限会跳过审批和沙箱，风险很高。
 - 微信登录 token 保存在本地 `state/weixin/`，不要提交或共享。
-- 飞书 App Secret 只能放在本机环境变量或 `secrets/`，不要写入 Git 跟踪文件。
+- 飞书 App Secret 可以放在本机环境变量、`secrets/`，或交互添加后写入被 Git 忽略的 `state/channels/feishu/.../credentials.local.json`；不要写入 Git 跟踪文件。
 - Codex app-server 不应直接暴露到公网；需要远程使用时应通过 localhost、SSH 转发、VPN 或受控网络。
 - 多渠道模式下，一个 Codex session 只能属于一个 route，避免审批、文件和上下文串线。
 

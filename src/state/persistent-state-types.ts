@@ -123,3 +123,12 @@ export interface ChannelAccountDocument {
   metadata?: Record<string, unknown>;
   updatedAt: string;
 }
+
+export interface ChannelAccountCredentialsDocument {
+  schemaVersion: number;
+  channelId: string;
+  channelType: string;
+  accountId: string;
+  credentials: Record<string, string>;
+  updatedAt: string;
+}

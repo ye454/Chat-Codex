@@ -58,7 +58,7 @@ test("ChannelActions registers independent Weixin accounts and Feishu bots", asy
   assert.equal(fs.existsSync(weixinAccountPath), true);
 });
 
-test("ChannelActions keeps interactive Feishu credentials only in current process", async () => {
+test("ChannelActions persists interactive Feishu credentials in local state", async () => {
   const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-channel-actions-"));
   const bridgeDir = path.join(baseDir, "state", "bridge");
   const configStore = new ChannelConfigStore({ bridgeDir });
@@ -68,7 +68,7 @@ test("ChannelActions keeps interactive Feishu credentials only in current proces
     appId: "cli_interactive_app",
     appSecret: "interactive-secret",
     accountId: "bot-interactive",
-  }, "interactive");
+  }, "state-local");
 
   const statusAdapter = actions.createStatusAdapter(record);
   await statusAdapter.start();
@@ -78,6 +78,10 @@ test("ChannelActions keeps interactive Feishu credentials only in current proces
   const persistedAccount = fs.readFileSync(accountPath, "utf8");
   assert.equal(persistedAccount.includes("interactive-secret"), false);
   assert.equal(persistedAccount.includes("cli_interactive_app"), false);
+  const credentialsPath = path.join(baseDir, "state", "channels", "feishu", record.id, "accounts", "bot-interactive", "credentials.local.json");
+  const persistedCredentials = fs.readFileSync(credentialsPath, "utf8");
+  assert.equal(persistedCredentials.includes("interactive-secret"), true);
+  assert.equal(persistedCredentials.includes("cli_interactive_app"), true);
 
   const restartedActions = new ChannelActions({
     configStore: new ChannelConfigStore({ bridgeDir }),
@@ -87,7 +91,7 @@ test("ChannelActions keeps interactive Feishu credentials only in current proces
   assert.ok(restartedRecord);
   const restartedStatusAdapter = restartedActions.createStatusAdapter(restartedRecord);
   await restartedStatusAdapter.start();
-  assert.equal((await restartedStatusAdapter.getStatus()).state, "login_required");
+  assert.equal((await restartedStatusAdapter.getStatus()).state, "connected");
 });
 
 function weixinAccount(accountId: string): StoredWeixinAccount {

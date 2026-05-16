@@ -7,7 +7,7 @@ import { FileStateStore } from "../../src/state/file-state-store.js";
 import { ChannelConfigStore } from "../../src/state/channel-config-store.js";
 import type { ChannelMessage } from "../../src/protocol/channel.js";
 import type { CodexSession } from "../../src/codex/types.js";
-import type { BridgeConfigDocument, ChannelAccountDocument, PendingBindingsDocument, RoutesDocument, SessionOwnersDocument, SessionPoliciesDocument } from "../../src/state/persistent-state-types.js";
+import type { BridgeConfigDocument, ChannelAccountCredentialsDocument, ChannelAccountDocument, PendingBindingsDocument, RoutesDocument, SessionOwnersDocument, SessionPoliciesDocument } from "../../src/state/persistent-state-types.js";
 import { pendingBindingOwnerRouteKey } from "../../src/state/memory-state-store.js";
 
 test("FileStateStore persists active route binding and session owner", () => {
@@ -105,7 +105,7 @@ test("FileStateStore persists pending bindings and reserves existing sessions", 
   assert.equal(pending.pending[0].label, "微信 / wx-account / 主聊天");
 });
 
-test("ChannelConfigStore writes channel and account directories without secrets", () => {
+test("ChannelConfigStore writes channel account metadata separately from local credentials", () => {
   const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-channel-config-"));
   const rootDir = path.join(baseDir, "state", "bridge");
   const store = new ChannelConfigStore({ bridgeDir: rootDir });
@@ -140,6 +140,23 @@ test("ChannelConfigStore writes channel and account directories without secrets"
   assert.equal(feishuAccount.metadata?.appId, "cli_xxx...abcd");
   assert.equal(fs.readFileSync(feishuAccountPath, "utf-8").includes("secret"), false);
   assert.equal(fs.existsSync(weixinAccountPath), true);
+
+  const record = config.channels.find((channel) => channel.id === "feishu-main");
+  assert.ok(record);
+  store.writeAccountCredentials(record, "default", {
+    appId: "cli_real_app",
+    appSecret: "real-secret",
+    domain: "feishu",
+  });
+  const credentialsPath = path.join(baseDir, "state", "channels", "feishu", "feishu-main", "accounts", "default", "credentials.local.json");
+  const credentials = readJson<ChannelAccountCredentialsDocument>(credentialsPath);
+  assert.equal(credentials.credentials.appId, "cli_real_app");
+  assert.equal(credentials.credentials.appSecret, "real-secret");
+  assert.deepEqual(store.readAccountCredentials(record, "default"), {
+    appId: "cli_real_app",
+    appSecret: "real-secret",
+    domain: "feishu",
+  });
 });
 
 function tempStateDir(): string {

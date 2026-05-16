@@ -144,4 +144,4 @@ npm run cli:feishu:status
 
 `weixin login` 已具备二维码登录入口，会在终端渲染二维码并保留备用链接。真实微信通道 + Codex 统一通过 `npm run chat-codex` 启动；默认 app-server 模式可以把 Codex command/file/permissions 审批请求推送到微信，并由 `/OK` 或 `/NO` 回写 Codex。真实扫码登录完成后要追加真实微信通道测试报告。
 
-`feishu status` 会读取 `FEISHU_APP_ID`、`FEISHU_APP_SECRET` 等环境变量并检查机器人身份；飞书私聊文本通道 + Codex 统一通过 `npm run chat-codex` 添加机器人并启动服务。飞书 App Secret 只允许放在本机环境变量或 `secrets/`，不要写入 Git 跟踪文件。
+`feishu status` 会读取 `FEISHU_APP_ID`、`FEISHU_APP_SECRET` 等环境变量并检查机器人身份；飞书私聊文本通道 + Codex 统一通过 `npm run chat-codex` 添加机器人并启动服务。交互添加的飞书 App Secret 会写入被 Git 忽略的本机 `state/channels/feishu/.../credentials.local.json`，也可以放在本机环境变量或 `secrets/`；不要写入 Git 跟踪文件。

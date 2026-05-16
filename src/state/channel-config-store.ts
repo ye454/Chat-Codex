@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import {
   LOCAL_STATE_SCHEMA_VERSION,
+  type ChannelAccountCredentialsDocument,
   type BridgeConfigDocument,
   type ChannelAccountDocument,
   type ChannelInstanceDocument,
@@ -96,6 +97,37 @@ export class ChannelConfigStore {
     return path.isAbsolute(stateDir) ? stateDir : path.resolve(this.stateRootDir, "..", stateDir);
   }
 
+  writeAccountCredentials(record: ChannelInstanceRecord, accountId: string, credentials: Record<string, string | undefined>): void {
+    const cleanCredentials = Object.fromEntries(
+      Object.entries(credentials)
+        .filter((entry): entry is [string, string] => typeof entry[1] === "string" && entry[1].trim().length > 0)
+        .map(([key, value]) => [key, value.trim()]),
+    );
+    const accountDir = this.accountDir(record, accountId);
+    fs.mkdirSync(accountDir, { recursive: true });
+    writeJsonFileAtomic(path.join(accountDir, "credentials.local.json"), {
+      schemaVersion: LOCAL_STATE_SCHEMA_VERSION,
+      channelId: record.id,
+      channelType: record.type,
+      accountId,
+      credentials: cleanCredentials,
+      updatedAt: new Date().toISOString(),
+    } satisfies ChannelAccountCredentialsDocument);
+  }
+
+  readAccountCredentials(record: ChannelInstanceRecord, accountId: string): Record<string, string> | undefined {
+    const document = readJsonFile<ChannelAccountCredentialsDocument | undefined>(
+      path.join(this.accountDir(record, accountId), "credentials.local.json"),
+      undefined,
+    );
+    if (!document || document.channelId !== record.id || document.accountId !== accountId) return undefined;
+    return Object.fromEntries(
+      Object.entries(document.credentials ?? {})
+        .filter((entry): entry is [string, string] => typeof entry[1] === "string" && entry[1].trim().length > 0)
+        .map(([key, value]) => [key, value.trim()]),
+    );
+  }
+
   private writeInstanceFiles(record: ChannelInstanceRecord, accountId: string | undefined, metadata: Record<string, unknown> | undefined): void {
     const absoluteStateDir = this.resolveStateDir(record.stateDir);
     fs.mkdirSync(absoluteStateDir, { recursive: true });
@@ -115,6 +147,10 @@ export class ChannelConfigStore {
       metadata,
       updatedAt: record.updatedAt,
     } satisfies ChannelAccountDocument);
+  }
+
+  private accountDir(record: ChannelInstanceRecord, accountId: string): string {
+    return path.join(this.resolveStateDir(record.stateDir), "accounts", accountId);
   }
 
 }

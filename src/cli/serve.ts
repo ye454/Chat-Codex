@@ -314,8 +314,8 @@ async function addFeishuBot(rl: Interface, channelActions: ChannelActions): Prom
     "添加飞书机器人",
     "",
     "请手动输入这次要添加的 App ID / App Secret。",
-    "Secret 只保存在当前进程内存里，不会写入 Git 或状态文件。",
-    "长期运行也可以在启动前通过 FEISHU_APP_ID / FEISHU_APP_SECRET 环境变量提供。",
+    "凭证会保存到本机 state/ 目录的 credentials.local.json，不会写入 Git 跟踪文件。",
+    "也可以在启动前通过 FEISHU_APP_ID / FEISHU_APP_SECRET 环境变量覆盖。",
     "输入 0 返回上一级。",
   ].join("\n"));
   const credentials = await askFeishuCredentials(rl);
@@ -337,13 +337,13 @@ async function addFeishuBot(rl: Interface, channelActions: ChannelActions): Prom
     console.log(status.lastError ?? "飞书机器人配置检查失败。");
     return;
   }
-  const record = channelActions.registerFeishuBot(credentials, "interactive");
+  const record = channelActions.registerFeishuBot(credentials, "state-local");
   console.log("");
   console.log([
     "飞书机器人已添加",
     `账号标识: ${record.defaultAccountId ?? DEFAULT_FEISHU_ACCOUNT_ID}`,
     `渠道实例: ${record.id}`,
-    "凭证: 本次进程已记住；重启后请使用环境变量或重新手动添加。",
+    "凭证: 已保存到本机 state/，重启后会自动读取。",
     "",
     "下一步: 启动服务后，让用户在飞书里私聊机器人。",
     "每个飞书私聊会按 chat_id 生成独立聊天绑定。",

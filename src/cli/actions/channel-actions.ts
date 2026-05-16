@@ -82,7 +82,7 @@ export class ChannelActions {
     const normalized = normalizeFeishuCredentials(credentials);
     const accountId = normalized.accountId ?? DEFAULT_FEISHU_ACCOUNT_ID;
     this.feishuRuntimeCredentials.set(accountId, normalized);
-    return this.configStore.upsertChannelInstance({
+    const record = this.configStore.upsertChannelInstance({
       id: feishuChannelId(accountId),
       type: "feishu",
       enabled: true,
@@ -94,6 +94,16 @@ export class ChannelActions {
         domain: normalized.domain ?? DEFAULT_FEISHU_DOMAIN,
       },
     });
+    if (credentialSource === "state-local" || credentialSource === "interactive") {
+      this.configStore.writeAccountCredentials(record, accountId, {
+        appId: normalized.appId,
+        appSecret: normalized.appSecret,
+        domain: normalized.domain,
+        verificationToken: normalized.verificationToken,
+        encryptKey: normalized.encryptKey,
+      });
+    }
+    return record;
   }
 
   ensureLegacyWeixinAccountRegistered(status: ChannelStatus): ChannelInstanceRecord | undefined {
@@ -154,6 +164,7 @@ export class ChannelActions {
   private loadFeishuRuntimeCredentials(record: ChannelInstanceRecord): FeishuCredentials {
     const accountId = record.defaultAccountId ?? DEFAULT_FEISHU_ACCOUNT_ID;
     return this.feishuRuntimeCredentials.get(accountId)
+      ?? loadFeishuCredentialsFromLocalState(this.configStore, record, accountId)
       ?? loadFeishuCredentialsForAccount(accountId, this.env);
   }
 }
@@ -192,6 +203,23 @@ export function loadFeishuCredentialsForAccount(accountId: string | undefined, e
     accountId: normalizedAccount,
     verificationToken: firstNonEmpty(env[`FEISHU_${scoped}_VERIFICATION_TOKEN`], env.FEISHU_VERIFICATION_TOKEN, env.LARK_VERIFICATION_TOKEN),
     encryptKey: firstNonEmpty(env[`FEISHU_${scoped}_ENCRYPT_KEY`], env.FEISHU_ENCRYPT_KEY, env.LARK_ENCRYPT_KEY),
+  });
+}
+
+function loadFeishuCredentialsFromLocalState(
+  configStore: ChannelConfigStore,
+  record: ChannelInstanceRecord,
+  accountId: string,
+): FeishuCredentials | undefined {
+  const credentials = configStore.readAccountCredentials(record, accountId);
+  if (!credentials) return undefined;
+  return normalizeFeishuCredentials({
+    appId: credentials.appId,
+    appSecret: credentials.appSecret,
+    domain: credentials.domain,
+    accountId,
+    verificationToken: credentials.verificationToken,
+    encryptKey: credentials.encryptKey,
   });
 }
 

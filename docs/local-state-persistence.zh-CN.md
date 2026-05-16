@@ -85,7 +85,7 @@ state/
 
 ### config.json
 
-保存渠道实例配置，不保存真实 secret。
+保存渠道实例配置和凭证来源；`config.json` 本身不保存真实 secret。真实 secret 若来自交互添加，只写入该账号目录下的 `credentials.local.json`。
 
 ```json
 {
@@ -109,7 +109,7 @@ state/
       "enabled": true,
       "stateDir": "state/channels/feishu/feishu-main",
       "defaultAccountId": "default",
-      "credentialSource": "env"
+      "credentialSource": "state-local"
     }
   ],
   "codexDefaults": {
@@ -128,7 +128,7 @@ state/
 - `channels[].enabled`：启动主入口时是否默认启动。
 - `channels[].stateDir`：该实例的 adapter-owned 状态目录。
 - `channels[].defaultAccountId`：默认账号，不代表账号绑定 session。
-- `credentialSource`：只记录来源，例如 `env`、`secrets/feishu.local.md`、`interactive`，不记录 secret 值。
+- `credentialSource`：只记录来源，例如 `env`、`state-local`、`secrets/feishu.local.md`，不在 `config.json` 里记录 secret 值。
 
 ### routes.json
 
@@ -311,12 +311,13 @@ state/channels/feishu/feishu-main/
 建议内容：
 
 - `account.json`：appId 掩码、bot open_id、botName、domain、credentialSource。
+- `credentials.local.json`：交互添加时保存真实 `appId`、`appSecret`、`domain`、`verificationToken`、`encryptKey` 等本机凭证；该文件位于被 Git 忽略的 `state/` 下，权限应为 `0600`。
 - `cache.json`：最近 connection 状态、message 去重窗口、reaction typing 缓存等非敏感缓存。
 
 安全要求：
 
-- `FEISHU_APP_SECRET` 不写入 `state/`。
-- secret 只来自环境变量、`secrets/feishu.local.md` 或交互输入。
+- `FEISHU_APP_SECRET` 不写入 `config.json`、`instance.json`、`account.json`、日志、测试报告或 Git 跟踪文件。
+- secret 可以来自环境变量、`secrets/feishu.local.md`，或交互输入后写入本机 `state/channels/feishu/<channelId>/accounts/<accountId>/credentials.local.json`。
 - `account.json` 中 App ID 可以掩码展示，不能写真实 App Secret。
 
 ## routeKey 规则

@@ -106,13 +106,13 @@ FEISHU_DOMAIN=feishu            # feishu | lark，默认 feishu
 FEISHU_ACCOUNT_ID=default       # 默认 default
 ```
 
-真实本地测试密钥只放在忽略目录：
+真实本地测试密钥可以放在忽略目录：
 
 ```text
 secrets/feishu.local.md
 ```
 
-该文件可以写成可复制到终端的 `export FEISHU_APP_ID=...` 格式。`secrets/` 已加入 `.gitignore`，仓库文档和测试报告不得记录真实 `appSecret`。
+该文件可以写成可复制到终端的 `export FEISHU_APP_ID=...` 格式。`secrets/` 已加入 `.gitignore`，仓库文档和测试报告不得记录真实 `appSecret`。通过 `chat-codex` 交互添加飞书机器人时，凭证也可以写入被 Git 忽略的 `state/channels/feishu/<channelId>/accounts/<accountId>/credentials.local.json`，用于重启后自动恢复。
 
 后续多渠道配置落地后，再迁移到：
 
@@ -135,8 +135,8 @@ secrets/feishu.local.md
 
 安全要求：
 
-- `appSecret` 不写入测试报告。
-- `.env` 和 state 目录不提交。
+- `appSecret` 不写入测试报告、日志、`config.json`、`instance.json` 或 `account.json`。
+- `.env`、secrets 和 state 目录不提交。
 - CLI 状态页只显示 appId 尾部或账号别名，不打印 secret。
 
 ## FeishuAdapter
@@ -438,11 +438,12 @@ npm run chat-codex
 
 行为：
 
-1. 读取 `FEISHU_APP_ID`、`FEISHU_APP_SECRET`、`FEISHU_DOMAIN`、`FEISHU_ACCOUNT_ID`。
-2. 交互式终端缺少 App ID / App Secret 时提示输入，只用于本次进程，不写入仓库。
-3. probe 飞书机器人身份。
-4. 展示中文状态摘要。
-5. `chat-codex` 添加飞书机器人后，用户回到首页选择“启动服务”，再启动 WebSocket 长连接。
+1. `feishu status` 读取 `FEISHU_APP_ID`、`FEISHU_APP_SECRET`、`FEISHU_DOMAIN`、`FEISHU_ACCOUNT_ID` 等环境变量做一次性状态检查。
+2. `chat-codex` 交互式添加飞书机器人时提示输入 App ID / App Secret，并保存到本机 `state/channels/feishu/<channelId>/accounts/<accountId>/credentials.local.json`，重启后自动读取；该路径被 Git 忽略，不写入仓库。
+3. 运行时加载凭证顺序为：当前进程内存、本机 `credentials.local.json`、环境变量。
+4. probe 飞书机器人身份。
+5. 展示中文状态摘要。
+6. `chat-codex` 添加飞书机器人后，用户回到首页选择“启动服务”，再启动 WebSocket 长连接。
 
 微信和飞书不再暴露单渠道 Codex 启动入口。
 
@@ -553,7 +554,7 @@ Codex Chat Bridge
 ### 配置与安全
 
 - `appSecret`、`encryptKey`、`verificationToken` 不写入日志、测试报告和状态详情。
-- `.env`、本地 state、token、credential 文件不提交。
+- `.env`、secrets、本地 state、token、credential 文件不提交。
 - 状态输出可以显示 appId、accountId、botOpenId、botName 和最近错误，但必须隐藏 secret。
 - 缺少 appId/appSecret 时状态必须是 `login_required`，不能在启动后才抛不清晰的 SDK 错误。
 
