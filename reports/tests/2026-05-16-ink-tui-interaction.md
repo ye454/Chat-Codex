@@ -2,7 +2,7 @@
 
 ## 测试目标
 
-验证 `chat-codex` TTY 默认 Ink TUI 的基础交互实现，包括首页、渠道页、聊天绑定页、权限页、TUI fallback 参数、TypeScript 构建和完整测试回归。
+验证 `chat-codex` TTY 默认 Ink TUI 的基础交互实现，包括首页、首次配置引导、空渠道页、渠道页、聊天绑定页、权限页、TUI fallback 参数、TypeScript 构建和完整测试回归。
 
 ## 测试环境
 
@@ -31,15 +31,18 @@ npm audit --omit=dev
 3. 新增 Ink TUI shell，覆盖首页、管理渠道、添加微信、添加飞书、聊天绑定、绑定详情、Session 选择、手动 Session ID、权限设置、状态详情、启动确认和帮助页。
 4. 接入 `runServe()`：TTY 且未传 `--no-tui` 时进入 Ink TUI；非 TTY、`--no-tui`、`--no-interactive` 保持 fallback 行为。
 5. 新增 Ink TUI 单元测试，验证首页渲染、`c`、`b`、`p` 关键页面导航、pending 绑定展示、帮助页、飞书表单 Esc 返回和启动确认闭环。
-6. 执行完整测试回归。
-7. 执行 npm audit 只读检查。
+6. 补充首次配置和空渠道页测试，验证无渠道时首页展示可执行菜单，`Enter` / 数字 / `w` / `f` 能进入添加流程，选中 `0. 退出` 后回车能退出。
+7. 修复 TUI 中文排版：列表补齐和截断按终端显示宽度计算，避免中文双宽字符把右列顶歪；长运行提示移到独立提示区。
+8. 状态详情页避免暴露 `routes/bound/pending` 内部字段名，改为中文汇总。
+9. 执行完整测试回归。
+10. 执行 npm audit 只读检查。
 
 ## 实际结果
 
 - `npm run build` 通过。
-- `node --test dist/tests/unit/ink-tui.test.js` 通过。
-- `npm test` 通过：186 passed，0 failed。
-- `npm audit --omit=dev` 报告 2 个 high severity，来源为既有 `@larksuiteoapi/node-sdk -> axios`，审计输出显示 `No fix available`。本次未执行 `npm audit fix --force`，避免破坏性升级。
+- `node --test dist/tests/unit/ink-tui.test.js` 通过：5 passed，0 failed。
+- `npm test` 通过：189 passed，0 failed。
+- `npm audit --omit=dev` 报告 2 个 high severity，来源为既有 `@larksuiteoapi/node-sdk -> axios`；审计建议 `npm audit fix --force`，会安装 `@larksuiteoapi/node-sdk@1.56.1` 并产生 breaking change。本次未执行强制修复，避免破坏性降级/升级。
 
 ## 结论
 

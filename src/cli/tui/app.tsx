@@ -56,10 +56,10 @@ export function ChatCodexTui({ actions, onDone }: ChatCodexTuiProps): React.JSX.
   }, []);
 
   useEffect(() => {
-    setSelected(0);
+    setSelected(screen.name === "home" && (dashboard?.channels.length ?? 0) > 0 ? 4 : 0);
     setConfirm(undefined);
     setManualValue("");
-  }, [screen.name]);
+  }, [screen.name, dashboard?.channels.length]);
 
   const channels = dashboard?.channels ?? [];
   const bindings = dashboard?.bindings ?? [];
@@ -189,24 +189,56 @@ export function ChatCodexTui({ actions, onDone }: ChatCodexTuiProps): React.JSX.
   });
 
   const handleHomeInput = (input: string, enter: boolean): void => {
-    if (input === "c") setScreen({ name: "channels" });
-    else if (input === "b") setScreen({ name: "bindings" });
-    else if (input === "p") setScreen({ name: "permission", target: { kind: "default" } });
-    else if (input === "s") setScreen({ name: "status" });
-    else if (input === "w") setScreen({ name: "addWeixin" });
-    else if (input === "f") setScreen({ name: "addFeishu", step: "appId", values: feishuCredentialDefaults() });
-    else if (enter) openNeedsAttention();
-  };
-
-  const handleChannelsInput = async (input: string, enter: boolean): Promise<void> => {
-    if (input === "w") {
+    const noChannels = channels.length === 0;
+    const picked = numericPick(input, noChannels ? 3 : 5);
+    const actionIndex = picked ?? selected;
+    const actionRequested = enter || picked !== undefined;
+    if (input === "0") {
+      quit();
+      return;
+    }
+    if (noChannels && actionIndex === 3 && enter) {
+      quit();
+      return;
+    }
+    if (input === "w" || (noChannels && actionIndex === 0 && actionRequested)) {
       setScreen({ name: "addWeixin" });
       return;
     }
-    if (input === "f") {
+    if (input === "f" || (noChannels && actionIndex === 1 && actionRequested)) {
       setScreen({ name: "addFeishu", step: "appId", values: feishuCredentialDefaults() });
       return;
     }
+    if (input === "p" || (actionIndex === 2 && actionRequested)) {
+      setScreen({ name: "permission", target: { kind: "default" } });
+      return;
+    }
+    if (input === "c" || (!noChannels && actionIndex === 0 && actionRequested)) {
+      setScreen({ name: "channels" });
+      return;
+    }
+    if (input === "b" || (!noChannels && actionIndex === 1 && actionRequested)) {
+      setScreen({ name: "bindings" });
+      return;
+    }
+    if (input === "s" || (!noChannels && actionIndex === 3 && actionRequested)) {
+      setScreen({ name: "status" });
+      return;
+    }
+    if (enter || (!noChannels && actionIndex === 4 && picked !== undefined)) openNeedsAttention();
+  };
+
+  const handleChannelsInput = async (input: string, enter: boolean): Promise<void> => {
+    const emptyAction = numericPick(input, 2) ?? selected;
+    if (input === "w" || (channels.length === 0 && emptyAction === 0 && (enter || input === "1"))) {
+      setScreen({ name: "addWeixin" });
+      return;
+    }
+    if (input === "f" || (channels.length === 0 && emptyAction === 1 && (enter || input === "2"))) {
+      setScreen({ name: "addFeishu", step: "appId", values: feishuCredentialDefaults() });
+      return;
+    }
+    if (channels.length === 0) return;
     const picked = numericPick(input, channels.length);
     const channel = channels[picked ?? selected];
     if (!channel) return;
@@ -512,19 +544,31 @@ export function ChatCodexTui({ actions, onDone }: ChatCodexTuiProps): React.JSX.
     if (screen.name === "startConfirm") return <StartConfirmView validation={dashboard.canStart} lines={dashboard.canStart.ok ? actions.startConfirmationSummary(dashboard.canStart.channels) : [dashboard.canStart.message]} />;
     return <HelpView />;
   }, [actions, bindings, channels, currentBinding, currentChannel, dashboard, loading, manualValue, screen, selected]);
+  const footerContext = screen.name === "home" && channels.length === 0
+    ? "firstRun"
+    : screen.name === "channels" && channels.length === 0
+      ? "emptyChannels"
+      : undefined;
 
   return (
     <Box flexDirection="column">
       {body}
-      {confirm ? <ConfirmBar message={confirm.message} /> : <Footer loading={loading} flash={flash} screen={screen.name} />}
+      {confirm ? <ConfirmBar message={confirm.message} /> : (
+        <Footer
+          loading={loading}
+          flash={flash}
+          screen={screen.name}
+          context={footerContext}
+        />
+      )}
     </Box>
   );
 }
 
 function maxSelectableIndex(screen: Screen, channels: LauncherDashboard["channels"], bindingItemCount: number): number {
-  if (screen.name === "channels") return Math.max(0, channels.length - 1);
+  if (screen.name === "channels") return channels.length > 0 ? Math.max(0, channels.length - 1) : 1;
   if (screen.name === "bindings") return Math.max(0, bindingItemCount - 1);
-  if (screen.name === "home") return 3;
+  if (screen.name === "home") return channels.length === 0 ? 3 : 4;
   if (screen.name === "channelDetail" || screen.name === "bindingDetail") return 3;
   if (screen.name === "permission") return 1;
   return 30;

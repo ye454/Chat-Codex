@@ -44,12 +44,12 @@ export function KeyValue({ label, value }: { label: string; value: string }): Re
   return <Text>{padRight(label, FIELD_WIDTH)}{truncate(value, 70)}</Text>;
 }
 
-export function Footer({ loading, flash, screen }: { loading: boolean; flash: Flash; screen: Screen["name"] }): React.JSX.Element {
+export function Footer({ loading, flash, screen, context }: { loading: boolean; flash: Flash; screen: Screen["name"]; context?: "firstRun" | "emptyChannels" }): React.JSX.Element {
   const color = flash.kind === "error" ? "red" : flash.kind === "success" ? "green" : "gray";
   return (
-    <Box marginTop={1}>
+    <Box marginTop={1} flexDirection="column">
       <Text color={loading ? "yellow" : color}>{loading ? "处理中..." : flash.message}</Text>
-      <Text color="gray">  [{screen}]</Text>
+      <Text color="gray">{footerHint(screen, context)}</Text>
     </Box>
   );
 }
@@ -80,12 +80,75 @@ export function channelStatus(state: string): string {
 }
 
 export function truncate(value: string, width: number): string {
-  const chars = Array.from(value);
-  if (chars.length <= width) return value;
-  return `${chars.slice(0, Math.max(0, width - 1)).join("")}…`;
+  if (displayWidth(value) <= width) return value;
+  return `${sliceToWidth(value, Math.max(0, width - 1))}…`;
 }
 
 export function padRight(value: string, width: number): string {
-  const length = Array.from(value).length;
+  const length = displayWidth(value);
   return length >= width ? value : `${value}${" ".repeat(width - length)}`;
+}
+
+function footerHint(screen: Screen["name"], context?: "firstRun" | "emptyChannels"): string {
+  if (context === "firstRun") return "↑↓ 选择  Enter 执行  1/w 微信  2/f 飞书  3/p 权限  0/q 退出";
+  if (context === "emptyChannels") return "↑↓ 选择  Enter 执行  1/w 微信  2/f 飞书  Esc/q 返回";
+  if (screen === "home") return "↑↓ 选择  Enter 执行  w 微信  f 飞书  c 渠道  b 绑定  p 权限  q 退出";
+  if (screen === "channels") return "↑↓ 选择  Enter 详情  w 添加微信  f 添加飞书  e 启停  Esc 返回";
+  if (screen === "bindings") return "↑↓ 选择  Enter 详情  n 新建  m 手动绑定  u 解绑  p 权限  Esc 返回";
+  if (screen === "addWeixin") return "Enter 获取/检查二维码  Esc 返回";
+  if (screen === "addFeishu") return "输入后 Enter 下一步  Secret 不回显  Esc 返回";
+  if (screen === "sessionSelect") return "↑↓ 选择  Enter 绑定  数字直选  n 新建  m 手动输入  Esc 返回";
+  if (screen === "permission") return "↑↓ 选择  Enter 保存  完全权限需确认  Esc 返回";
+  return "↑↓ 选择  Enter 执行  Esc 返回  q 返回";
+}
+
+function displayWidth(value: string): number {
+  let width = 0;
+  for (const char of Array.from(value)) {
+    width += charWidth(char);
+  }
+  return width;
+}
+
+function sliceToWidth(value: string, maxWidth: number): string {
+  let width = 0;
+  let result = "";
+  for (const char of Array.from(value)) {
+    const nextWidth = charWidth(char);
+    if (width + nextWidth > maxWidth) break;
+    result += char;
+    width += nextWidth;
+  }
+  return result;
+}
+
+function charWidth(char: string): number {
+  const code = char.codePointAt(0) ?? 0;
+  if (isCombining(code)) return 0;
+  return isFullwidth(code) ? 2 : 1;
+}
+
+function isCombining(code: number): boolean {
+  return (code >= 0x0300 && code <= 0x036f)
+    || (code >= 0x1ab0 && code <= 0x1aff)
+    || (code >= 0x1dc0 && code <= 0x1dff)
+    || (code >= 0x20d0 && code <= 0x20ff)
+    || (code >= 0xfe00 && code <= 0xfe0f);
+}
+
+function isFullwidth(code: number): boolean {
+  return code >= 0x1100 && (
+    code <= 0x115f
+    || code === 0x2329
+    || code === 0x232a
+    || (code >= 0x2e80 && code <= 0xa4cf && code !== 0x303f)
+    || (code >= 0xac00 && code <= 0xd7a3)
+    || (code >= 0xf900 && code <= 0xfaff)
+    || (code >= 0xfe10 && code <= 0xfe19)
+    || (code >= 0xfe30 && code <= 0xfe6f)
+    || (code >= 0xff00 && code <= 0xff60)
+    || (code >= 0xffe0 && code <= 0xffe6)
+    || (code >= 0x1f300 && code <= 0x1f64f)
+    || (code >= 0x1f900 && code <= 0x1f9ff)
+  );
 }

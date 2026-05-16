@@ -58,15 +58,74 @@ test("Ink TUI handles help, Feishu form back, and start confirmation", async () 
   await waitForInk();
   assert.match(view.lastFrame() ?? "", /管理渠道/);
 
-  view.stdin.write("\u001B");
+  view.unmount();
+
+  const startView = render(<ChatCodexTui actions={mockActions(dashboardFixture())} onDone={(next) => { result = next; }} />);
   await waitForInk();
+  startView.stdin.write("\r");
+  await waitForInk();
+  assert.match(startView.lastFrame() ?? "", /即将启动/);
+  startView.stdin.write("\r");
+  await waitForInk();
+  assert.deepEqual(result, { start: true });
+  startView.unmount();
+});
+
+test("Ink TUI first run guides user to add channels with Enter and number shortcuts", async () => {
+  const view = render(<ChatCodexTui actions={mockActions(emptyDashboardFixture())} onDone={() => undefined} />);
+  await waitForInk();
+
+  assert.match(view.lastFrame() ?? "", /首次配置/);
+  assert.match(view.lastFrame() ?? "", /1\. 添加微信账号/);
+  assert.match(view.lastFrame() ?? "", /2\. 添加飞书机器人/);
+  assert.match(view.lastFrame() ?? "", /↑↓ 选择/);
+  assert.match(view.lastFrame() ?? "", /0\/q 退出/);
+
   view.stdin.write("\r");
   await waitForInk();
-  assert.match(view.lastFrame() ?? "", /即将启动/);
+  assert.match(view.lastFrame() ?? "", /添加微信账号/);
+
+  view.stdin.write("\u001B");
+  await waitForInk();
+  view.stdin.write("2");
+  await waitForInk();
+  assert.match(view.lastFrame() ?? "", /添加飞书机器人/);
+
+  view.unmount();
+});
+
+test("Ink TUI first run exit action is selectable", async () => {
+  let result: { start: boolean } | undefined;
+  const view = render(<ChatCodexTui actions={mockActions(emptyDashboardFixture())} onDone={(next) => { result = next; }} />);
+  await waitForInk();
+
+  view.stdin.write("\u001B[B");
+  view.stdin.write("\u001B[B");
+  view.stdin.write("\u001B[B");
+  await waitForInk();
   view.stdin.write("\r");
   await waitForInk();
 
-  assert.deepEqual(result, { start: true });
+  assert.deepEqual(result, { start: false });
+  view.unmount();
+});
+
+test("Ink TUI empty channel page exposes actionable add menu", async () => {
+  const view = render(<ChatCodexTui actions={mockActions(emptyDashboardFixture())} onDone={() => undefined} />);
+  await waitForInk();
+
+  view.stdin.write("c");
+  await waitForInk();
+  assert.match(view.lastFrame() ?? "", /管理渠道/);
+  assert.match(view.lastFrame() ?? "", /1\. 添加微信账号/);
+  assert.match(view.lastFrame() ?? "", /2\. 添加飞书机器人/);
+
+  view.stdin.write("\u001B[B");
+  await waitForInk();
+  view.stdin.write("\r");
+  await waitForInk();
+  assert.match(view.lastFrame() ?? "", /添加飞书机器人/);
+
   view.unmount();
 });
 
@@ -76,6 +135,7 @@ function mockActions(dashboard: LauncherDashboard): LauncherActions {
     getStartup: () => dashboard.startup,
     getPlan: () => ({ unboundRoutePolicy: "auto_new" }),
     getBinding: (routeKey: string) => dashboard.bindings.find((binding) => binding.route.routeKey === routeKey),
+    cancelWeixinLogin: () => ({ state: "cancelled", message: "已返回管理渠道，未添加微信账号。" }),
     listSessionChoices: () => ({ selectable: [], unavailable: [] }),
     listWeixinPrimaryChoices: () => ({ selectable: [], unavailable: [] }),
     formatRunPolicy: () => "审批模式（workspace-write 沙箱）",
@@ -157,6 +217,26 @@ function dashboardFixture(): LauncherDashboard {
       ok: true,
       channels: [],
       message: "可以启动服务。",
+    },
+  };
+}
+
+function emptyDashboardFixture(): LauncherDashboard {
+  return {
+    ...dashboardFixture(),
+    channels: [],
+    bindings: [],
+    pendingBindings: [],
+    routes: {
+      known: 0,
+      bound: 0,
+      pending: 0,
+      unboundPolicy: "auto_new",
+    },
+    canStart: {
+      ok: false,
+      reason: "no_enabled_channels",
+      message: "还没有启用的渠道。请先添加或启用微信账号、飞书机器人。",
     },
   };
 }

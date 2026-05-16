@@ -21,15 +21,37 @@ import {
 } from "./ui-components.js";
 
 export function HomeView({ dashboard, selected }: { dashboard: LauncherDashboard; selected: number }): React.JSX.Element {
+  if (dashboard.channels.length === 0) {
+    const actions = [
+      ["1. 添加微信账号", "扫码登录后配置微信主聊天绑定"],
+      ["2. 添加飞书机器人", "输入 App ID / App Secret，启动后等待私聊"],
+      ["3. 权限设置", formatPermission(dashboard.startup.policy)],
+      ["0. 退出", "返回终端"],
+    ];
+    return (
+      <Frame title="Chat Codex" subtitle="首次配置">
+        <Section title="欢迎使用 Chat Codex">
+          <Text>还没有配置任何渠道。请先添加微信账号或飞书机器人。</Text>
+        </Section>
+        <Section title="操作">
+          {actions.map(([label, value], index) => <ListRow key={label} active={selected === index} left={label} right={value} />)}
+        </Section>
+        <Section title="快捷键">
+          <Text>↑↓ 选择  Enter 执行  1/w 微信  2/f 飞书  3/p 权限  q 退出</Text>
+        </Section>
+      </Frame>
+    );
+  }
   const rows = [
-    ["渠道", dashboard.channels.length === 0 ? "暂无渠道" : `${dashboard.channels.length} 个渠道`],
-    ["聊天绑定", `${dashboard.routes.bound}/${dashboard.routes.known} 已绑定，${dashboard.routes.pending ?? 0} 个待生效`],
-    ["权限", formatPermission(dashboard.startup.policy)],
-    ["运行", dashboard.canStart.message],
+    ["1. 管理渠道", `${dashboard.channels.length} 个渠道`],
+    ["2. 聊天绑定", `${dashboard.routes.bound}/${dashboard.routes.known} 已绑定，${dashboard.routes.pending ?? 0} 个待生效`],
+    ["3. 权限设置", formatPermission(dashboard.startup.policy)],
+    ["4. 状态详情", "查看渠道和绑定明细"],
+    ["5. 启动服务", dashboard.canStart.ok ? "可以启动" : "需处理配置"],
   ];
   return (
     <Frame title="Chat Codex" subtitle={`状态: ${dashboard.canStart.ok ? "可启动" : "需配置"}  权限: ${dashboard.startup.policy.permissionMode === "full" ? "完全" : "审批"}`}>
-      <Section title="概览">
+      <Section title="操作">
         {rows.map(([label, value], index) => <ListRow key={label} active={selected === index} left={label} right={value} />)}
       </Section>
       <Section title="渠道">
@@ -44,23 +66,38 @@ export function HomeView({ dashboard, selected }: { dashboard: LauncherDashboard
       <Section title="聊天绑定">
         <Text>已发现 {dashboard.routes.known} 个聊天，已绑定 {dashboard.routes.bound} 个 session，待生效 {dashboard.routes.pending ?? 0} 个。</Text>
       </Section>
+      <Section title="提示">
+        <Text>{dashboard.canStart.message}</Text>
+      </Section>
     </Frame>
   );
 }
 
 export function ChannelsView({ channels, selected }: { channels: LauncherDashboard["channels"]; selected: number }): React.JSX.Element {
+  if (channels.length === 0) {
+    const actions = [
+      ["1. 添加微信账号", "扫码登录微信"],
+      ["2. 添加飞书机器人", "输入机器人凭证"],
+    ];
+    return (
+      <Frame title="管理渠道" subtitle="Enter 执行  w 微信  f 飞书  Esc 返回">
+        <Muted text="暂无渠道。请先添加微信账号或飞书机器人。" />
+        <Section title="操作">
+          {actions.map(([label, value], index) => <ListRow key={label} active={selected === index} left={label} right={value} />)}
+        </Section>
+      </Frame>
+    );
+  }
   return (
     <Frame title="管理渠道" subtitle="Enter 详情  w 微信  f 飞书  e 启停">
-      {channels.length === 0
-        ? <Muted text="暂无渠道。按 w 添加微信账号，或按 f 添加飞书机器人。" />
-        : channels.map((channel, index) => (
-          <ListRow
-            key={channel.record.id}
-            active={selected === index}
-            left={`${index + 1}. ${channel.record.type === "weixin" ? "微信" : "飞书"} / ${channel.status.account ?? channel.record.defaultAccountId ?? "default"}`}
-            right={`${channel.record.enabled ? "已启用" : "已停用"}   ${channelStatus(channel.status.state)}`}
-          />
-        ))}
+      {channels.map((channel, index) => (
+        <ListRow
+          key={channel.record.id}
+          active={selected === index}
+          left={`${index + 1}. ${channel.record.type === "weixin" ? "微信" : "飞书"} / ${channel.status.account ?? channel.record.defaultAccountId ?? "default"}`}
+          right={`${channel.record.enabled ? "已启用" : "已停用"}   ${channelStatus(channel.status.state)}`}
+        />
+      ))}
     </Frame>
   );
 }
@@ -235,7 +272,7 @@ export function StatusView({ dashboard }: { dashboard: LauncherDashboard }): Rea
         )) : <Muted text="暂无渠道。" />}
       </Section>
       <Section title="绑定">
-        <Text>routes: {dashboard.routes.known}  bound: {dashboard.routes.bound}  pending: {dashboard.routes.pending ?? 0}</Text>
+        <Text>已发现聊天：{dashboard.routes.known}  已绑定：{dashboard.routes.bound}  待生效：{dashboard.routes.pending ?? 0}</Text>
       </Section>
       <Section title="运行">
         <Text>服务未启动。</Text>
