@@ -37,6 +37,9 @@
 - `cli-core-interaction-design.zh-CN.md`
   当前 CLI/TUI 核心交互设计。说明微信当前一个账号 + 一个主聊天绑定 session，飞书一个机器人 + 多个 `chat_id` 分别绑定 session；TUI 只负责展示，业务动作必须进入 actions/services。
 
+- `ink-tui-interaction-design.zh-CN.md`
+  Ink TUI 交互设计。说明 `chat-codex` TUI 的页面结构、键盘快捷键、状态栏、微信/飞书配置流程、聊天绑定流程、启动衔接和实施顺序。
+
 - `feishu-adapter-design.zh-CN.md`
   飞书适配设计。说明第一阶段如何用飞书 WebSocket 长连接接入私聊文本消息，并默认投递 Codex 进度。
 
@@ -96,11 +99,12 @@ secrets/feishu.local.md
 4. 读 `multi-channel-design.zh-CN.md`，确认多渠道 route/session 绑定、并发和配置交互设计。
 5. 读 `local-state-persistence.zh-CN.md`，确认本地文件持久化、渠道账号目录和 session owner 约束。
 6. 读 `cli-core-interaction-design.zh-CN.md`，确认当前 CLI/TUI 首页、渠道配置、微信主聊天绑定和飞书多 chat_id 绑定边界。
-7. 读 `cli-interaction-redesign.zh-CN.md`，了解上一轮普通 CLI 重构背景和历史设计。
-8. 读 `development-and-test.zh-CN.md`，确认开发和测试报告要求。
-9. 读 `git-management.zh-CN.md`，确认提交边界和忽略规则。
-10. Agent 继续读 `agent-guide.zh-CN.md`，确认执行规范。
-11. 需要 Codex 协议或微信插件源码细节时，先读 `../references/README.md`，按里面的说明拉取本地参考源码。
+7. 做 TUI 相关开发时读 `ink-tui-interaction-design.zh-CN.md`，确认 Ink 页面、快捷键、状态栏和实现顺序。
+8. 读 `cli-interaction-redesign.zh-CN.md`，了解上一轮普通 CLI 重构背景和历史设计。
+9. 读 `development-and-test.zh-CN.md`，确认开发和测试报告要求。
+10. 读 `git-management.zh-CN.md`，确认提交边界和忽略规则。
+11. Agent 继续读 `agent-guide.zh-CN.md`，确认执行规范。
+12. 需要 Codex 协议或微信插件源码细节时，先读 `../references/README.md`，按里面的说明拉取本地参考源码。
 
 ## 分阶段工作顺序
 
@@ -136,7 +140,7 @@ npm run cli:weixin:login
 npm run cli:feishu:status
 ```
 
-`npm run chat-codex` 是当前推荐主入口，会进入统一启动交互；`npm run cli:chat-codex` 是同等别名。微信和飞书不再暴露单渠道 Codex 启动入口，统一入口会按本地配置启动所有已启用渠道。
+`npm run chat-codex` 是当前推荐主入口，TTY 下默认进入 Ink TUI；`npm run cli:chat-codex` 是同等别名。需要普通 prompt fallback 时可传 `-- --no-tui`。微信和飞书不再暴露单渠道 Codex 启动入口，统一入口会按本地配置启动所有已启用渠道。
 
 `weixin login` 已具备二维码登录入口，会在终端渲染二维码并保留备用链接。真实微信通道 + Codex 统一通过 `npm run chat-codex` 启动；默认 app-server 模式可以把 Codex command/file/permissions 审批请求推送到微信，并由 `/OK` 或 `/NO` 回写 Codex。真实扫码登录完成后要追加真实微信通道测试报告。
 

@@ -1,6 +1,6 @@
 import { stdin, stdout } from "node:process";
 import { createInterface, type Interface } from "node:readline/promises";
-import { Bridge, type InitialRouteBinding, type ProgressDeliveryMode, type UnboundRoutePolicy } from "../bridge/bridge.js";
+import { Bridge, type ProgressDeliveryMode, type UnboundRoutePolicy } from "../bridge/bridge.js";
 import { LimitedTurnScheduler } from "../bridge/turn-scheduler.js";
 import { ChannelRegistry } from "../channels/registry.js";
 import { FeishuAdapter } from "../channels/feishu/feishu-adapter.js";
@@ -27,6 +27,9 @@ import { ConsoleTranscriptSink } from "../logging/transcript.js";
 import type { ChannelLoginResult, ChannelStatus } from "../protocol/channel.js";
 import { BindingActions, formatOwnerRouteLabel, formatRunPolicyForUser, type BindingSummary, type SessionChoices } from "./actions/binding-actions.js";
 import { ChannelActions, formatManagedChannelList, type ManagedChannelSummary } from "./actions/channel-actions.js";
+import { LauncherActions } from "./actions/launcher-actions.js";
+import type { PreparedServeStartup, RealCodexAdapterMode, ServeChannelPlan, ServeStartupOptions } from "./launcher-types.js";
+import { runChatCodexTui } from "./tui/run-tui.js";
 import { FileStateStore } from "../state/file-state-store.js";
 import { pendingBindingOwnerRouteKey } from "../state/memory-state-store.js";
 import type { ChannelInstanceRecord } from "../state/persistent-state-types.js";
@@ -57,46 +60,17 @@ import {
   type ServeRouteSummary,
 } from "./serve-wizard.js";
 
-export interface ServeStartupOptions {
-  session?: string;
-  permission?: CodexPermissionMode;
-  codexAdapter?: RealCodexAdapterMode;
-  yesDangerouslyFull?: boolean;
-  cwd?: string;
-  progressMode?: ProgressDeliveryMode;
-  maxConcurrentTurns?: number;
-  noInteractive?: boolean;
-}
-
-type RealCodexAdapterMode = "app-server" | "exec";
-
 const WEIXIN_LOGIN_CHECK_TIMEOUT_MS = 15_000;
-
-interface PreparedServeStartup {
-  policy: CodexRunPolicy;
-  adapterMode: RealCodexAdapterMode;
-  cwd: string;
-  progressMode?: ProgressDeliveryMode;
-  maxConcurrentTurns?: number;
-}
-
-interface ServeChannelPlan {
-  status: ChannelStatus;
-  unboundRoutePolicy: UnboundRoutePolicy;
-  initialRouteBinding?: InitialRouteBinding;
-  initialSessionId?: string;
-  initialSessionTitle?: string;
-  firstRouteBindingChoice?: FirstRouteBindingChoice;
-}
 
 export async function runServe(options: ServeStartupOptions = {}): Promise<void> {
   const interactive = Boolean(stdin.isTTY && stdout.isTTY && !options.noInteractive);
-  const rl = interactive ? createInterface({ input: stdin, output: stdout }) : undefined;
+  const useTui = Boolean(interactive && !options.noTui);
+  const rl = interactive && !useTui ? createInterface({ input: stdin, output: stdout }) : undefined;
   let startup: PreparedServeStartup | undefined;
   let plan: ServeChannelPlan | undefined;
   const channelActions = new ChannelActions();
   try {
-    startup = await prepareCodexServeStartup(options, rl);
+    startup = await prepareCodexServeStartup(options, rl, { quiet: useTui });
     const setupChannel = new WeixinAdapter({
       pollOnStart: false,
       verifyCodeProvider: rl ? questionWithReadline(rl) : undefined,
@@ -105,7 +79,10 @@ export async function runServe(options: ServeStartupOptions = {}): Promise<void>
     const setupStatus = await setupChannel.getStatus();
     channelActions.ensureLegacyWeixinAccountRegistered(setupStatus);
     plan = createInitialChannelPlan(setupStatus, options);
-    if (interactive) {
+    if (useTui) {
+      const result = await runChatCodexTui(new LauncherActions(startup, plan, channelActions));
+      if (!result.start) return;
+    } else if (interactive) {
       const shouldStart = await runServeHomeLoop(rl as Interface, startup, plan, channelActions);
       if (!shouldStart) return;
     } else if (channelActions.createRuntimeAdapters().length === 0) {
@@ -118,17 +95,19 @@ export async function runServe(options: ServeStartupOptions = {}): Promise<void>
   await startServeBridge(startup, plan, channelActions);
 }
 
-async function prepareCodexServeStartup(options: ServeStartupOptions, rl?: Interface): Promise<PreparedServeStartup> {
+async function prepareCodexServeStartup(options: ServeStartupOptions, rl?: Interface, display: { quiet?: boolean } = {}): Promise<PreparedServeStartup> {
   const status = await checkCodexCli();
   if (!status.available) {
     throw new Error(`Codex 不可用: ${status.error ?? "unknown error"}`);
   }
-  console.log("");
-  console.log("Codex 已就绪");
-  console.log(`- CLI: ${status.version ?? status.codexBin}`);
+  if (!display.quiet) {
+    console.log("");
+    console.log("Codex 已就绪");
+    console.log(`- CLI: ${status.version ?? status.codexBin}`);
+  }
 
   const adapterMode = options.codexAdapter ?? "app-server";
-  const cwd = await resolveStartupWorkdir(options);
+  const cwd = await resolveStartupWorkdir(options, display);
   const permissionMode = options.permission ?? "approval";
   if (permissionMode === "full") {
     await confirmFullPermission(rl, Boolean(options.yesDangerouslyFull));
@@ -146,9 +125,9 @@ async function prepareCodexServeStartup(options: ServeStartupOptions, rl?: Inter
   };
 }
 
-async function resolveStartupWorkdir(options: ServeStartupOptions): Promise<string> {
+async function resolveStartupWorkdir(options: ServeStartupOptions, display: { quiet?: boolean } = {}): Promise<string> {
   const resolved = resolveNewSessionWorkdir(options.cwd, process.cwd());
-  if (resolved.created) {
+  if (resolved.created && !display.quiet) {
     console.log(`工作目录不存在，已创建: ${resolved.cwd}`);
   }
   return resolved.cwd;
@@ -165,9 +144,8 @@ async function confirmFullPermission(rl: Interface | undefined, alreadyConfirmed
   }
 }
 
-function createInitialChannelPlan(status: ChannelStatus, options: ServeStartupOptions): ServeChannelPlan {
+function createInitialChannelPlan(_status: ChannelStatus, options: ServeStartupOptions): ServeChannelPlan {
   const plan: ServeChannelPlan = {
-    status,
     unboundRoutePolicy: "auto_new",
   };
   if (!options.session) return plan;

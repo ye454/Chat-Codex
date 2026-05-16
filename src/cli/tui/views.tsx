@@ -1,0 +1,283 @@
+import React from "react";
+import { Box, Text } from "ink";
+import { PasswordInput, TextInput } from "@inkjs/ui";
+import type { CodexRunPolicy } from "../../codex/codex-cli.js";
+import type { ChannelInstanceRecord, PendingBindingRecord } from "../../state/persistent-state-types.js";
+import type { BindingSummary, SessionChoices } from "../actions/binding-actions.js";
+import type { LauncherDashboard, StartValidation } from "../actions/launcher-actions.js";
+import { formatChannelStatusDetails } from "../serve-wizard.js";
+import type { PermissionTarget, Screen, SessionTarget } from "./types.js";
+import {
+  channelStatus,
+  formatPermission,
+  formatSession,
+  Frame,
+  KeyValue,
+  ListRow,
+  Muted,
+  Section,
+  SessionRow,
+  truncate,
+} from "./ui-components.js";
+
+export function HomeView({ dashboard, selected }: { dashboard: LauncherDashboard; selected: number }): React.JSX.Element {
+  const rows = [
+    ["渠道", dashboard.channels.length === 0 ? "暂无渠道" : `${dashboard.channels.length} 个渠道`],
+    ["聊天绑定", `${dashboard.routes.bound}/${dashboard.routes.known} 已绑定，${dashboard.routes.pending ?? 0} 个待生效`],
+    ["权限", formatPermission(dashboard.startup.policy)],
+    ["运行", dashboard.canStart.message],
+  ];
+  return (
+    <Frame title="Chat Codex" subtitle={`状态: ${dashboard.canStart.ok ? "可启动" : "需配置"}  权限: ${dashboard.startup.policy.permissionMode === "full" ? "完全" : "审批"}`}>
+      <Section title="概览">
+        {rows.map(([label, value], index) => <ListRow key={label} active={selected === index} left={label} right={value} />)}
+      </Section>
+      <Section title="渠道">
+        {dashboard.channels.length === 0
+          ? <Muted text="暂无渠道。按 w 添加微信账号，或按 f 添加飞书机器人。" />
+          : dashboard.channels.map((channel) => (
+            <Text key={channel.record.id}>
+              {channel.record.type === "weixin" ? "微信" : "飞书"} / {channel.status.account ?? channel.record.defaultAccountId ?? "default"}    {channel.record.enabled ? "已启用" : "已停用"}    {channelStatus(channel.status.state)}
+            </Text>
+          ))}
+      </Section>
+      <Section title="聊天绑定">
+        <Text>已发现 {dashboard.routes.known} 个聊天，已绑定 {dashboard.routes.bound} 个 session，待生效 {dashboard.routes.pending ?? 0} 个。</Text>
+      </Section>
+    </Frame>
+  );
+}
+
+export function ChannelsView({ channels, selected }: { channels: LauncherDashboard["channels"]; selected: number }): React.JSX.Element {
+  return (
+    <Frame title="管理渠道" subtitle="Enter 详情  w 微信  f 飞书  e 启停">
+      {channels.length === 0
+        ? <Muted text="暂无渠道。按 w 添加微信账号，或按 f 添加飞书机器人。" />
+        : channels.map((channel, index) => (
+          <ListRow
+            key={channel.record.id}
+            active={selected === index}
+            left={`${index + 1}. ${channel.record.type === "weixin" ? "微信" : "飞书"} / ${channel.status.account ?? channel.record.defaultAccountId ?? "default"}`}
+            right={`${channel.record.enabled ? "已启用" : "已停用"}   ${channelStatus(channel.status.state)}`}
+          />
+        ))}
+    </Frame>
+  );
+}
+
+export function ChannelDetailView({ channel, selected }: { channel?: LauncherDashboard["channels"][number]; selected: number }): React.JSX.Element {
+  if (!channel) return <Frame title="渠道详情"><Muted text="这个渠道已经不存在。" /></Frame>;
+  const items = channel.record.type === "weixin"
+    ? ["设置微信主聊天绑定", channel.record.enabled ? "停用这个渠道" : "启用这个渠道", "状态详情"]
+    : ["输入/更新本进程凭证", channel.record.enabled ? "停用这个渠道" : "启用这个渠道", "状态详情"];
+  return (
+    <Frame title="渠道详情" subtitle="Enter 执行  e 启停  Esc 返回">
+      <KeyValue label="类型" value={channel.record.type === "weixin" ? "微信" : "飞书"} />
+      <KeyValue label="账号" value={channel.status.account ?? channel.record.defaultAccountId ?? "default"} />
+      <KeyValue label="实例" value={channel.record.id} />
+      <KeyValue label="状态" value={channelStatus(channel.status.state)} />
+      {channel.status.lastError ? <KeyValue label="最近错误" value={channel.status.lastError} /> : null}
+      <Section title="操作">
+        {items.map((item, index) => <ListRow key={item} active={selected === index} left={`${index + 1}. ${item}`} />)}
+      </Section>
+    </Frame>
+  );
+}
+
+export function AddWeixinView({ screen, loading }: { screen: Extract<Screen, { name: "addWeixin" }>; loading: boolean }): React.JSX.Element {
+  return (
+    <Frame title="添加微信账号" subtitle={screen.login ? "Enter 检查登录结果  Esc 返回" : "Enter 发起扫码登录  Esc 返回"}>
+      {!screen.login ? <Muted text={loading ? "正在发起扫码登录..." : "按 Enter 获取微信登录二维码。"} /> : (
+        <>
+          <Text>请使用微信扫码，并在手机上确认。</Text>
+          <Box marginY={1} flexDirection="column">
+            {screen.login.qrCode ? screen.login.qrCode.split("\n").map((line, index) => <Text key={index}>{line}</Text>) : <Muted text="二维码渲染失败，请使用备用链接。" />}
+          </Box>
+          {screen.login.fallbackLink ? <Text>备用链接: {truncate(screen.login.fallbackLink, 72)}</Text> : null}
+        </>
+      )}
+    </Frame>
+  );
+}
+
+export function AddFeishuView({ screen, onSubmit }: { screen: Extract<Screen, { name: "addFeishu" }>; onSubmit(value: string): void | Promise<void> }): React.JSX.Element {
+  const label = feishuStepLabel(screen.step);
+  const defaultValue = defaultForFeishuStep(screen.step);
+  return (
+    <Frame title="添加飞书机器人" subtitle="Secret 不落盘，Esc 返回">
+      <Text>请手动输入这次要添加的 App ID / App Secret。</Text>
+      <Box marginTop={1}>
+        <Text>{label}: </Text>
+        {screen.step === "appSecret"
+          ? <PasswordInput placeholder="输入 App Secret" onSubmit={onSubmit} />
+          : <TextInput placeholder={defaultValue ? `[${defaultValue}]` : label} onSubmit={onSubmit} />}
+      </Box>
+    </Frame>
+  );
+}
+
+export function WeixinBindingView({ channel, choices, selected }: { channel?: ChannelInstanceRecord; choices?: SessionChoices; selected: number }): React.JSX.Element {
+  return (
+    <Frame title="微信主聊天绑定" subtitle="Enter 绑定  n 新建  m 手动输入  0 暂不绑定">
+      {channel ? <KeyValue label="渠道实例" value={channel.id} /> : <Muted text="这个微信渠道已经不存在。" />}
+      {channel?.defaultAccountId ? <KeyValue label="账号" value={channel.defaultAccountId} /> : null}
+      <Section title="可选 session">
+        {choices?.selectable.length
+          ? choices.selectable.map((item, index) => <SessionRow key={item.id} index={index} active={selected === index} session={item} />)
+          : <Muted text="暂无可选历史 session。" />}
+      </Section>
+      {choices?.unavailable.length ? (
+        <Section title="不可选（已绑定其他聊天）">
+          {choices.unavailable.map((item) => <Text key={item.id}>已绑定到 {item.ownerLabel}    {formatSession(item)}</Text>)}
+        </Section>
+      ) : null}
+    </Frame>
+  );
+}
+
+export function BindingsView({ bindings, pendingBindings, selected }: { bindings: BindingSummary[]; pendingBindings: PendingBindingRecord[]; selected: number }): React.JSX.Element {
+  return (
+    <Frame title="聊天绑定" subtitle="Enter 详情  n 新建  m 手动绑定  u 解绑  p 权限">
+      {bindings.length === 0 && pendingBindings.length === 0 ? <Muted text="还没有发现任何聊天。启动服务后，微信私聊或飞书用户私聊机器人会自动记录在这里。" /> : bindings.map((binding, index) => (
+        <ListRow
+          key={binding.route.routeKey}
+          active={selected === index}
+          left={`${index + 1}. ${binding.label}`}
+          right={binding.activeSession ? formatSession(binding.activeSession) : "未绑定"}
+        />
+      ))}
+      {pendingBindings.map((pending, index) => (
+        <ListRow
+          key={pending.id}
+          active={selected === bindings.length + index}
+          left={`${bindings.length + index + 1}. ${pending.label ?? pending.id}`}
+          right={pending.binding.type === "existing" ? `待生效: ${pending.binding.sessionId.slice(0, 8)}` : "待生效: 新 session"}
+        />
+      ))}
+    </Frame>
+  );
+}
+
+export function BindingDetailView({ binding, selected }: { binding?: BindingSummary; selected: number }): React.JSX.Element {
+  if (!binding) return <Frame title="绑定详情"><Muted text="这个聊天记录已经不存在。" /></Frame>;
+  const items = [
+    "选择已有 session",
+    "新建并绑定 session",
+    binding.activeSession ? "设置当前 session 权限" : "设置当前 session 权限（请先绑定 session）",
+    binding.activeSession ? "解绑当前 session" : "解绑当前 session（当前未绑定）",
+  ];
+  return (
+    <Frame title="绑定详情" subtitle="Enter 执行  Esc 返回">
+      <KeyValue label="聊天" value={binding.label} />
+      <KeyValue label="当前 session" value={binding.activeSession ? formatSession(binding.activeSession) : "未绑定"} />
+      <KeyValue label="当前权限" value={binding.permission ? formatPermission(binding.permission) : "使用默认权限"} />
+      {binding.activeSession?.cwd ? <KeyValue label="工作目录" value={binding.activeSession.cwd} /> : null}
+      {binding.route.lastSeenAt ? <KeyValue label="最近消息" value={binding.route.lastSeenAt} /> : null}
+      <Section title="操作">
+        {items.map((item, index) => <ListRow key={item} active={selected === index} left={`${index + 1}. ${item}`} />)}
+      </Section>
+    </Frame>
+  );
+}
+
+export function SessionSelectView({ choices, selected, binding }: { target: SessionTarget; choices: SessionChoices; selected: number; binding?: BindingSummary }): React.JSX.Element {
+  return (
+    <Frame title="选择 Codex session" subtitle="Enter 绑定  数字选择  n 新建  m 手动输入">
+      {binding ? <KeyValue label="聊天" value={binding.label} /> : null}
+      <Section title="可选">
+        {choices.selectable.length
+          ? choices.selectable.map((item, index) => <SessionRow key={item.id} index={index} active={selected === index} session={item} />)
+          : <Muted text="暂无可选历史 session。" />}
+      </Section>
+      {choices.unavailable.length ? (
+        <Section title="不可选">
+          {choices.unavailable.map((item) => <Text key={item.id}>已绑定到 {item.ownerLabel}    {formatSession(item)}</Text>)}
+        </Section>
+      ) : null}
+    </Frame>
+  );
+}
+
+export function ManualSessionView({ value, onChange, onSubmit }: { value: string; onChange(value: string): void; onSubmit(value: string): void | Promise<void> }): React.JSX.Element {
+  return (
+    <Frame title="手动输入 Session ID" subtitle="Enter 绑定  Esc 返回">
+      <Text>请输入本机已有 Codex Session ID。</Text>
+      <Box marginTop={1}>
+        <Text>Session ID: </Text>
+        <TextInput defaultValue={value} onChange={onChange} onSubmit={onSubmit} />
+      </Box>
+    </Frame>
+  );
+}
+
+export function PermissionView({ target, startupPolicy, sessionPolicy, selected }: { target: PermissionTarget; startupPolicy: CodexRunPolicy; sessionPolicy?: CodexRunPolicy; selected: number }): React.JSX.Element {
+  const current = target.kind === "default" ? startupPolicy : sessionPolicy ?? startupPolicy;
+  return (
+    <Frame title={target.kind === "default" ? "默认权限设置" : "当前 session 权限"} subtitle="Enter 保存  Esc 返回">
+      {target.kind === "session" ? <KeyValue label="Session" value={formatSession(target.session)} /> : null}
+      <KeyValue label="当前" value={formatPermission(current)} />
+      <Section title="选项">
+        <ListRow active={selected === 0} left="1. 审批模式（推荐）" />
+        <ListRow active={selected === 1} left="2. 完全权限（高风险）" />
+      </Section>
+    </Frame>
+  );
+}
+
+export function StatusView({ dashboard }: { dashboard: LauncherDashboard }): React.JSX.Element {
+  return (
+    <Frame title="状态详情" subtitle="Enter/Esc 返回">
+      <Section title="渠道">
+        {dashboard.channels.length ? dashboard.channels.map((channel) => (
+          <Box key={channel.record.id} flexDirection="column" marginBottom={1}>
+            <Text>{formatChannelStatusDetails(channel.status, channel.capabilities)}</Text>
+          </Box>
+        )) : <Muted text="暂无渠道。" />}
+      </Section>
+      <Section title="绑定">
+        <Text>routes: {dashboard.routes.known}  bound: {dashboard.routes.bound}  pending: {dashboard.routes.pending ?? 0}</Text>
+      </Section>
+      <Section title="运行">
+        <Text>服务未启动。</Text>
+      </Section>
+    </Frame>
+  );
+}
+
+export function StartConfirmView({ validation, lines }: { validation: StartValidation; lines: string[] }): React.JSX.Element {
+  return (
+    <Frame title="即将启动" subtitle={validation.ok ? "Enter 启动  Esc 返回" : "Esc 返回"}>
+      {lines.map((line, index) => <Text key={index}>{line}</Text>)}
+    </Frame>
+  );
+}
+
+export function HelpView(): React.JSX.Element {
+  return (
+    <Frame title="快捷键" subtitle="Enter/Esc 返回">
+      {[
+        "全局: ↑↓ 选择，Enter 执行，Esc/q 返回，r 刷新，? 帮助。",
+        "首页: c 渠道，b 绑定，p 权限，s 状态，w 添加微信，f 添加飞书。",
+        "渠道: w 添加微信，f 添加飞书，e 启停。",
+        "绑定: n 新建并绑定，m 手动绑定，u 解绑，p 权限。",
+      ].map((line) => <Text key={line}>{line}</Text>)}
+    </Frame>
+  );
+}
+
+export function LoadingView({ title, message }: { title: string; message: string }): React.JSX.Element {
+  return <Frame title={title}><Muted text={message} /></Frame>;
+}
+
+function feishuStepLabel(step: Extract<Screen, { name: "addFeishu" }>["step"]): string {
+  if (step === "appId") return "FEISHU_APP_ID";
+  if (step === "appSecret") return "FEISHU_APP_SECRET";
+  if (step === "domain") return "飞书域";
+  return "账号标识";
+}
+
+function defaultForFeishuStep(step: Extract<Screen, { name: "addFeishu" }>["step"]): string {
+  if (step === "domain") return "feishu";
+  if (step === "accountId") return "default";
+  return "";
+}

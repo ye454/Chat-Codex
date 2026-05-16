@@ -31,6 +31,7 @@ interface StartupOptions {
   progressMode?: ProgressDeliveryMode;
   maxConcurrentTurns?: number;
   noInteractive?: boolean;
+  noTui?: boolean;
 }
 
 type RealCodexAdapterMode = "app-server" | "exec";
@@ -174,6 +175,8 @@ function parseStartupOptions(args: string[]): StartupOptions {
       options.maxConcurrentTurns = parsed;
     } else if (arg === "--no-interactive") {
       options.noInteractive = true;
+    } else if (arg === "--no-tui") {
+      options.noTui = true;
     } else {
       throw new Error(`未知启动参数: ${arg}`);
     }
@@ -439,6 +442,7 @@ function printHelp(): void {
     "    --yes-dangerously-full           非交互确认完全权限",
     "    --progress brief|detailed|silent 设置默认进度投递模式（微信渠道固定禁用）",
     "    --max-concurrent-turns <n>       设置全局 Codex turn 并发上限；默认不限制",
+    "    --no-tui                        使用普通 prompt 交互，不进入 Ink TUI",
     "    --no-interactive                 非交互启动；需要已有微信登录态",
     "  chat-codex weixin status           查看 WeixinAdapter 当前状态",
     "  chat-codex weixin login            显示终端二维码并等待微信扫码登录",

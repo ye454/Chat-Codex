@@ -501,6 +501,12 @@ routeKey = feishu:<accountId>:direct:<chat_id>
 
 推荐最终用 TUI 实现核心交互，但不要让 TUI 承担业务。
 
+详细 Ink TUI 页面、快捷键、状态栏、错误处理和实施顺序见：
+
+```text
+docs/ink-tui-interaction-design.zh-CN.md
+```
+
 第一版 TUI 可以是列表型，不需要复杂布局：
 
 ```text

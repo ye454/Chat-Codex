@@ -290,7 +290,7 @@ feishu:work:thread:thread-789
 | `npm test` | 完整测试 | 先 build，再运行 unit + integration |
 | `npm run test:unit` | 单元测试 | 验证协议、命令、状态、适配器等局部行为 |
 | `npm run test:integration` | 集成测试 | 验证 Bridge、Codex adapter 和 channel adapter 协作 |
-| `npm run chat-codex` | 主启动入口 | 进入统一交互；管理微信账号、飞书机器人和聊天绑定，并启动所有已启用渠道 |
+| `npm run chat-codex` | 主启动入口 | TTY 下进入 Ink TUI；管理微信账号、飞书机器人和聊天绑定，并启动所有已启用渠道 |
 | `npm run cli:chat-codex` | 主启动入口别名 | 与 `npm run chat-codex` 相同 |
 | `npm run cli:mock` | Mock 闭环演示 | 不需要真实 Codex 或微信 |
 | `npm run cli:terminal:mock` | 终端通道 + MockCodex | 用终端模拟聊天渠道 |
@@ -305,7 +305,7 @@ feishu:work:thread:thread-789
 npm run chat-codex
 ```
 
-`npm run chat-codex` 是面向日常使用的主入口；`npm run cli:chat-codex` 是同等别名。它包含 Codex 检查、渠道账号管理、聊天绑定管理、权限设置和启动确认。
+`npm run chat-codex` 是面向日常使用的主入口；`npm run cli:chat-codex` 是同等别名。TTY 环境下默认进入 Ink TUI，包含 Codex 检查、渠道账号管理、聊天绑定管理、权限设置和启动确认。需要回到普通 prompt 交互时可加 `-- --no-tui`。
 
 微信和飞书不再暴露单渠道 Codex 启动入口。统一入口会从本地配置读取所有已启用的微信账号和飞书机器人，并在启动服务时一起启动。
 
@@ -540,7 +540,7 @@ npm test
 
 ## 路线图
 
-- 渠道实例管理和 route/session 管理页的体验继续打磨，后续可加 TUI 展示层。
+- TUI 运行期状态页继续增强，例如最近 transcript、任务队列和审批状态面板。
 - 本地文件持久化的 schema 迁移、损坏恢复和 CLI 清理工具。
 - 飞书群聊、thread、媒体和卡片聚合。
 - RouteRuntime 拆分，继续降低 Bridge Core 文件复杂度。
