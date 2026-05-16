@@ -8,7 +8,7 @@
 <a href="README.en.md">English</a> ·
 <a href="docs/README.md">文档索引</a> ·
 <a href="docs/development-and-test.zh-CN.md">开发规范</a> ·
-<a href="https://linux.do/t/topic/2183744">LINUX DO 讨论</a>
+<a href="https://linux.do/t/topic/2190139">LINUX DO 讨论</a>
 </p>
 
 <p align="center">

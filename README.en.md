@@ -8,7 +8,7 @@ A lightweight chat middleware that connects local Codex to Weixin and Feishu.
 <a href="README.md">简体中文</a> ·
 <a href="docs/README.md">Docs</a> ·
 <a href="docs/development-and-test.zh-CN.md">Development Guide</a> ·
-<a href="https://linux.do/t/topic/2183744">LINUX DO Discussion</a>
+<a href="https://linux.do/t/topic/2190139">LINUX DO Discussion</a>
 </p>
 
 <p align="center">
