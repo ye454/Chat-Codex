@@ -1,5 +1,7 @@
 # CLI 交互重设计
 
+> 历史说明：本文记录上一轮 `weixin codex` / `cli:serve` 普通 CLI 重构设计。当前最新核心交互边界以 [CLI 核心交互设计](cli-core-interaction-design.zh-CN.md) 为准：微信当前按一个账号 + 一个主聊天窗口处理，飞书按一个机器人 + 多个 `chat_id` 处理；首页不再展示完整 Codex 默认设置，普通用户只配置权限。
+
 ## 背景
 
 改造前，`weixin codex` 已经改为进入轻量渠道向导，但交互结构仍混有旧版直连入口的习惯：
@@ -144,7 +146,9 @@ Codex 默认设置
 0. 返回
 1. cdx-aaa  修复登录问题...
 2. cdx-bbb  README 调整...
-3. 手动输入 Session ID
+
+操作:
+m. 手动输入 Session ID
 ```
 
 规则：

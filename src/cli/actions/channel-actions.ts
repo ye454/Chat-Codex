@@ -1,0 +1,228 @@
+import fs from "node:fs";
+import path from "node:path";
+import { FeishuAdapter } from "../../channels/feishu/feishu-adapter.js";
+import {
+  DEFAULT_FEISHU_ACCOUNT_ID,
+  DEFAULT_FEISHU_DOMAIN,
+  maskFeishuAppId,
+  normalizeFeishuCredentials,
+} from "../../channels/feishu/feishu-message.js";
+import type { FeishuCredentials } from "../../channels/feishu/feishu-types.js";
+import { WeixinAdapter } from "../../channels/weixin/weixin-adapter.js";
+import { FileWeixinAccountStore, normalizeWeixinAccountId, type StoredWeixinAccount } from "../../channels/weixin/weixin-account-store.js";
+import type { ChannelAdapter, ChannelCapabilities, ChannelStatus } from "../../protocol/channel.js";
+import { ChannelConfigStore } from "../../state/channel-config-store.js";
+import type { ChannelInstanceRecord } from "../../state/persistent-state-types.js";
+
+export interface ChannelActionsOptions {
+  cwd?: string;
+  configStore?: ChannelConfigStore;
+  env?: NodeJS.ProcessEnv;
+}
+
+export interface ManagedChannelSummary {
+  record: ChannelInstanceRecord;
+  status: ChannelStatus;
+  capabilities: ChannelCapabilities;
+}
+
+export class ChannelActions {
+  readonly configStore: ChannelConfigStore;
+  private readonly env: NodeJS.ProcessEnv;
+  private readonly feishuRuntimeCredentials = new Map<string, FeishuCredentials>();
+
+  constructor(options: ChannelActionsOptions = {}) {
+    this.configStore = options.configStore ?? new ChannelConfigStore({ cwd: options.cwd });
+    this.env = options.env ?? process.env;
+  }
+
+  async listChannelSummaries(): Promise<ManagedChannelSummary[]> {
+    const summaries: ManagedChannelSummary[] = [];
+    for (const record of this.configStore.listChannelInstances()) {
+      const adapter = this.createStatusAdapter(record);
+      await adapter.start();
+      summaries.push({
+        record,
+        status: await adapter.getStatus(),
+        capabilities: adapter.getCapabilities(),
+      });
+    }
+    return summaries;
+  }
+
+  listChannelInstances(): ChannelInstanceRecord[] {
+    return this.configStore.listChannelInstances();
+  }
+
+  setChannelEnabled(id: string, enabled: boolean): ChannelInstanceRecord | undefined {
+    return this.configStore.setChannelEnabled(id, enabled);
+  }
+
+  registerWeixinAccount(account: StoredWeixinAccount): ChannelInstanceRecord {
+    const accountId = normalizeWeixinAccountId(account.accountId);
+    const id = weixinChannelId(accountId);
+    const record = this.configStore.upsertChannelInstance({
+      id,
+      type: "weixin",
+      enabled: true,
+      accountId,
+      credentialSource: "state",
+      metadata: {
+        accountId,
+        userId: account.userId,
+        savedAt: account.savedAt,
+      },
+    });
+    const store = new FileWeixinAccountStore(this.configStore.resolveStateDir(record.stateDir));
+    store.saveAccount({ ...account, accountId });
+    return record;
+  }
+
+  registerFeishuBot(credentials: FeishuCredentials, credentialSource = "env"): ChannelInstanceRecord {
+    const normalized = normalizeFeishuCredentials(credentials);
+    const accountId = normalized.accountId ?? DEFAULT_FEISHU_ACCOUNT_ID;
+    this.feishuRuntimeCredentials.set(accountId, normalized);
+    return this.configStore.upsertChannelInstance({
+      id: feishuChannelId(accountId),
+      type: "feishu",
+      enabled: true,
+      accountId,
+      credentialSource,
+      metadata: {
+        accountId,
+        appId: maskFeishuAppId(normalized.appId),
+        domain: normalized.domain ?? DEFAULT_FEISHU_DOMAIN,
+      },
+    });
+  }
+
+  ensureLegacyWeixinAccountRegistered(status: ChannelStatus): ChannelInstanceRecord | undefined {
+    if (!status.account || status.state !== "connected") return undefined;
+    const legacyStore = new FileWeixinAccountStore();
+    const account = legacyStore.loadAccount(status.account);
+    if (!account) return undefined;
+    return this.registerWeixinAccount(account);
+  }
+
+  createRuntimeAdapters(): ChannelAdapter[] {
+    return this.configStore.listChannelInstances()
+      .filter((record) => record.enabled)
+      .map((record) => this.createRuntimeAdapter(record));
+  }
+
+  createRuntimeAdapter(record: ChannelInstanceRecord): ChannelAdapter {
+    if (record.type === "weixin") {
+      return new WeixinAdapter({
+        id: record.id,
+        accountId: record.defaultAccountId,
+        stateDir: this.configStore.resolveStateDir(record.stateDir),
+      });
+    }
+    if (record.type === "feishu" || record.type === "lark") {
+      const credentials = this.loadFeishuRuntimeCredentials(record);
+      return new FeishuAdapter({
+        ...credentials,
+        id: record.id,
+        accountId: record.defaultAccountId ?? credentials.accountId ?? DEFAULT_FEISHU_ACCOUNT_ID,
+      });
+    }
+    throw new Error(`暂不支持的渠道类型: ${record.type}`);
+  }
+
+  createStatusAdapter(record: ChannelInstanceRecord): ChannelAdapter {
+    if (record.type === "weixin") {
+      return new WeixinAdapter({
+        id: record.id,
+        accountId: record.defaultAccountId,
+        stateDir: this.configStore.resolveStateDir(record.stateDir),
+        pollOnStart: false,
+      });
+    }
+    if (record.type === "feishu" || record.type === "lark") {
+      const credentials = this.loadFeishuRuntimeCredentials(record);
+      return new FeishuAdapter({
+        ...credentials,
+        id: record.id,
+        accountId: record.defaultAccountId ?? credentials.accountId ?? DEFAULT_FEISHU_ACCOUNT_ID,
+        connectOnStart: false,
+        probeOnStart: false,
+      });
+    }
+    throw new Error(`暂不支持的渠道类型: ${record.type}`);
+  }
+
+  private loadFeishuRuntimeCredentials(record: ChannelInstanceRecord): FeishuCredentials {
+    const accountId = record.defaultAccountId ?? DEFAULT_FEISHU_ACCOUNT_ID;
+    return this.feishuRuntimeCredentials.get(accountId)
+      ?? loadFeishuCredentialsForAccount(accountId, this.env);
+  }
+}
+
+export function weixinChannelId(accountId: string): string {
+  return `weixin-${normalizeWeixinAccountId(accountId)}`;
+}
+
+export function feishuChannelId(accountId: string): string {
+  return `feishu-${fileSafeId(accountId || DEFAULT_FEISHU_ACCOUNT_ID)}`;
+}
+
+export function formatManagedChannelList(channels: ManagedChannelSummary[]): string {
+  const lines = ["管理渠道", ""];
+  if (channels.length === 0) {
+    lines.push("已配置渠道: 暂无");
+  } else {
+    lines.push("已配置渠道");
+    channels.forEach((channel, index) => {
+      lines.push(`${index + 1}. ${formatChannelType(channel.record.type)} / ${channel.status.account ?? channel.record.defaultAccountId ?? "default"}    ${channel.record.enabled ? "已启用" : "已停用"}    ${formatChannelState(channel.status.state)}`);
+      lines.push(`   实例: ${channel.record.id}`);
+      if (channel.status.lastError) lines.push(`   最近错误: ${channel.status.lastError}`);
+    });
+  }
+  lines.push("", "操作", "w. 添加微信账号", "f. 添加飞书机器人", "0. 返回");
+  return lines.join("\n");
+}
+
+export function loadFeishuCredentialsForAccount(accountId: string | undefined, env: NodeJS.ProcessEnv = process.env): FeishuCredentials {
+  const normalizedAccount = accountId || env.FEISHU_ACCOUNT_ID || env.LARK_ACCOUNT_ID || DEFAULT_FEISHU_ACCOUNT_ID;
+  const scoped = envPrefix(normalizedAccount);
+  return normalizeFeishuCredentials({
+    appId: firstNonEmpty(env[`FEISHU_${scoped}_APP_ID`], env[`LARK_${scoped}_APP_ID`], env.FEISHU_APP_ID, env.LARK_APP_ID),
+    appSecret: firstNonEmpty(env[`FEISHU_${scoped}_APP_SECRET`], env[`LARK_${scoped}_APP_SECRET`], env.FEISHU_APP_SECRET, env.LARK_APP_SECRET),
+    domain: firstNonEmpty(env[`FEISHU_${scoped}_DOMAIN`], env[`LARK_${scoped}_DOMAIN`], env.FEISHU_DOMAIN, env.LARK_DOMAIN, DEFAULT_FEISHU_DOMAIN),
+    accountId: normalizedAccount,
+    verificationToken: firstNonEmpty(env[`FEISHU_${scoped}_VERIFICATION_TOKEN`], env.FEISHU_VERIFICATION_TOKEN, env.LARK_VERIFICATION_TOKEN),
+    encryptKey: firstNonEmpty(env[`FEISHU_${scoped}_ENCRYPT_KEY`], env.FEISHU_ENCRYPT_KEY, env.LARK_ENCRYPT_KEY),
+  });
+}
+
+export function copyFileIfExists(from: string, to: string): void {
+  if (!fs.existsSync(from)) return;
+  fs.mkdirSync(path.dirname(to), { recursive: true });
+  fs.copyFileSync(from, to);
+}
+
+function formatChannelType(type: string): string {
+  if (type === "weixin") return "微信";
+  if (type === "feishu" || type === "lark") return "飞书";
+  return type;
+}
+
+function formatChannelState(state: string): string {
+  if (state === "connected") return "已连接";
+  if (state === "login_required") return "需要配置";
+  if (state === "failed") return "异常";
+  if (state === "stopped") return "已停止";
+  return state;
+}
+
+function fileSafeId(value: string): string {
+  return value.trim().replace(/[@.]/g, "-").replace(/[^A-Za-z0-9_-]/g, "-") || "default";
+}
+
+function envPrefix(value: string): string {
+  return fileSafeId(value).replace(/-/g, "_").toUpperCase();
+}
+
+function firstNonEmpty(...values: Array<string | undefined>): string | undefined {
+  return values.find((value) => value !== undefined && value.trim().length > 0)?.trim();
+}

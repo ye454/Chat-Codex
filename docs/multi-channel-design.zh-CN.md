@@ -164,13 +164,10 @@ sessionId -> ownerRouteKey
 渠道实例接入是运维动作，通过 CLI 交互或命令式管理完成：
 
 ```bash
-codex-wechat-bridge serve
-codex-wechat-bridge channel login weixin-main
-codex-wechat-bridge channel login lark-work
-codex-wechat-bridge channel status
+chat-codex
 ```
 
-现有 `weixin login` 继续作为单独登录入口。`weixin codex` 不再走旧版“启动前先选 Codex session”的直连流程，而是进入与 `serve` 相同的轻量渠道管理向导；旧版 `weixin codex-direct` 全局直连入口已移除。多渠道模式下，推荐由 `serve`/`weixin codex` 读取本地状态或进入 CLI 启动向导，选择渠道实例并启动；需要扫码或授权的渠道由控制台输出二维码、授权链接或提示。
+现有 `weixin login` 继续作为单独登录入口。微信/飞书不再暴露单渠道 Codex 启动入口；统一由 `chat-codex` 读取本地状态或进入 CLI 启动向导，选择渠道实例并启动。需要扫码或授权的渠道由控制台输出二维码、授权链接或提示。
 
 聊天内用户不负责“把飞书接入系统”或“把微信账号接入系统”。用户在微信、飞书或其他渠道里发消息时，Bridge 根据入站消息自动生成 routeKey。这个 route 第一次收到普通 prompt 时可以自动创建 Codex session，也可以由用户显式发送 `/new` 创建。后续 `/resume`、`/use`、`/new` 都只改变当前 route 的 active session。
 
@@ -305,12 +302,12 @@ Terminal/Mock 使用默认完整投递策略。飞书等后续渠道应由各自
 - `ChannelRegistry` 已经可以管理多个 adapter，入站汇聚并按 `target.channelId` 做出站路由。
 - `SessionBindings` 已经补上 `sessionId -> ownerRouteKey`，用于阻止跨 route 复用同一个 Codex session。
 - `TurnScheduler` 已经作为可插拔全局背压层落位，默认 unlimited。
-- `npm run codex` / `npm run cli:codex` 已经落地为推荐主启动入口；`npm run cli:serve` 保留为兼容入口。配置阶段不启动真实长轮询，可检查 Codex、引导微信登录、设置首个 route 绑定策略，并在首页确认后启动服务。
+- `npm run chat-codex` / `npm run cli:chat-codex` 已经落地为推荐主启动入口。配置阶段不启动真实长轮询或飞书 WebSocket，可检查 Codex、添加微信账号、添加飞书机器人、设置微信主聊天 pending 绑定、管理已发现聊天绑定，并在首页确认后启动所有已启用渠道。
 
 后续治理点：
 
-- `MemoryStateStore` 仍是内存实现，CLI 运行状态持久化需要后续独立落地。
-- 完整渠道实例管理、route/session 管理页和持久化状态还没有做；当前主入口和 `cli:serve` 只覆盖微信 MVP 启动路径。
+- `FileStateStore` 已落地第一阶段文件持久化，真实微信/飞书启动路径会读写 `state/bridge/routes.json`、`state/bridge/session-owners.json`、`state/bridge/session-policies.json` 和 `state/bridge/pending-bindings.json`。
+- 渠道实例管理和聊天绑定页已落地普通 CLI 版本；TUI 仍只作为后续展示层。
 - 真实第二渠道、飞书群聊/thread、微信群聊真实链路都还没有验证。
 - `RouteRuntime` 还没有从 `bridge.ts` 拆出，route 级队列、进度模式、active turn 状态后续应独立成模块。
 - 当前 `src/bridge/bridge.ts`、`src/codex/app-server-codex-adapter.ts`、`src/channels/weixin/weixin-adapter.ts` 都已经超过开发规范里的拆分触发线，多渠道实现不能继续把逻辑堆进现有大文件。
@@ -447,17 +444,17 @@ type BindSessionResult =
 
 ## 12. 启动状态与 CLI 交互
 
-现有入口继续保留：
+现有日常启动入口统一为：
 
 ```bash
-npm run cli:weixin:codex
+npm run chat-codex
 npm run cli:terminal:codex
 ```
 
 多渠道入口建议以 CLI 交互和本地状态为主，保持轻量，不要求用户手写配置文件：
 
 ```bash
-codex-wechat-bridge serve
+chat-codex
 ```
 
 CLI 交互需要能修改这些运行配置：
@@ -496,14 +493,12 @@ CLI 用户可见提示默认使用简体中文。渠道类型、能力字段和 
 
 ### 12.1 启动首页
 
-`npm run codex` 和 `npm run cli:codex` 是推荐主入口；`npm run cli:serve`、`npm run cli:weixin:codex` 保留兼容：
+`npm run chat-codex` 和 `npm run cli:chat-codex` 是推荐主入口：
 
 ```bash
-npm run codex
-npm run cli:codex
-npm run cli:serve
-npm run cli:weixin:codex
-npm run cli:serve -- --no-interactive
+npm run chat-codex
+npm run cli:chat-codex
+npm run chat-codex -- --no-interactive
 ```
 
 TTY 交互模式下，先进入启动首页，不直接开始长轮询：
@@ -527,13 +522,13 @@ Routes:
 - Unbound policy: ask
 
 操作:
-1. 启动 enabled 渠道
-2. 管理渠道
-3. 管理 route/session 绑定
-4. 修改 Codex 默认设置
-5. 查看状态详情
+1. 管理渠道
+2. 聊天绑定
+3. 权限设置
+4. 状态详情
+5. 启动服务
 0. 退出
-请选择 [1]:
+请选择 [5]:
 ```
 
 TTY 交互模式下，启动流程建议是：
@@ -580,12 +575,13 @@ Routes:
 - Unbound policy: auto_new
 
 操作:
-1. 启动服务
-2. 管理渠道
-3. 管理 route/session 绑定
-4. 修改 Codex 默认设置
+1. 管理渠道
+2. 聊天绑定
+3. 权限设置
+4. 状态详情
+5. 启动服务
 0. 退出
-请选择 [1]:
+请选择 [5]:
 ```
 
 首页里的“启动服务”是正式启动点。用户选择该项后，Bridge 才开始启动渠道长轮询、事件订阅和 Codex 运行期 transcript。启动后再进入常驻服务模式，除非后续实现运行期管理命令，否则不在同一个 TTY 菜单里继续编辑配置。
@@ -634,12 +630,13 @@ Channels:
 2. lark-work    type=lark    enabled=true  stateDir=state/lark-work
 
 操作:
-1. 使用当前状态启动
-2. 管理渠道
-3. 管理已知 route/session 绑定
-4. 修改 Codex 默认设置
+1. 管理渠道
+2. 聊天绑定
+3. 权限设置
+4. 状态详情
+5. 启动服务
 0. 退出
-请选择 [1]:
+请选择 [5]:
 ```
 
 非交互模式下，不能等待扫码、确认或输入验证码；本地状态或启动参数必须足够完整。若某渠道需要登录但没有有效登录态，应把该渠道标记为 `login_required` 或跳过启动，并在日志里明确提示。
@@ -655,11 +652,12 @@ Channels:
 2. lark-work    type=lark    enabled=false state=not_configured
 
 操作:
-1. 添加渠道
-2. 编辑渠道
-3. 登录/重新登录渠道
-4. 启用/禁用渠道
-5. 删除渠道实例
+w. 添加微信账号
+f. 添加飞书机器人
+e. 编辑选中渠道
+l. 登录/重新登录选中渠道
+t. 启用/禁用选中渠道
+d. 删除选中渠道实例
 0. 返回首页
 请选择:
 ```
@@ -752,12 +750,12 @@ Channels:
 
 微信的一对一体验可以做得很顺，但底层仍然坚持 route 级绑定，这是多渠道安全边界。
 
-### 12.1.3 当前 `cli:serve` MVP 落地范围
+### 12.1.3 当前 `chat-codex` 落地范围
 
 当前代码已经提供轻量入口：
 
 ```bash
-npm run cli:serve
+npm run chat-codex
 ```
 
 已落地能力：
@@ -996,19 +994,19 @@ Route: lark-work:lark-bot-1:thread:thread-789
 建议 CLI 命令：
 
 ```bash
-codex-wechat-bridge serve
-codex-wechat-bridge channel list
-codex-wechat-bridge channel status
-codex-wechat-bridge channel login <channelId>
-codex-wechat-bridge channel logout <channelId> [--account <accountId>]
-codex-wechat-bridge channel enable <channelId>
-codex-wechat-bridge channel disable <channelId>
-codex-wechat-bridge channel capabilities <channelId>
-codex-wechat-bridge channel capability set <channelId> group on|off
-codex-wechat-bridge route list [--channel <channelId>]
-codex-wechat-bridge route bind <routeKey> <sessionId>
-codex-wechat-bridge route unbind <routeKey>
-codex-wechat-bridge route policy ask|auto_new|reject
+chat-codex
+chat-codex channel list
+chat-codex channel status
+chat-codex channel login <channelId>
+chat-codex channel logout <channelId> [--account <accountId>]
+chat-codex channel enable <channelId>
+chat-codex channel disable <channelId>
+chat-codex channel capabilities <channelId>
+chat-codex channel capability set <channelId> group on|off
+chat-codex route list [--channel <channelId>]
+chat-codex route bind <routeKey> <sessionId>
+chat-codex route unbind <routeKey>
+chat-codex route policy ask|auto_new|reject
 ```
 
 聊天内命令保持面向当前 route：
@@ -1029,12 +1027,12 @@ codex-wechat-bridge route policy ask|auto_new|reject
 
 ## 13. 核心内核实施顺序
 
-本节记录核心多渠道内核的实施顺序。核心内核阶段不做配置文件、启动向导和真实第二渠道；启动向导的当前 MVP 范围见 12.1.3。目标是让 Bridge Core 具备多 `ChannelAdapter` 接入能力，同时保持现有 `weixin codex`、`terminal codex` 单渠道入口兼容。
+本节记录核心多渠道内核的实施顺序。核心内核阶段不做配置文件、启动向导和真实第二渠道；启动向导的当前 MVP 范围见 12.1.3。目标是让 Bridge Core 具备多 `ChannelAdapter` 接入能力，同时保持统一 `chat-codex` 入口和 `terminal codex` 开发入口可用。
 
 实施原则：
 
 - 先做可测试的内核模块，再把 Bridge 接上；不要一开始改 CLI、配置文件或真实第二渠道。
-- 每一步都保持现有单渠道入口可用，避免把当前微信链路和终端链路同时打断。
+- 每一步都保持统一入口和终端开发入口可用，避免把当前微信链路和终端链路同时打断。
 - 新模块先用 mock channel 和单元测试锁住行为；真实微信只验证兼容性和实例 `channelId` 不回退。
 - Bridge Core 只依赖通用协议；渠道差异继续放在 adapter、capabilities 和 delivery policy。
 - `maxConcurrentTurns` 先作为可插拔调度器接口落位，默认 unlimited，不改变当前并发体验。
@@ -1471,7 +1469,7 @@ weixinMessageToChannelMessage(channelId: string, accountId: string, raw: WeixinM
 4. P3 WeixinAdapter 实例 ID 改造。
    - `weixinMessageToChannelMessage` 使用 adapter 实例 ID。
    - 单测覆盖非默认 channelId，例如 `weixin-main`。
-   - 确认 `weixin codex` 默认仍产生兼容 routeKey。
+   - 确认统一入口下微信默认仍产生稳定 routeKey。
    - 确认二维码登录、备链二维码打印逻辑不因实例 ID 改造回退。
 
 5. P4 `SessionBindings` 和 `MemoryStateStore` 集成。
@@ -1555,7 +1553,7 @@ git diff --check
 - 同 route 普通 prompt 串行；不同 route 默认并行。
 - `sessionId -> ownerRouteKey` 生效，跨 route `/resume` 被拒绝。
 - `maxConcurrentTurns` 默认 unlimited；设置为 `1` 时普通 prompt 全局串行，命令和审批响应不被阻塞。
-- 现有 `weixin codex`、`terminal codex` 单渠道入口保持兼容。
+- 统一 `chat-codex` 入口和 `terminal codex` 开发入口保持可用。
 - 已按规范新增/更新测试和中文测试报告。
 
 ## 14. 待确认问题

@@ -64,6 +64,34 @@ test("SessionBindings refuses to activate a session not owned by the route", () 
   }
 });
 
+test("SessionBindings releases previous active session when route switches", () => {
+  const bindings = new SessionBindings();
+  bindings.bindNewSession("route-a", sessionFor("s1"));
+  assert.equal(bindings.getOwner("s1")?.ownerRouteKey, "route-a");
+
+  const claim = bindings.claimSessionOwner("route-a", "s2");
+  assert.equal(claim.ok, true);
+  const activated = bindings.activateOwnedSession("route-a", sessionFor("s2"));
+
+  assert.equal(activated.ok, true);
+  assert.equal(bindings.getActive("route-a")?.sessionId, "s2");
+  assert.equal(bindings.getOwner("s1"), undefined);
+  assert.equal(bindings.getOwner("s2")?.ownerRouteKey, "route-a");
+  assert.deepEqual(bindings.listRouteSessions("route-a"), ["s2"]);
+});
+
+test("SessionBindings unbinds active session and releases owner", () => {
+  const bindings = new SessionBindings();
+  bindings.bindNewSession("route-a", sessionFor("s1"));
+
+  const result = bindings.unbindActiveSession("route-a");
+
+  assert.equal(result.ok, true);
+  assert.equal(bindings.getActive("route-a"), undefined);
+  assert.equal(bindings.getOwner("s1"), undefined);
+  assert.deepEqual(bindings.listRouteSessions("route-a"), []);
+});
+
 function sessionFor(id: string): CodexSession {
   return {
     id,

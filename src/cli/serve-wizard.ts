@@ -41,6 +41,7 @@ export interface ServeChannelSummary {
 export interface ServeRouteSummary {
   known: number;
   bound: number;
+  pending?: number;
   unboundPolicy: UnboundRoutePolicy;
   firstRouteBindingChoice?: FirstRouteBindingChoice;
   initialSessionId?: string;
@@ -58,7 +59,7 @@ export function parseServeHomeChoice(input: string | undefined): ServeHomeChoice
   if (!normalized || normalized === "5" || normalized === "start" || normalized === "s" || normalized === "启动") return "start";
   if (normalized === "1" || normalized === "channel" || normalized === "channels" || normalized === "渠道") return "manage_channels";
   if (normalized === "2" || normalized === "route" || normalized === "routes" || normalized === "绑定") return "manage_routes";
-  if (normalized === "3" || normalized === "codex" || normalized === "settings" || normalized === "设置") return "codex_settings";
+  if (normalized === "3" || normalized === "permission" || normalized === "permissions" || normalized === "权限" || normalized === "设置") return "codex_settings";
   if (normalized === "4" || normalized === "status" || normalized === "状态") return "status";
   if (normalized === "0" || normalized === "q" || normalized === "quit" || normalized === "exit") return "exit";
   return "start";
@@ -128,19 +129,22 @@ export function formatServeHomeSummary(summary: ServeHomeSummary): string {
     "聊天绑定",
     `- 已记录聊天: ${summary.routes.known}`,
     `- 已绑定 session: ${summary.routes.bound}`,
+    `- 待生效绑定: ${summary.routes.pending ?? 0}`,
     `- 新聊天策略: ${formatUnboundRoutePolicyForUser(summary.routes.unboundPolicy)}`,
-    `- 首个微信私聊: ${formatFirstRoutePresetForUser(summary.routes.firstRouteBindingChoice, summary.routes.initialSessionId, summary.routes.initialSessionTitle)}`,
+    ...(summary.routes.firstRouteBindingChoice
+      ? [`- 启动预设: ${formatFirstRoutePresetForUser(summary.routes.firstRouteBindingChoice, summary.routes.initialSessionId, summary.routes.initialSessionTitle)}`]
+      : []),
     "",
-    "Codex 默认设置",
-    `- 接入方式: ${formatAdapterModeForUser(summary.codex.adapterMode)}`,
-    `- 权限模式: ${formatPermissionModeForUser(summary.codex.permissionMode)}`,
-    `- 阶段进度: ${formatProgressModeForUser(summary.codex.progressMode, summary.codex.progressDisabled)}`,
-    `- 并发上限: ${formatMaxConcurrentTurnsForUser(summary.codex.maxConcurrentTurns)}`,
+    "权限",
+    `- 新 session 默认权限: ${formatPermissionModeForUser(summary.codex.permissionMode)}`,
+    "",
+    "提示",
+    "- 配置好后，需要启动服务才会真正的工作！",
     "",
     "操作",
     "1. 管理渠道",
     "2. 聊天绑定",
-    "3. Codex 默认设置",
+    "3. 权限设置",
     "4. 状态详情",
     "5. 启动服务",
     "0. 退出",
@@ -169,16 +173,17 @@ export function formatRouteBindingMenu(routes: ServeRouteSummary): string {
     "Codex Chat Bridge",
     "当前位置：首页 > 聊天绑定",
     "",
+    "聊天记录",
+    `- 已发现: ${routes.known}`,
+    `- 已绑定 session: ${routes.bound}`,
+    `- 待生效绑定: ${routes.pending ?? 0}`,
+    "",
     "新聊天策略",
     `- 当前: ${formatUnboundRoutePolicyForUser(routes.unboundPolicy)}`,
     "",
-    "首个微信私聊",
-    `- 当前: ${formatFirstRoutePresetForUser(routes.firstRouteBindingChoice, routes.initialSessionId, routes.initialSessionTitle)}`,
-    "",
     "操作",
-    "1. 设置新聊天策略",
-    "2. 设置首个微信私聊绑定",
-    "3. 查看当前绑定",
+    "1. 查看/切换聊天绑定",
+    "2. 设置新聊天策略",
     "0. 返回",
   ].join("\n");
 }
@@ -213,39 +218,56 @@ export function formatFirstRouteBindingMenu(routes: ServeRouteSummary): string {
 export function formatCodexSettingsMenu(input: ServeCodexSummary & { cwd: string }): string {
   return [
     "Codex Chat Bridge",
-    "当前位置：首页 > Codex 默认设置",
+    "当前位置：首页 > 权限设置",
     "",
-    `1. 接入方式: ${formatAdapterModeForUser(input.adapterMode)}`,
-    `2. 权限模式: ${formatPermissionModeForUser(input.permissionMode)}`,
-    `3. 新 session 工作目录: ${input.cwd}`,
-    `4. 并发上限: ${formatMaxConcurrentTurnsForUser(input.maxConcurrentTurns)}`,
+    `当前: ${formatPermissionModeForUser(input.permissionMode)}`,
+    "",
+    "1. 审批模式（workspace-write 沙箱，推荐）",
+    "2. 完全权限（跳过审批和沙箱，高风险）",
     "0. 返回",
   ].join("\n");
 }
 
 export function formatStartConfirmation(input: {
   codex: ServeCodexSummary & { cwd: string };
-  channel: ServeChannelSummary;
+  channel?: ServeChannelSummary;
+  channels?: ServeChannelSummary[];
   routes: ServeRouteSummary;
 }): string {
+  const channels = input.channels ?? (input.channel ? [input.channel] : []);
   return [
     "即将启动",
     "",
     "渠道",
-    `- 微信: ${formatChannelStateForUser(input.channel.status.state)}${input.channel.status.account ? `（${input.channel.status.account}）` : ""}`,
+    ...(channels.length > 0
+      ? channels.map((channel) => `- ${formatChannelTypeForUser(channel.type)} / ${channel.status.account ?? channel.id}: ${formatChannelStateForUser(channel.status.state)}${channel.enabled ? "" : "，已停用"}`)
+      : ["- 暂无启用渠道"]),
     "",
     "聊天绑定",
     `- 新聊天策略: ${formatUnboundRoutePolicyForUser(input.routes.unboundPolicy)}`,
-    `- 首个微信私聊: ${formatFirstRoutePresetForUser(input.routes.firstRouteBindingChoice, input.routes.initialSessionId, input.routes.initialSessionTitle)}`,
+    `- 待生效绑定: ${input.routes.pending ?? 0}`,
+    ...(input.routes.firstRouteBindingChoice
+      ? [`- 启动预设: ${formatFirstRoutePresetForUser(input.routes.firstRouteBindingChoice, input.routes.initialSessionId, input.routes.initialSessionTitle)}`]
+      : []),
     "",
-    "Codex 默认设置",
-    `- 接入方式: ${formatAdapterModeForUser(input.codex.adapterMode)}`,
-    `- 权限模式: ${formatPermissionModeForUser(input.codex.permissionMode)}`,
+    "权限",
+    `- 新 session 默认权限: ${formatPermissionModeForUser(input.codex.permissionMode)}`,
+    "",
+    "运行",
     `- 新 session 工作目录: ${input.codex.cwd}`,
+    "",
+    "提示",
+    "- 配置好后，需要启动服务才会真正的工作！",
     "",
     "1. 启动",
     "0. 返回",
   ].join("\n");
+}
+
+function formatChannelTypeForUser(type: string): string {
+  if (type === "weixin") return "微信";
+  if (type === "feishu" || type === "lark") return "飞书";
+  return type;
 }
 
 export function formatChannelCapabilities(capabilities: ChannelCapabilities): string {
@@ -367,10 +389,10 @@ function formatCapability(value: boolean): string {
   return value ? "支持" : "暂不支持";
 }
 
-function formatChannelSummary(channel: ServeChannelSummary, index: number): string[] {
+function formatChannelSummary(channel: ServeChannelSummary, _index: number): string[] {
   const enabled = channel.enabled ? "已启用" : "已停用";
   const lines = [
-    `${index + 1}. ${formatChannelType(channel.type)}（${channel.id}）- ${enabled}，${formatChannelStateForUser(channel.status.state)}`,
+    `- ${formatChannelType(channel.type)}（${channel.id}）- ${enabled}，${formatChannelStateForUser(channel.status.state)}`,
     `   登录账号: ${channel.status.account ?? "未登录"}`,
   ];
   if (channel.status.lastError) lines.push(`   最近错误: ${channel.status.lastError}`);

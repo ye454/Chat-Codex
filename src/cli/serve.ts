@@ -2,8 +2,13 @@ import { stdin, stdout } from "node:process";
 import { createInterface, type Interface } from "node:readline/promises";
 import { Bridge, type InitialRouteBinding, type ProgressDeliveryMode, type UnboundRoutePolicy } from "../bridge/bridge.js";
 import { LimitedTurnScheduler } from "../bridge/turn-scheduler.js";
-import { WeixinAdapter } from "../channels/weixin/weixin-adapter.js";
+import { ChannelRegistry } from "../channels/registry.js";
+import { FeishuAdapter } from "../channels/feishu/feishu-adapter.js";
+import { WeixinAdapter, type WeixinLoginStartResult } from "../channels/weixin/weixin-adapter.js";
+import { FileWeixinAccountStore } from "../channels/weixin/weixin-account-store.js";
 import { displayWeixinQrCode } from "../channels/weixin/weixin-qr-display.js";
+import { DEFAULT_FEISHU_ACCOUNT_ID, DEFAULT_FEISHU_DOMAIN, missingFeishuCredentials, normalizeFeishuCredentials } from "../channels/feishu/feishu-message.js";
+import type { FeishuCredentials } from "../channels/feishu/feishu-types.js";
 import { AppServerCodexAdapter } from "../codex/app-server-codex-adapter.js";
 import {
   checkCodexCli,
@@ -19,7 +24,12 @@ import type { CodexAdapter } from "../codex/types.js";
 import { resolveNewSessionWorkdir } from "../codex/workdir.js";
 import { ConsoleLogger } from "../logging/logger.js";
 import { ConsoleTranscriptSink } from "../logging/transcript.js";
-import type { ChannelStatus } from "../protocol/channel.js";
+import type { ChannelLoginResult, ChannelStatus } from "../protocol/channel.js";
+import { BindingActions, formatRunPolicyForUser, type BindingSummary, type SessionChoices } from "./actions/binding-actions.js";
+import { ChannelActions, formatManagedChannelList, type ManagedChannelSummary } from "./actions/channel-actions.js";
+import { FileStateStore } from "../state/file-state-store.js";
+import { pendingBindingOwnerRouteKey } from "../state/memory-state-store.js";
+import type { ChannelInstanceRecord } from "../state/persistent-state-types.js";
 import {
   formatAdapterModeForUser,
   formatChannelCapabilities,
@@ -38,7 +48,6 @@ import {
   formatUnboundRoutePolicyForUser,
   formatUnboundRoutePolicyMenu,
   parseChannelManageChoice,
-  parseCodexSettingsChoice,
   parseFirstRouteSetupChoice,
   parseRouteManageChoice,
   parseServeHomeChoice,
@@ -60,6 +69,8 @@ export interface ServeStartupOptions {
 }
 
 type RealCodexAdapterMode = "app-server" | "exec";
+
+const WEIXIN_LOGIN_CHECK_TIMEOUT_MS = 15_000;
 
 interface PreparedServeStartup {
   policy: CodexRunPolicy;
@@ -83,6 +94,7 @@ export async function runServe(options: ServeStartupOptions = {}): Promise<void>
   const rl = interactive ? createInterface({ input: stdin, output: stdout }) : undefined;
   let startup: PreparedServeStartup | undefined;
   let plan: ServeChannelPlan | undefined;
+  const channelActions = new ChannelActions();
   try {
     startup = await prepareCodexServeStartup(options, rl);
     const setupChannel = new WeixinAdapter({
@@ -90,18 +102,20 @@ export async function runServe(options: ServeStartupOptions = {}): Promise<void>
       verifyCodeProvider: rl ? questionWithReadline(rl) : undefined,
     });
     await setupChannel.start();
-    plan = createInitialChannelPlan(await setupChannel.getStatus(), options);
+    const setupStatus = await setupChannel.getStatus();
+    channelActions.ensureLegacyWeixinAccountRegistered(setupStatus);
+    plan = createInitialChannelPlan(setupStatus, options);
     if (interactive) {
-      const shouldStart = await runServeHomeLoop(rl as Interface, startup, plan, setupChannel);
+      const shouldStart = await runServeHomeLoop(rl as Interface, startup, plan, channelActions);
       if (!shouldStart) return;
-    } else if (plan.status.state !== "connected") {
-      throw new Error("未发现可启动的微信渠道。请先在交互式终端运行 npm run cli:weixin:codex 完成微信登录，或运行 npm run cli:weixin:login。");
+    } else if (channelActions.createRuntimeAdapters().length === 0) {
+      throw new Error("未发现可启动的渠道。请先在交互式终端运行 chat-codex 添加微信账号或飞书机器人。");
     }
   } finally {
     rl?.close();
   }
   if (!startup || !plan) return;
-  await startServeBridge(startup, plan);
+  await startServeBridge(startup, plan, channelActions);
 }
 
 async function prepareCodexServeStartup(options: ServeStartupOptions, rl?: Interface): Promise<PreparedServeStartup> {
@@ -175,24 +189,26 @@ async function runServeHomeLoop(
   rl: Interface,
   startup: PreparedServeStartup,
   plan: ServeChannelPlan,
-  channel: WeixinAdapter,
+  channelActions: ChannelActions,
 ): Promise<boolean> {
   for (;;) {
-    plan.status = await channel.getStatus();
+    const channelSummaries = await channelActions.listChannelSummaries();
     console.log("");
     console.log(formatServeHomeSummary({
       codex: codexSummary(startup),
-      channels: [weixinChannelSummary(plan.status)],
+      channels: channelSummaries.map(toServeChannelSummary),
       routes: routeSummary(plan),
     }));
-    const choice = parseServeHomeChoice(await rl.question("请选择 [5]: "));
+    const defaultChoice = channelSummaries.length === 0 ? "1" : "5";
+    const input = await rl.question(`请选择 [${defaultChoice}]: `);
+    const choice = parseServeHomeChoice(input.trim() ? input : defaultChoice);
     if (choice === "exit") return false;
     if (choice === "manage_channels") {
-      await runChannelManagementLoop(rl, plan, channel);
+      await runChannelManagementLoop(rl, startup, plan, channelActions);
       continue;
     }
     if (choice === "manage_routes") {
-      await runRouteBindingLoop(rl, plan);
+      await runRouteBindingLoop(rl, startup, plan);
       continue;
     }
     if (choice === "codex_settings") {
@@ -200,36 +216,50 @@ async function runServeHomeLoop(
       continue;
     }
     if (choice === "status") {
-      await printChannelStatus(plan, channel);
+      await printAllChannelStatuses(channelActions);
       continue;
     }
-    if (await confirmStart(rl, startup, plan)) return true;
+    if (await confirmStart(rl, startup, plan, channelActions)) return true;
   }
 }
 
-async function runChannelManagementLoop(rl: Interface, plan: ServeChannelPlan, channel: WeixinAdapter): Promise<void> {
+async function runChannelManagementLoop(
+  rl: Interface,
+  startup: PreparedServeStartup,
+  plan: ServeChannelPlan,
+  channelActions: ChannelActions,
+): Promise<void> {
   for (;;) {
-    plan.status = await channel.getStatus();
+    const channels = await channelActions.listChannelSummaries();
     console.log("");
-    console.log(formatChannelManagementMenu(weixinChannelSummary(plan.status)));
-    const choice = parseChannelManageChoice(await rl.question("请选择 [1]: "));
-    if (choice === "back") return;
-    if (choice === "status") {
-      await printChannelStatus(plan, channel);
+    console.log(formatManagedChannelList(channels));
+    const answer = normalizeText(await rl.question("请选择渠道编号 / 操作 [0 返回]: "));
+    if (!answer || answer === "0" || isBackText(answer)) return;
+    const index = Number.parseInt(answer, 10);
+    if (Number.isInteger(index) && index >= 1 && index <= channels.length) {
+      await manageConfiguredChannel(rl, startup, channelActions, channels[index - 1]);
       continue;
     }
-    if (choice === "add") {
-      console.log("");
-      console.log("当前版本只支持微信渠道；飞书等第二渠道会在后续适配。");
+    if (isAddWeixinAction(answer) || index === channels.length + 1) {
+      const record = await addWeixinAccount(rl, channelActions);
+      if (record) await configureWeixinPrimaryBinding(rl, startup, record);
       continue;
     }
-    await loginWeixinChannel(plan, channel);
+    if (isAddFeishuAction(answer) || index === channels.length + 2) {
+      await addFeishuBot(rl, channelActions);
+      continue;
+    }
+    console.log("没有这个选项，请重新选择。");
   }
 }
 
-async function loginWeixinChannel(plan: ServeChannelPlan, channel: WeixinAdapter): Promise<void> {
+async function addWeixinAccount(rl: Interface, channelActions: ChannelActions): Promise<ChannelInstanceRecord | undefined> {
+  const channel = new WeixinAdapter({
+    pollOnStart: false,
+    verifyCodeProvider: questionWithReadline(rl),
+  });
   console.log("");
-  console.log("微信扫码登录");
+  console.log("添加微信账号");
   console.log(formatChannelCapabilities(channel.getCapabilities()));
   try {
     const started = await channel.startLogin();
@@ -237,46 +267,577 @@ async function loginWeixinChannel(plan: ServeChannelPlan, channel: WeixinAdapter
     if (started.qrCodeText) {
       await displayWeixinQrCode(started.qrCodeText);
     }
-    const loginResult = await channel.waitLogin(started.sessionKey);
-    console.log(loginResult.message);
-    plan.status = await channel.getStatus();
+    const loginResult = await waitWeixinLoginFromQrMenu(rl, channel, started);
+    if (!loginResult) {
+      console.log("已返回管理渠道，未添加微信账号。");
+      return undefined;
+    }
+    const status = await channel.getStatus();
     if (loginResult.state !== "connected") {
       console.log("微信登录未完成，可以稍后重新进入“管理渠道”重试。");
+      return undefined;
     }
+    const accountId = status.account;
+    if (!accountId) {
+      console.log("微信登录完成但没有拿到账号标识，暂不能添加到渠道列表。");
+      return undefined;
+    }
+    const account = new FileWeixinAccountStore().loadAccount(accountId);
+    if (!account) {
+      console.log("微信登录态保存异常，暂不能添加到渠道列表。");
+      return undefined;
+    }
+    const record = channelActions.registerWeixinAccount(account);
+    console.log("");
+    console.log([
+      "微信账号已添加",
+      `账号: ${account.accountId}`,
+      `渠道实例: ${record.id}`,
+      "",
+      "下一步: 请选择这个微信主聊天绑定哪个 Codex session。",
+    ].join("\n"));
+    return record;
   } catch (error) {
     console.log(`微信登录失败: ${error instanceof Error ? error.message : String(error)}`);
+    return undefined;
   }
 }
 
-async function printChannelStatus(plan: ServeChannelPlan, channel: WeixinAdapter): Promise<void> {
-  plan.status = await channel.getStatus();
-  console.log("");
-  console.log(formatChannelStatusDetails(plan.status, channel.getCapabilities()));
+async function waitWeixinLoginFromQrMenu(
+  rl: Interface,
+  channel: WeixinAdapter,
+  started: WeixinLoginStartResult,
+): Promise<ChannelLoginResult | undefined> {
+  for (;;) {
+    console.log("");
+    console.log([
+      "微信扫码登录",
+      "",
+      "扫码并在手机上确认后，按回车检查登录结果。",
+      "不想登录就输入 0 返回管理渠道。",
+    ].join("\n"));
+    const answer = normalizeText(await rl.question("请选择 [回车检查 / 0 返回]: "));
+    if (answer === "0" || isBackText(answer)) return undefined;
+    if (answer && answer !== "c" && answer !== "check" && answer !== "检查") {
+      console.log("没有这个选项。按回车检查登录结果，或输入 0 返回。");
+      continue;
+    }
+    const result = await channel.waitLogin(started.sessionKey, WEIXIN_LOGIN_CHECK_TIMEOUT_MS);
+    console.log(result.message);
+    if (result.state === "connected" || result.state === "failed") return result;
+    if (!result.message.includes("超时")) return result;
+    console.log("还没有检测到扫码确认。可以继续按回车检查，或输入 0 返回。");
+  }
 }
 
-async function runRouteBindingLoop(rl: Interface, plan: ServeChannelPlan): Promise<void> {
+async function addFeishuBot(rl: Interface, channelActions: ChannelActions): Promise<void> {
+  console.log("");
+  console.log([
+    "添加飞书机器人",
+    "",
+    "请手动输入这次要添加的 App ID / App Secret。",
+    "Secret 只保存在当前进程内存里，不会写入 Git 或状态文件。",
+    "长期运行也可以在启动前通过 FEISHU_APP_ID / FEISHU_APP_SECRET 环境变量提供。",
+    "输入 0 返回上一级。",
+  ].join("\n"));
+  const credentials = await askFeishuCredentials(rl);
+  if (!credentials) return;
+  const missing = missingFeishuCredentials(credentials);
+  if (missing.length > 0) {
+    console.log(`缺少飞书配置: ${missing.join(", ")}。请重新输入完整配置。`);
+    return;
+  }
+  const adapter = new FeishuAdapter({
+    ...credentials,
+    id: `feishu-${credentials.accountId ?? DEFAULT_FEISHU_ACCOUNT_ID}`,
+    connectOnStart: false,
+    probeOnStart: false,
+  });
+  await adapter.start();
+  const status = await adapter.getStatus();
+  if (status.state !== "connected") {
+    console.log(status.lastError ?? "飞书机器人配置检查失败。");
+    return;
+  }
+  const record = channelActions.registerFeishuBot(credentials, "interactive");
+  console.log("");
+  console.log([
+    "飞书机器人已添加",
+    `账号标识: ${record.defaultAccountId ?? DEFAULT_FEISHU_ACCOUNT_ID}`,
+    `渠道实例: ${record.id}`,
+    "凭证: 本次进程已记住；重启后请使用环境变量或重新手动添加。",
+    "",
+    "下一步: 启动服务后，让用户在飞书里私聊机器人。",
+    "每个飞书私聊会按 chat_id 生成独立聊天绑定。",
+  ].join("\n"));
+}
+
+async function askFeishuCredentials(rl: Interface): Promise<FeishuCredentials | undefined> {
+  const appId = await askRequired(rl, "请输入 FEISHU_APP_ID: ");
+  if (!appId) return undefined;
+  const appSecret = await askRequired(rl, "请输入 FEISHU_APP_SECRET（输入会显示在终端）: ");
+  if (!appSecret) return undefined;
+  const domain = await askOptional(rl, `飞书域 [${DEFAULT_FEISHU_DOMAIN}]: `, DEFAULT_FEISHU_DOMAIN);
+  const accountId = await askOptional(rl, `账号标识 [${DEFAULT_FEISHU_ACCOUNT_ID}]: `, DEFAULT_FEISHU_ACCOUNT_ID);
+  return normalizeFeishuCredentials({ appId, appSecret, domain, accountId });
+}
+
+async function manageConfiguredChannel(
+  rl: Interface,
+  startup: PreparedServeStartup,
+  channelActions: ChannelActions,
+  channel: ManagedChannelSummary,
+): Promise<void> {
+  for (;;) {
+    console.log("");
+    console.log([
+      "渠道详情",
+      "",
+      `类型: ${channel.record.type === "weixin" ? "微信" : "飞书"}`,
+      `账号: ${channel.status.account ?? channel.record.defaultAccountId ?? "default"}`,
+      `实例: ${channel.record.id}`,
+      `状态: ${formatChannelStateForUser(channel.status.state)}`,
+      `启用: ${channel.record.enabled ? "是" : "否"}`,
+      channel.status.lastError ? `最近错误: ${channel.status.lastError}` : undefined,
+      "",
+      channel.record.type === "weixin" ? "1. 设置微信主聊天绑定" : "1. 查看说明",
+      `2. ${channel.record.enabled ? "停用" : "启用"}这个渠道`,
+      "3. 状态详情",
+      "0. 返回",
+    ].filter(Boolean).join("\n"));
+    const choice = normalizeText(await rl.question("请选择 [0 返回]: "));
+    if (!choice || choice === "0" || isBackText(choice)) return;
+    if (choice === "1") {
+      if (channel.record.type === "weixin") {
+        await configureWeixinPrimaryBinding(rl, startup, channel.record);
+      } else {
+        console.log("飞书机器人不做渠道级 session 绑定；请等用户私聊机器人后，到“聊天绑定”里按具体 chat_id 绑定。");
+      }
+      continue;
+    }
+    if (choice === "2") {
+      channelActions.setChannelEnabled(channel.record.id, !channel.record.enabled);
+      console.log(channel.record.enabled ? "已停用渠道。" : "已启用渠道。");
+      return;
+    }
+    if (choice === "3") {
+      console.log(formatChannelStatusDetails(channel.status, channel.capabilities));
+      continue;
+    }
+    console.log("没有这个选项，请重新选择。");
+  }
+}
+
+async function configureWeixinPrimaryBinding(
+  rl: Interface,
+  startup: PreparedServeStartup,
+  channel: ChannelInstanceRecord,
+): Promise<void> {
+  const accountId = channel.defaultAccountId;
+  if (!accountId) {
+    console.log("这个微信渠道缺少账号标识，不能设置主聊天绑定。");
+    return;
+  }
+  const state = new FileStateStore();
+  const pendingId = weixinPrimaryPendingId(channel.id, accountId);
+  const pendingOwner = pendingBindingOwnerRouteKey(pendingId);
+  for (;;) {
+    const sessions = discoverCodexSessions({ limit: 15 });
+    console.log("");
+    console.log([
+      "微信主聊天绑定",
+      "",
+      `账号: ${accountId}`,
+      `渠道实例: ${channel.id}`,
+      "",
+      "请选择这个微信主聊天使用哪个 Codex session：",
+      "",
+      ...sessions.map((session, index) => `  ${index + 1}. ${formatCodexSessionTitleForDisplay(session, 28) ?? session.id}    ${shortSessionId(session.id)}`),
+      "",
+      "操作:",
+      "  n. 新建 Codex session",
+      "  m. 手动输入 Session ID",
+      "  0. 暂不绑定，首条消息自动创建",
+    ].join("\n"));
+    const answer = (await rl.question("请选择 session 编号 / 操作 [0]: ")).trim();
+    if (!answer || answer === "0" || isBackText(answer)) {
+      state.clearPendingBindingForMessage(pendingProbeMessage(channel.id, accountId));
+      console.log("已设置：暂不绑定，首条消息自动创建。");
+      return;
+    }
+    if (isNewSessionAction(answer)) {
+      state.setPendingBinding({
+        id: pendingId,
+        channelId: channel.id,
+        accountId,
+        conversationKind: "direct",
+        label: `微信 / ${accountId} / 主聊天`,
+        binding: { type: "new" },
+      });
+      console.log("已设置：收到第一条微信私聊后创建新 session。");
+      return;
+    }
+    const sessionId = await resolveWeixinPrimarySessionId(rl, answer, sessions);
+    if (!sessionId) continue;
+    const session = sessions.find((item) => item.id === sessionId) ?? findCodexSessionById(sessionId);
+    if (!session) {
+      console.log("没有找到这个 session。请重新输入编号或有效 Session ID；输入 0 返回。");
+      continue;
+    }
+    const owner = state.getSessionOwner(session.id);
+    if (owner && owner.ownerRouteKey !== pendingOwner) {
+      console.log(`无法预留这个 session：${session.id} 已绑定到 ${owner.ownerRouteKey}。`);
+      continue;
+    }
+    state.setPendingBinding({
+      id: pendingId,
+      channelId: channel.id,
+      accountId,
+      conversationKind: "direct",
+      label: `微信 / ${accountId} / 主聊天`,
+      binding: { type: "existing", sessionId: session.id },
+    });
+    console.log([
+      "已设置微信主聊天绑定",
+      `聊天: 微信 / ${accountId} / 主聊天`,
+      `待绑定 session: ${formatCodexSessionTitleForDisplay(session) ?? session.id} / ${shortSessionId(session.id)}`,
+      "说明: 收到第一条微信私聊后生效。",
+    ].join("\n"));
+    return;
+  }
+}
+
+async function resolveWeixinPrimarySessionId(
+  rl: Interface,
+  answer: string,
+  sessions: DiscoveredCodexSession[],
+): Promise<string | undefined> {
+  if (isManualSessionInputAction(answer)) {
+    const manual = (await rl.question("请输入 Session ID [0 返回]: ")).trim();
+    if (!manual || manual === "0" || isBackText(manual)) return undefined;
+    return manual;
+  }
+  if (/^\d+$/.test(answer)) {
+    const index = Number.parseInt(answer, 10);
+    if (index >= 1 && index <= sessions.length) return sessions[index - 1].id;
+    console.log(`没有第 ${index} 项，请重新选择。`);
+    return undefined;
+  }
+  return answer;
+}
+
+function weixinPrimaryPendingId(channelId: string, accountId: string): string {
+  return `weixin-primary-${channelId}-${accountId}`;
+}
+
+function pendingProbeMessage(channelId: string, accountId: string) {
+  return {
+    id: "pending-probe",
+    routeKey: `${channelId}:${accountId}:direct:pending-probe`,
+    channelId,
+    accountId,
+    sender: { id: "pending-probe" },
+    conversation: { id: "pending-probe", kind: "direct" as const },
+    text: "",
+    timestamp: new Date().toISOString(),
+  };
+}
+
+function shortSessionId(sessionId: string): string {
+  return sessionId.length <= 8 ? sessionId : sessionId.slice(0, 8);
+}
+
+async function printAllChannelStatuses(channelActions: ChannelActions): Promise<void> {
+  const channels = await channelActions.listChannelSummaries();
+  console.log("");
+  if (channels.length === 0) {
+    console.log("还没有配置渠道。请先进入“管理渠道”添加微信账号或飞书机器人。");
+    return;
+  }
+  for (const channel of channels) {
+    console.log(formatChannelStatusDetails(channel.status, channel.capabilities));
+    console.log("");
+  }
+}
+
+async function runRouteBindingLoop(rl: Interface, startup: PreparedServeStartup, plan: ServeChannelPlan): Promise<void> {
   for (;;) {
     console.log("");
     console.log(formatRouteBindingMenu(routeSummary(plan)));
-    const choice = parseRouteManageChoice(await rl.question("请选择 [1]: "));
-    if (choice === "back") return;
-    if (choice === "policy") {
+    const answer = normalizeText(await rl.question("请选择 [1]: "));
+    if (!answer || answer === "1" || answer === "bindings" || answer === "绑定") {
+      await managePersistedBindings(rl, startup);
+      continue;
+    }
+    if (answer === "2" || answer === "policy" || answer === "策略") {
       await configureUnboundRoutePolicy(rl, plan);
       continue;
     }
-    if (choice === "first_route") {
-      await configureFirstRouteBinding(rl, plan);
+    if (isBackText(answer)) return;
+    console.log("没有这个选项，请重新选择。");
+  }
+}
+
+async function managePersistedBindings(rl: Interface, startup: PreparedServeStartup): Promise<void> {
+  for (;;) {
+    const actions = createBindingActions(startup);
+    const bindings = actions.listBindings();
+    console.log("");
+    if (bindings.length === 0) {
+      console.log([
+        "聊天绑定",
+        "",
+        "还没有发现任何聊天。",
+        "启动服务后，微信私聊或飞书用户私聊机器人会自动记录在这里。",
+        "",
+        "0. 返回",
+      ].join("\n"));
+      const answer = normalizeText(await rl.question("请选择 [0 返回]: "));
+      if (!answer || answer === "0" || isBackText(answer)) return;
+      continue;
+    }
+    console.log(formatPersistedBindingList(bindings));
+    const answer = normalizeText(await rl.question("请选择聊天编号 [0 返回]: "));
+    if (!answer || answer === "0" || isBackText(answer)) return;
+    const index = Number.parseInt(answer, 10);
+    if (!Number.isInteger(index) || index < 1 || index > bindings.length) {
+      console.log("没有这个聊天编号，请重新选择。");
+      continue;
+    }
+    const outcome = await manageBindingDetail(rl, startup, bindings[index - 1].route.routeKey);
+    if (outcome === "home") return;
+  }
+}
+
+async function manageBindingDetail(rl: Interface, startup: PreparedServeStartup, routeKey: string): Promise<"list" | "home"> {
+  for (;;) {
+    const actions = createBindingActions(startup);
+    const binding = actions.getBinding(routeKey);
+    if (!binding) {
+      console.log("这个聊天记录已经不存在。");
+      return "list";
+    }
+    console.log("");
+    console.log(actions.formatBindingDetail(binding));
+    const answer = normalizeText(await rl.question("请选择 [0 返回]: "));
+    if (!answer || answer === "0" || isBackText(answer)) return "list";
+    if (answer === "1" || answer === "switch" || answer === "切换") {
+      const outcome = await switchBindingSession(rl, startup, routeKey);
+      if (outcome === "home") return "home";
+      continue;
+    }
+    if (answer === "2" || answer === "new" || answer === "新建") {
+      const outcome = await createAndBindNewSession(rl, startup, routeKey);
+      if (outcome === "home") return "home";
+      continue;
+    }
+    if (answer === "3" || answer === "permission" || answer === "权限") {
+      if (!binding.activeSession) {
+        console.log("当前聊天还没有绑定 session，不能设置 session 级权限。");
+        continue;
+      }
+      await configureBoundSessionPermission(rl, startup, binding);
+      continue;
+    }
+    if (answer === "4" || answer === "unbind" || answer === "解绑") {
+      const outcome = await unbindBindingSession(rl, startup, routeKey);
+      if (outcome === "home") return "home";
+      continue;
+    }
+    console.log("未识别选择，请重新输入。");
+  }
+}
+
+async function switchBindingSession(rl: Interface, startup: PreparedServeStartup, routeKey: string): Promise<"detail" | "home"> {
+  for (;;) {
+    const actions = createBindingActions(startup);
+    const choices = actions.listSessionChoices(routeKey);
+    console.log("");
+    console.log(actions.formatSessionChoices(routeKey, choices));
+    const answer = (await rl.question("请选择 session 编号，或输入 m 手动输入 ID [0 返回]: ")).trim();
+    if (!answer || answer === "0" || isBackText(answer)) return "detail";
+    const sessionId = await resolveSessionIdFromChoiceInput(rl, answer, choices);
+    if (!sessionId) continue;
+    const result = createBindingActions(startup).bindExistingSession(routeKey, sessionId);
+    if (!result.ok) {
+      console.log(result.message);
       continue;
     }
     console.log("");
-    console.log([
-      "当前聊天绑定",
-      "- 启动前不会把整个微信账号绑定到一个 Codex session。",
-      "- 每个微信聊天会在第一次发消息时按策略创建或切换 session。",
-      `- 新聊天策略: ${formatUnboundRoutePolicyForUser(plan.unboundRoutePolicy)}`,
-      `- 首个微信私聊: ${formatFirstRoutePresetForUser(plan.firstRouteBindingChoice, plan.initialSessionId, plan.initialSessionTitle)}`,
-    ].join("\n"));
+    console.log(createBindingActions(startup).formatBindSuccess(result));
+    const next = normalizeText(await rl.question("请选择 [1 返回绑定详情 / 0 返回首页]: "));
+    return next === "0" ? "home" : "detail";
   }
+}
+
+async function createAndBindNewSession(rl: Interface, startup: PreparedServeStartup, routeKey: string): Promise<"detail" | "home"> {
+  const binding = createBindingActions(startup).getBinding(routeKey);
+  console.log("");
+  console.log([
+    "新建并绑定 session",
+    "",
+    `聊天: ${binding?.label ?? routeKey}`,
+    `工作目录: ${startup.cwd}`,
+    `新 session 默认权限: ${formatRunPolicyForUser(startup.policy)}`,
+    "",
+    "1. 创建并绑定",
+    "0. 返回",
+  ].join("\n"));
+  const answer = normalizeText(await rl.question("请选择 [1]: "));
+  if (answer === "0" || isBackText(answer)) return "detail";
+  const codex = createRealCodexAdapter(startup);
+  try {
+    const session = await codex.startSession({
+      routeKey,
+      cwd: startup.cwd,
+      title: `channel:${routeKey}`,
+    });
+    const result = createBindingActions(startup).bindNewSession(routeKey, session);
+    if (!result.ok) {
+      console.log(result.message);
+      return "detail";
+    }
+    console.log("");
+    console.log([
+      "已新建并绑定 session",
+      "",
+      `聊天: ${result.binding.label}`,
+      `当前 session: ${result.session.title ?? result.session.id} / ${result.session.shortId}`,
+      result.session.cwd ? `工作目录: ${result.session.cwd}` : undefined,
+      "",
+      "1. 返回绑定详情",
+      "0. 返回首页",
+    ].filter(Boolean).join("\n"));
+    const next = normalizeText(await rl.question("请选择 [1 返回绑定详情 / 0 返回首页]: "));
+    return next === "0" ? "home" : "detail";
+  } finally {
+    if (codex.stop) await codex.stop().catch(() => undefined);
+  }
+}
+
+async function unbindBindingSession(rl: Interface, startup: PreparedServeStartup, routeKey: string): Promise<"detail" | "home"> {
+  const actions = createBindingActions(startup);
+  const binding = actions.getBinding(routeKey);
+  if (!binding?.activeSession) {
+    console.log("当前聊天没有绑定 session。");
+    return "detail";
+  }
+  console.log("");
+  console.log([
+    "解绑当前 session",
+    "",
+    `聊天: ${binding.label}`,
+    `当前 session: ${binding.activeSession.title ?? binding.activeSession.id} / ${binding.activeSession.shortId}`,
+    "",
+    "解绑后，这个 session 可以被其他聊天重新绑定。",
+  ].join("\n"));
+  const answer = await rl.question("确认解绑请输入 YES [其他输入取消]: ");
+  if (answer.trim() !== "YES") {
+    console.log("已取消解绑。");
+    return "detail";
+  }
+  const result = createBindingActions(startup).unbindSession(routeKey);
+  console.log("");
+  if (!result.ok) {
+    console.log(result.message);
+    return "detail";
+  }
+  console.log([
+    "已解绑 session",
+    "",
+    `聊天: ${result.binding.label}`,
+    `已解绑 session: ${result.sessionId}`,
+    "",
+    "1. 返回绑定详情",
+    "0. 返回首页",
+  ].join("\n"));
+  const next = normalizeText(await rl.question("请选择 [1 返回绑定详情 / 0 返回首页]: "));
+  return next === "0" ? "home" : "detail";
+}
+
+async function resolveSessionIdFromChoiceInput(
+  rl: Interface,
+  answer: string,
+  choices: SessionChoices,
+): Promise<string | undefined> {
+  if (isManualSessionInputAction(answer)) {
+    const manual = (await rl.question("请输入 Session ID [0 返回]: ")).trim();
+    if (!manual || manual === "0" || isBackText(manual)) return undefined;
+    return manual;
+  }
+  if (/^\d+$/.test(answer)) {
+    const index = Number.parseInt(answer, 10);
+    if (index >= 1 && index <= choices.selectable.length) {
+      return choices.selectable[index - 1].id;
+    }
+    console.log(`没有第 ${index} 项，请重新选择。`);
+    return undefined;
+  }
+  return answer;
+}
+
+async function configureBoundSessionPermission(
+  rl: Interface,
+  startup: PreparedServeStartup,
+  binding: BindingSummary,
+): Promise<void> {
+  const sessionId = binding.activeSession?.id;
+  if (!sessionId) return;
+  const actions = createBindingActions(startup);
+  const current = actions.getSessionPermission(sessionId) ?? startup.policy;
+  console.log("");
+  console.log([
+    "当前 session 权限",
+    "",
+    `聊天: ${binding.label}`,
+    `Session: ${binding.activeSession?.title ?? sessionId} / ${binding.activeSession?.shortId ?? sessionId}`,
+    `当前: ${formatRunPolicyForUser(current)}`,
+    "",
+    "1. 审批模式（推荐）",
+    "2. 完全权限（高风险，需要输入 YES）",
+    "0. 返回",
+  ].join("\n"));
+  const answer = normalizeText(await rl.question("请选择 [0 返回]: "));
+  if (!answer || answer === "0" || isBackText(answer)) return;
+  const policy: CodexRunPolicy = answer === "2" || answer === "full"
+    ? { permissionMode: "full" }
+    : { permissionMode: "approval", sandbox: "workspace-write" };
+  if (policy.permissionMode === "full") {
+    try {
+      await confirmFullPermission(rl, false);
+    } catch (error) {
+      console.log(error instanceof Error ? error.message : String(error));
+      return;
+    }
+  }
+  actions.setSessionPermission(sessionId, policy);
+  console.log("");
+  console.log([
+    "已设置当前 session 权限",
+    `聊天: ${binding.label}`,
+    `Session: ${binding.activeSession?.title ?? sessionId} / ${binding.activeSession?.shortId ?? sessionId}`,
+    `当前权限: ${formatRunPolicyForUser(policy)}`,
+    "说明: 只影响这个 session 后续任务；当前正在运行的任务不会被改写。",
+  ].join("\n"));
+}
+
+function createBindingActions(startup: PreparedServeStartup): BindingActions {
+  return new BindingActions(new FileStateStore(), { cwd: startup.cwd });
+}
+
+function formatPersistedBindingList(bindings: BindingSummary[]): string {
+  return [
+    "聊天绑定",
+    "",
+    ...bindings.map((binding, index) => {
+      const session = binding.activeSession
+        ? `${binding.activeSession.title ?? binding.activeSession.id} / ${binding.activeSession.shortId}`
+        : "未绑定";
+      const permission = binding.permission ? `，${formatRunPolicyForUser(binding.permission)}` : "";
+      return `${index + 1}. ${binding.label}    ${session}${permission}`;
+    }),
+    "0. 返回",
+  ].join("\n");
 }
 
 async function configureUnboundRoutePolicy(rl: Interface, plan: ServeChannelPlan): Promise<void> {
@@ -325,8 +886,20 @@ async function selectExistingSessionForFirstRoute(rl: Interface): Promise<{ sess
         console.log(formatSessionChoice(index + 1, session));
       });
     }
-    const answer = (await rl.question("请选择编号或输入 Session ID [0 返回]: ")).trim();
+    console.log("");
+    console.log("操作:");
+    console.log("  m. 手动输入 Session ID");
+    console.log("  0. 返回");
+    const answer = (await rl.question("请选择 session 编号，或输入 m 手动输入 ID [0 返回]: ")).trim();
     if (!answer || answer === "0" || isBackText(answer)) return undefined;
+    if (isManualSessionInputAction(answer)) {
+      const manual = (await rl.question("请输入 Session ID [0 返回]: ")).trim();
+      if (!manual || manual === "0" || isBackText(manual)) return undefined;
+      const session = sessions.find((item) => item.id === manual) ?? findCodexSessionById(manual);
+      if (session) return { sessionId: session.id, session };
+      console.log("没有找到这个 session。请重新输入编号或有效 Session ID；输入 0 返回。");
+      continue;
+    }
     if (/^\d+$/.test(answer)) {
       const index = Number.parseInt(answer, 10);
       const session = sessions[index - 1];
@@ -347,21 +920,21 @@ async function runCodexSettingsLoop(rl: Interface, startup: PreparedServeStartup
       ...codexSummary(startup),
       cwd: startup.cwd,
     }));
-    const choice = parseCodexSettingsChoice(await rl.question("请选择 [1]: "));
-    if (choice === "back") return;
-    if (choice === "adapter") {
-      await configureAdapterMode(rl, startup);
+    const answer = normalizeText(await rl.question("请选择 [0 返回]: "));
+    if (!answer || answer === "0" || isBackText(answer)) return;
+    if (answer === "2" || answer === "full") {
+      try {
+        await confirmFullPermission(rl, false);
+      } catch (error) {
+        console.log(error instanceof Error ? error.message : String(error));
+        continue;
+      }
+      startup.policy = { permissionMode: "full" };
+      console.log("已设置新 session 默认权限: 完全权限");
       continue;
     }
-    if (choice === "permission") {
-      await configurePermissionMode(rl, startup);
-      continue;
-    }
-    if (choice === "workdir") {
-      await configureWorkdir(rl, startup);
-      continue;
-    }
-    await configureMaxConcurrentTurns(rl, startup);
+    startup.policy = { permissionMode: "approval", sandbox: "workspace-write" };
+    console.log("已设置新 session 默认权限: 审批模式");
   }
 }
 
@@ -450,10 +1023,26 @@ async function configureMaxConcurrentTurns(rl: Interface, startup: PreparedServe
   console.log(`已设置并发上限: ${formatMaxConcurrentTurnsForUser(startup.maxConcurrentTurns)}`);
 }
 
-async function confirmStart(rl: Interface, startup: PreparedServeStartup, plan: ServeChannelPlan): Promise<boolean> {
-  if (plan.status.state !== "connected") {
+async function confirmStart(
+  rl: Interface,
+  startup: PreparedServeStartup,
+  plan: ServeChannelPlan,
+  channelActions: ChannelActions,
+): Promise<boolean> {
+  const channels = await channelActions.listChannelSummaries();
+  const enabled = channels.filter((channel) => channel.record.enabled);
+  if (enabled.length === 0) {
     console.log("");
-    console.log("微信还没有连接。请先进入“管理渠道”完成扫码登录，再启动服务。");
+    console.log("还没有启用的渠道。请先进入“管理渠道”添加或启用微信账号、飞书机器人。");
+    return false;
+  }
+  const unavailable = enabled.filter((channel) => channel.status.state !== "connected");
+  if (unavailable.length > 0) {
+    console.log("");
+    console.log("以下渠道还不能启动，请先处理配置或停用：");
+    for (const channel of unavailable) {
+      console.log(`- ${channel.record.type === "weixin" ? "微信" : "飞书"} / ${channel.status.account ?? channel.record.defaultAccountId ?? channel.record.id}: ${formatChannelStateForUser(channel.status.state)}${channel.status.lastError ? `，${channel.status.lastError}` : ""}`);
+    }
     return false;
   }
   console.log("");
@@ -462,7 +1051,7 @@ async function confirmStart(rl: Interface, startup: PreparedServeStartup, plan: 
       ...codexSummary(startup),
       cwd: startup.cwd,
     },
-    channel: weixinChannelSummary(plan.status),
+    channels: enabled.map(toServeChannelSummary),
     routes: routeSummary(plan),
   }));
   const answer = normalizeText(await rl.question("请选择 [1]: "));
@@ -501,13 +1090,26 @@ function codexSummary(startup: PreparedServeStartup) {
 }
 
 function routeSummary(plan: ServeChannelPlan): ServeRouteSummary {
+  const state = new FileStateStore();
+  const routes = state.listRoutes();
   return {
-    known: 0,
-    bound: 0,
+    known: routes.length,
+    bound: routes.filter((route) => route.activeSessionId).length,
+    pending: state.listPendingBindings().length,
     unboundPolicy: plan.unboundRoutePolicy,
     firstRouteBindingChoice: plan.firstRouteBindingChoice,
     initialSessionId: plan.initialSessionId,
     initialSessionTitle: plan.initialSessionTitle,
+  };
+}
+
+function toServeChannelSummary(channel: ManagedChannelSummary): ServeChannelSummary {
+  return {
+    id: channel.record.id,
+    type: channel.record.type,
+    enabled: channel.record.enabled,
+    status: channel.status,
+    capabilities: channel.capabilities,
   };
 }
 
@@ -521,13 +1123,22 @@ function weixinChannelSummary(status: ChannelStatus): ServeChannelSummary {
   };
 }
 
-async function startServeBridge(startup: PreparedServeStartup, plan: ServeChannelPlan): Promise<void> {
-  const channel = new WeixinAdapter({ verifyCodeProvider: askStdin });
+async function startServeBridge(
+  startup: PreparedServeStartup,
+  plan: ServeChannelPlan,
+  channelActions: ChannelActions,
+): Promise<void> {
+  const adapters = channelActions.createRuntimeAdapters();
+  if (adapters.length === 0) {
+    throw new Error("未发现可启动的渠道。请先运行 chat-codex，在“管理渠道”里添加并启用微信账号或飞书机器人。");
+  }
+  const logger = new ConsoleLogger(false);
   const codex = createRealCodexAdapter(startup);
   const bridge = new Bridge({
-    channel,
+    channels: new ChannelRegistry({ channels: adapters, logger }),
     codex,
-    logger: new ConsoleLogger(false),
+    state: new FileStateStore(),
+    logger,
     transcript: new ConsoleTranscriptSink(),
     cwd: startup.cwd,
     initialRouteBinding: plan.initialRouteBinding,
@@ -538,9 +1149,11 @@ async function startServeBridge(startup: PreparedServeStartup, plan: ServeChanne
 
   await bridge.start();
   printRuntimeSummary("多渠道 Codex 中间件", startup, { progressDisabled: true });
-  console.log(`- 微信渠道: ${formatChannelStateForUser(plan.status.state)}${plan.status.account ? `，账号 ${plan.status.account}` : ""}`);
+  console.log(`- 已启动渠道: ${adapters.map((adapter) => adapter.id).join(", ")}`);
   console.log(`- 新聊天策略: ${formatUnboundRoutePolicyForUser(plan.unboundRoutePolicy)}`);
-  console.log(`- 首个微信私聊: ${formatFirstRoutePresetForUser(plan.firstRouteBindingChoice, plan.initialSessionId, plan.initialSessionTitle)}`);
+  if (plan.firstRouteBindingChoice) {
+    console.log(`- 首个微信私聊: ${formatFirstRoutePresetForUser(plan.firstRouteBindingChoice, plan.initialSessionId, plan.initialSessionTitle)}`);
+  }
   await waitForShutdownSignal();
   await bridge.stop();
 }
@@ -552,6 +1165,20 @@ async function askStdin(prompt: string): Promise<string> {
   } finally {
     rl.close();
   }
+}
+
+async function askRequired(rl: Interface, prompt: string): Promise<string | undefined> {
+  for (;;) {
+    const answer = (await rl.question(prompt)).trim();
+    if (isBackText(answer)) return undefined;
+    if (answer) return answer;
+    console.log("这里不能为空，请重新输入；输入 0 返回上一级。");
+  }
+}
+
+async function askOptional(rl: Interface, prompt: string, defaultValue: string): Promise<string> {
+  const answer = (await rl.question(prompt)).trim();
+  return answer || defaultValue;
 }
 
 function questionWithReadline(rl: Interface): (prompt: string) => Promise<string> {
@@ -579,10 +1206,7 @@ function printRuntimeSummary(
   console.log(`${title}已启动`);
   console.log("- 会话: 按微信聊天分别绑定；首条消息按策略处理");
   console.log(`- 工作目录: ${startup.cwd}`);
-  console.log(`- Codex 接入: ${formatAdapterModeForUser(startup.adapterMode)}`);
-  console.log(`- 权限模式: ${formatPolicyForCli(startup.policy)}`);
-  console.log(`- 阶段进度: ${formatProgressModeForUser(startup.progressMode, display.progressDisabled)}`);
-  console.log(`- 并发上限: ${formatMaxConcurrentTurnsForUser(startup.maxConcurrentTurns)}`);
+  console.log(`- 新 session 默认权限: ${formatPolicyForCli(startup.policy)}`);
   console.log("- 退出: Ctrl+C");
 }
 
@@ -610,6 +1234,26 @@ function createRealCodexAdapter(startup: PreparedServeStartup): CodexAdapter {
 
 function normalizeText(input: string): string {
   return input.trim().toLowerCase();
+}
+
+function isAddWeixinAction(input: string): boolean {
+  const normalized = normalizeText(input);
+  return normalized === "w" || normalized === "wx" || normalized === "weixin" || normalized === "微信";
+}
+
+function isAddFeishuAction(input: string): boolean {
+  const normalized = normalizeText(input);
+  return normalized === "f" || normalized === "fs" || normalized === "feishu" || normalized === "lark" || normalized === "飞书";
+}
+
+function isNewSessionAction(input: string): boolean {
+  const normalized = normalizeText(input);
+  return normalized === "n" || normalized === "new" || normalized === "新建";
+}
+
+function isManualSessionInputAction(input: string): boolean {
+  const normalized = normalizeText(input);
+  return normalized === "m" || normalized === "manual" || normalized === "id" || normalized === "手动";
 }
 
 function isBackText(input: string): boolean {

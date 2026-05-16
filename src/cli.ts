@@ -8,7 +8,7 @@ import { WeixinAdapter } from "./channels/weixin/weixin-adapter.js";
 import { displayWeixinQrCode } from "./channels/weixin/weixin-qr-display.js";
 import { checkCodexCli, discoverCodexSessions, displayCodexSessionTitle, findCodexSessionById, formatCodexSessionTitleForDisplay, truncateDisplayText, type CodexPermissionMode, type CodexRunPolicy, type DiscoveredCodexSession } from "./codex/codex-cli.js";
 import { runServe } from "./cli/serve.js";
-import { runFeishuCodex, runFeishuStatus } from "./cli/feishu.js";
+import { runFeishuStatus } from "./cli/feishu.js";
 import {
   formatAdapterModeForUser,
   formatChannelStatusDetails,
@@ -45,18 +45,23 @@ interface PreparedCodexStartup {
 
 async function main(argv: string[]): Promise<void> {
   const [area, command, ...rest] = argv;
-  if (!area || area === "help" || area === "--help" || area === "-h") {
+  if (!area) {
+    await runServe({});
+    return;
+  }
+
+  if (area === "help" || area === "--help" || area === "-h") {
     printHelp();
     return;
   }
 
-  if (area === "codex" && command === "test") {
-    await runMockCodexFlow();
+  if (area.startsWith("--")) {
+    await runServe(parseStartupOptions(argv));
     return;
   }
 
-  if (area === "codex") {
-    await runServe(parseStartupOptions([command, ...rest].filter((item): item is string => Boolean(item))));
+  if (area === "test") {
+    await runMockCodexFlow();
     return;
   }
 
@@ -69,11 +74,6 @@ async function main(argv: string[]): Promise<void> {
     const adapter = new WeixinAdapter({ pollOnStart: false });
     await adapter.start();
     console.log(formatChannelStatusDetails(await adapter.getStatus(), adapter.getCapabilities()));
-    return;
-  }
-
-  if (area === "weixin" && command === "codex") {
-    await runServe(parseStartupOptions(rest));
     return;
   }
 
@@ -94,18 +94,8 @@ async function main(argv: string[]): Promise<void> {
     return;
   }
 
-  if (area === "feishu" && command === "codex") {
-    await runFeishuCodex(parseStartupOptions(rest));
-    return;
-  }
-
   if (area === "start" || area === "mock") {
     await runTerminalBridge("mock", parseStartupOptions(rest));
-    return;
-  }
-
-  if (area === "serve") {
-    await runServe(parseStartupOptions([command, ...rest].filter((item): item is string => Boolean(item))));
     return;
   }
 
@@ -433,15 +423,16 @@ function createRealCodexAdapter(startup: PreparedCodexStartup | { policy?: Codex
 
 function printHelp(): void {
   console.log([
-    "Codex Weixin Middleware",
+    "Chat Codex",
     "",
     "Commands:",
-    "  codex-wechat-bridge codex          启动统一交互入口（管理渠道并启动 Codex）",
-    "  codex-wechat-bridge codex test     运行本地 mock Codex/Channel 流程",
-    "  codex-wechat-bridge terminal mock  启动本地终端通道 + MockCodex",
-    "  codex-wechat-bridge terminal codex 启动本地终端通道 + Codex",
-    "  codex-wechat-bridge serve          启动多渠道配置向导（当前真实渠道支持微信）",
-    "    --session new|last|<id>          serve 下作为首个微信私聊预设；不会绑定整个微信账号",
+    "  chat-codex                         启动统一交互入口（管理渠道并启动 Codex）",
+    "  chat-codex test                    运行本地 mock Codex/Channel 流程",
+    "  chat-codex terminal mock           启动本地终端通道 + MockCodex",
+    "  chat-codex terminal codex          启动本地终端通道 + Codex",
+    "",
+    "Options:",
+    "    --session new|last|<id>          设置启动时首个微信私聊预设；不会绑定整个微信账号",
     "    --cwd <dir>, --workdir <dir>     设置新会话工作目录；目录不存在会自动创建",
     "    --permission approval|full       设置安全沙箱或完全权限",
     "    --codex-adapter app-server|exec  设置 Codex 接入方式；默认 app-server，支持微信审批",
@@ -449,12 +440,10 @@ function printHelp(): void {
     "    --progress brief|detailed|silent 设置默认进度投递模式（微信渠道固定禁用）",
     "    --max-concurrent-turns <n>       设置全局 Codex turn 并发上限；默认不限制",
     "    --no-interactive                 非交互启动；需要已有微信登录态",
-    "  codex-wechat-bridge weixin codex   启动微信渠道管理向导（当前等同 serve）",
-    "  codex-wechat-bridge weixin status  查看 WeixinAdapter 当前状态",
-    "  codex-wechat-bridge weixin login   显示终端二维码并等待微信扫码登录",
-    "  codex-wechat-bridge feishu codex   启动飞书私聊通道 + Codex",
-    "  codex-wechat-bridge feishu status  查看飞书配置和连接状态",
-    "  codex-wechat-bridge start          当前等同 terminal mock",
+    "  chat-codex weixin status           查看 WeixinAdapter 当前状态",
+    "  chat-codex weixin login            显示终端二维码并等待微信扫码登录",
+    "  chat-codex feishu status           查看飞书配置和连接状态",
+    "  chat-codex start                   当前等同 terminal mock",
   ].join("\n"));
 }
 

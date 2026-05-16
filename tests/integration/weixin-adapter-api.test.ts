@@ -65,6 +65,40 @@ test("WeixinAdapter starts QR login, waits for confirmation, and stores account 
   assert.ok(calls.some((call) => call.url.includes("get_qrcode_status")));
 });
 
+test("WeixinAdapter waitLogin returns timeout when QR status polling reaches deadline", async () => {
+  const store = new FileWeixinAccountStore(tempStateDir());
+  const fetchImpl: FetchLike = async (input, init) => {
+    const url = String(input);
+    if (url.includes("get_bot_qrcode")) {
+      return jsonResponse({ qrcode: "qr-timeout", qrcode_img_content: "https://login.example/qr-timeout" });
+    }
+    if (url.includes("get_qrcode_status")) {
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => {
+          const error = new Error("aborted");
+          error.name = "AbortError";
+          reject(error);
+        });
+      });
+    }
+    throw new Error(`unexpected fetch ${url}`);
+  };
+  const adapter = new WeixinAdapter({
+    baseUrl: "https://api.example",
+    store,
+    pollOnStart: false,
+    loginPollIntervalMs: 0,
+    apiOptions: { fetch: fetchImpl },
+  });
+
+  const start = await adapter.startLogin();
+  const result = await adapter.waitLogin(start.sessionKey, 5);
+
+  assert.equal(result.state, "login_required");
+  assert.equal(result.message, "登录超时，请重试。");
+  assert.equal((await adapter.getStatus()).lastError, "login timeout");
+});
+
 test("WeixinAdapter sends text messages without context token by default", async () => {
   const store = new FileWeixinAccountStore(tempStateDir());
   store.saveAccount({

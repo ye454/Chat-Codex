@@ -12,7 +12,6 @@ import {
   formatStartConfirmation,
   formatUnboundRoutePolicyMenu,
   parseChannelManageChoice,
-  parseCodexSettingsChoice,
   parseFirstRouteSetupChoice,
   parseRouteManageChoice,
   parseServeHomeChoice,
@@ -63,16 +62,18 @@ test("serve wizard formats channel-first home summary with Chinese actions", () 
   assert.ok(text.includes("当前位置：首页"));
   assert.ok(text.includes("渠道"));
   assert.ok(text.includes("聊天绑定"));
-  assert.ok(text.includes("Codex 默认设置"));
+  assert.ok(text.includes("权限"));
   assert.ok(text.includes("1. 管理渠道"));
   assert.ok(text.includes("2. 聊天绑定"));
-  assert.ok(text.includes("3. Codex 默认设置"));
+  assert.ok(text.includes("3. 权限设置"));
   assert.ok(text.includes("5. 启动服务"));
   assert.ok(text.includes("0. 退出"));
-  assert.ok(text.includes("1. 微信（weixin）- 已启用，已连接"));
+  assert.ok(text.includes("- 微信（weixin）- 已启用，已连接"));
   assert.ok(text.includes("主要能力: 文本、私聊、图片/文件、输入状态、扫码登录"));
-  assert.ok(text.includes("首个微信私聊: 不预设，按新聊天策略处理"));
-  assert.doesNotMatch(text, /enabled=true|state=connected|account=|unlimited|Adapter:|Permission:|Progress:|启动配置/);
+  assert.ok(text.includes("待生效绑定: 0"));
+  assert.ok(text.includes("配置好后，需要启动服务才会真正的工作！"));
+  assert.doesNotMatch(text, /首个微信私聊: 不预设/);
+  assert.doesNotMatch(text, /Codex 默认设置|接入方式|阶段进度|并发上限|enabled=true|state=connected|account=|unlimited|Adapter:|Permission:|Progress:|启动配置/);
 });
 
 test("serve wizard parses home and submenu choices", () => {
@@ -80,6 +81,7 @@ test("serve wizard parses home and submenu choices", () => {
   assert.equal(parseServeHomeChoice("1"), "manage_channels");
   assert.equal(parseServeHomeChoice("2"), "manage_routes");
   assert.equal(parseServeHomeChoice("3"), "codex_settings");
+  assert.equal(parseServeHomeChoice("权限"), "codex_settings");
   assert.equal(parseServeHomeChoice("4"), "status");
   assert.equal(parseServeHomeChoice("5"), "start");
   assert.equal(parseServeHomeChoice("0"), "exit");
@@ -93,11 +95,6 @@ test("serve wizard parses home and submenu choices", () => {
   assert.equal(parseRouteManageChoice("2"), "first_route");
   assert.equal(parseRouteManageChoice("3"), "bindings");
   assert.equal(parseRouteManageChoice("0"), "back");
-
-  assert.equal(parseCodexSettingsChoice(""), "adapter");
-  assert.equal(parseCodexSettingsChoice("2"), "permission");
-  assert.equal(parseCodexSettingsChoice("4"), "concurrency");
-  assert.equal(parseCodexSettingsChoice("0"), "back");
 
   assert.equal(parseUnboundRoutePolicyChoice(""), "auto_new");
   assert.equal(parseUnboundRoutePolicyChoice("2"), "ask");
@@ -127,7 +124,9 @@ test("serve wizard formats mode pages with return actions", () => {
   const routeText = formatRouteBindingMenu(routes);
   assert.ok(routeText.includes("当前位置：首页 > 聊天绑定"));
   assert.ok(routeText.includes("新聊天策略"));
-  assert.ok(routeText.includes("设置首个微信私聊绑定"));
+  assert.ok(routeText.includes("查看/切换聊天绑定"));
+  assert.ok(routeText.includes("设置新聊天策略"));
+  assert.doesNotMatch(routeText, /设置首个微信私聊绑定/);
   assert.ok(routeText.includes("0. 返回"));
 
   const policyText = formatUnboundRoutePolicyMenu("ask");
@@ -148,8 +147,10 @@ test("serve wizard formats mode pages with return actions", () => {
     progressDisabled: true,
     cwd: "/repo",
   });
-  assert.ok(settingsText.includes("当前位置：首页 > Codex 默认设置"));
-  assert.ok(settingsText.includes("3. 新 session 工作目录: /repo"));
+  assert.ok(settingsText.includes("当前位置：首页 > 权限设置"));
+  assert.ok(settingsText.includes("当前: 审批模式"));
+  assert.ok(settingsText.includes("1. 审批模式"));
+  assert.ok(settingsText.includes("2. 完全权限"));
   assert.ok(settingsText.includes("0. 返回"));
 
   const startText = formatStartConfirmation({
@@ -164,6 +165,9 @@ test("serve wizard formats mode pages with return actions", () => {
     routes,
   });
   assert.ok(startText.includes("即将启动"));
+  assert.ok(startText.includes("新 session 默认权限"));
+  assert.ok(startText.includes("配置好后，需要启动服务才会真正的工作！"));
+  assert.doesNotMatch(startText, /Codex 默认设置|接入方式|阶段进度|并发上限/);
   assert.ok(startText.includes("1. 启动"));
   assert.ok(startText.includes("0. 返回"));
 });

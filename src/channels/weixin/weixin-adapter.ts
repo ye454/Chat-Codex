@@ -233,7 +233,12 @@ export class WeixinAdapter implements ChannelAdapter {
     }
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
-      const result = await this.pollLoginOnce(this.activeLogin);
+      let result: ChannelLoginResult | undefined;
+      try {
+        result = await this.pollLoginOnce(this.activeLogin, Math.max(1, Math.min(35_000, deadline - Date.now())));
+      } catch (error) {
+        if (!isAbortError(error)) throw error;
+      }
       if (result) return result;
       await sleep(this.loginPollIntervalMs);
     }
@@ -371,12 +376,12 @@ export class WeixinAdapter implements ChannelAdapter {
     return Boolean(this.handler);
   }
 
-  private async pollLoginOnce(login: ActiveLogin): Promise<ChannelLoginResult | undefined> {
+  private async pollLoginOnce(login: ActiveLogin, timeoutMs = 35_000): Promise<ChannelLoginResult | undefined> {
     const response = await this.api.getQrStatus({
       qrcode: login.qrcode,
       baseUrl: login.currentBaseUrl,
       verifyCode: login.pendingVerifyCode,
-      timeoutMs: 35_000,
+      timeoutMs,
     });
     switch (response.status) {
       case "confirmed":
@@ -692,6 +697,10 @@ function withoutContextToken(body: WeixinSendMessageRequest): WeixinSendMessageR
 function retryDelayMs(baseDelayMs: number, attempt: number): number {
   if (baseDelayMs <= 0) return 0;
   return baseDelayMs * (2 ** attempt);
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === "AbortError";
 }
 
 export function weixinMessageToChannelMessage(channelId: string, accountId: string, raw: WeixinMessage): ChannelMessage {

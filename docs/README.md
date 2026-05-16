@@ -32,7 +32,10 @@
   本地文件持久化设计。说明渠道实例、账号目录、route/session 绑定、session owner 全局唯一约束和第一阶段 JSON 文件落地路径。
 
 - `cli-interaction-redesign.zh-CN.md`
-  CLI 交互重设计。说明 `weixin codex` / `cli:serve` 应先管理渠道、再管理聊天绑定和 Codex 默认设置，并记录首个 route 绑定 session 的语义修复方案。
+  CLI 交互重设计历史文档。记录上一轮普通 CLI 首页、子模式、返回/退出和首个 route 绑定语义修复方案。
+
+- `cli-core-interaction-design.zh-CN.md`
+  当前 CLI/TUI 核心交互设计。说明微信当前一个账号 + 一个主聊天绑定 session，飞书一个机器人 + 多个 `chat_id` 分别绑定 session；TUI 只负责展示，业务动作必须进入 actions/services。
 
 - `feishu-adapter-design.zh-CN.md`
   飞书适配设计。说明第一阶段如何用飞书 WebSocket 长连接接入私聊文本消息，并默认投递 Codex 进度。
@@ -92,11 +95,12 @@ secrets/feishu.local.md
 3. 读 `channel-delivery-policy.zh-CN.md`，确认不同渠道的消息投递策略边界。
 4. 读 `multi-channel-design.zh-CN.md`，确认多渠道 route/session 绑定、并发和配置交互设计。
 5. 读 `local-state-persistence.zh-CN.md`，确认本地文件持久化、渠道账号目录和 session owner 约束。
-6. 读 `cli-interaction-redesign.zh-CN.md`，确认 CLI 首页、子模式、返回/退出和首个 route 绑定语义。
-7. 读 `development-and-test.zh-CN.md`，确认开发和测试报告要求。
-8. 读 `git-management.zh-CN.md`，确认提交边界和忽略规则。
-9. Agent 继续读 `agent-guide.zh-CN.md`，确认执行规范。
-10. 需要 Codex 协议或微信插件源码细节时，先读 `../references/README.md`，按里面的说明拉取本地参考源码。
+6. 读 `cli-core-interaction-design.zh-CN.md`，确认当前 CLI/TUI 首页、渠道配置、微信主聊天绑定和飞书多 chat_id 绑定边界。
+7. 读 `cli-interaction-redesign.zh-CN.md`，了解上一轮普通 CLI 重构背景和历史设计。
+8. 读 `development-and-test.zh-CN.md`，确认开发和测试报告要求。
+9. 读 `git-management.zh-CN.md`，确认提交边界和忽略规则。
+10. Agent 继续读 `agent-guide.zh-CN.md`，确认执行规范。
+11. 需要 Codex 协议或微信插件源码细节时，先读 `../references/README.md`，按里面的说明拉取本地参考源码。
 
 ## 分阶段工作顺序
 
@@ -125,17 +129,15 @@ npm run cli:terminal:codex
 第二阶段本地验证入口：
 
 ```bash
-npm run codex
-npm run cli:codex
+npm run chat-codex
+npm run cli:chat-codex
 npm run cli:weixin:status
 npm run cli:weixin:login
-npm run cli:weixin:codex
 npm run cli:feishu:status
-npm run cli:feishu:codex
 ```
 
-`npm run codex` 是当前推荐主入口，会进入统一启动交互；`npm run cli:codex` 是同等别名。渠道专用入口继续保留，用于明确只启动微信或飞书私聊。
+`npm run chat-codex` 是当前推荐主入口，会进入统一启动交互；`npm run cli:chat-codex` 是同等别名。微信和飞书不再暴露单渠道 Codex 启动入口，统一入口会按本地配置启动所有已启用渠道。
 
-`weixin login` 已具备二维码登录入口，会在终端渲染二维码并保留备用链接。`weixin codex` 是真实微信通道 + Codex 的启动入口：启动时会读取本地微信凭证，已登录则直接启动，未登录则弹出二维码登录流程。默认 app-server 模式可以把 Codex command/file/permissions 审批请求推送到微信，并由 `/OK` 或 `/NO` 回写 Codex。真实扫码登录完成后要追加真实微信通道测试报告。
+`weixin login` 已具备二维码登录入口，会在终端渲染二维码并保留备用链接。真实微信通道 + Codex 统一通过 `npm run chat-codex` 启动；默认 app-server 模式可以把 Codex command/file/permissions 审批请求推送到微信，并由 `/OK` 或 `/NO` 回写 Codex。真实扫码登录完成后要追加真实微信通道测试报告。
 
-`feishu status` 会读取 `FEISHU_APP_ID`、`FEISHU_APP_SECRET` 等环境变量并检查机器人身份；`feishu codex` 会启动飞书私聊文本通道 + Codex。飞书 App Secret 只允许放在本机环境变量或 `secrets/`，不要写入 Git 跟踪文件。
+`feishu status` 会读取 `FEISHU_APP_ID`、`FEISHU_APP_SECRET` 等环境变量并检查机器人身份；飞书私聊文本通道 + Codex 统一通过 `npm run chat-codex` 添加机器人并启动服务。飞书 App Secret 只允许放在本机环境变量或 `secrets/`，不要写入 Git 跟踪文件。

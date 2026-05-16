@@ -14,6 +14,7 @@ import { replyTargetFromMessage } from "../protocol/channel.js";
 import type { ChannelDeliveryPolicy, ChannelRefreshCommandPolicy } from "../protocol/delivery-policy.js";
 import { DEFAULT_CHANNEL_DELIVERY_POLICY, normalizeChannelDeliveryPolicy, normalizeDeliveryCommandName } from "../protocol/delivery-policy.js";
 import { MemoryStateStore } from "../state/memory-state-store.js";
+import { pendingBindingOwnerRouteKey } from "../state/memory-state-store.js";
 import type { SessionBindings } from "../state/session-bindings.js";
 import { BRIDGE_SEND_FILE_PREFIX, extractBridgeSendFileRefs, stripBridgeSendFileRefs } from "./media-extractor.js";
 import type { TurnScheduler } from "./turn-scheduler.js";
@@ -152,6 +153,7 @@ export class Bridge {
     const target = replyTargetFromMessage(message);
     this.routeMessages.set(message.routeKey, message);
     this.routeTargets.set(message.routeKey, target);
+    this.state.recordRouteMessage(message);
     this.claimPendingInitialRouteBindingRoute(message);
     const command = parseCommand(text);
     if (command.isCommand) {
@@ -295,6 +297,7 @@ export class Bridge {
       title: `channel:${message.routeKey}`,
     });
     this.state.bindSession(message.routeKey, session);
+    this.applyStoredSessionRunPolicy(session.id);
     this.routeSessionSelections.delete(message.routeKey);
     this.clearPendingInitialRouteBindingIfApplies(message);
     this.applyRouteCollaborationModeToSession(message.routeKey, session.id);
@@ -318,6 +321,7 @@ export class Bridge {
       if (!activated.ok) {
         throw new Error(`Codex session is owned by another route: ${activated.owner?.ownerRouteKey ?? "unknown"}`);
       }
+      this.applyStoredSessionRunPolicy(session.id);
       return session;
     }
     if (this.shouldConsumePendingInitialRouteBinding(message)) {
@@ -329,6 +333,7 @@ export class Bridge {
       title: `channel:${message.routeKey}`,
     });
     this.state.bindSession(message.routeKey, session);
+    this.applyStoredSessionRunPolicy(session.id);
     this.applyRouteCollaborationModeToSession(message.routeKey, session.id);
     return session;
   }
@@ -616,6 +621,7 @@ export class Bridge {
         return { ok: false, reason: "owner_conflict", message: ownerConflictText(sessionId, activated.owner?.ownerRouteKey ?? "unknown") };
       }
       const mode = this.syncRouteCollaborationModeFromSession(message.routeKey, session.id);
+      this.applyStoredSessionRunPolicy(session.id);
       this.routeSessionSelections.delete(message.routeKey);
       this.clearPendingInitialRouteBindingIfApplies(message);
       await this.sendText(target, [
@@ -632,6 +638,7 @@ export class Bridge {
   }
 
   private shouldConsumePendingInitialRouteBinding(message: ChannelMessage): boolean {
+    if (this.state.getPendingBindingForMessage(message)) return true;
     return Boolean(
       this.pendingInitialRouteBinding
       && message.conversation.kind === "direct"
@@ -640,7 +647,8 @@ export class Bridge {
   }
 
   private async consumePendingInitialRouteBinding(message: ChannelMessage): Promise<CodexSession> {
-    const pending = this.pendingInitialRouteBinding;
+    const persisted = this.state.consumePendingBindingForMessage(message);
+    const pending = persisted?.binding ?? this.pendingInitialRouteBinding;
     this.pendingInitialRouteBinding = undefined;
     this.pendingInitialRouteKey = undefined;
     if (!pending || pending.type === "new") {
@@ -650,23 +658,28 @@ export class Bridge {
         title: `channel:${message.routeKey}`,
       });
       this.state.bindSession(message.routeKey, session);
+      this.applyStoredSessionRunPolicy(session.id);
       this.applyRouteCollaborationModeToSession(message.routeKey, session.id);
       return session;
     }
 
     const sessionId = pending.sessionId;
-    const claim = this.state.claimSessionOwner(message.routeKey, sessionId);
-    if (!claim.ok) throw ownerConflictError(sessionId, claim.owner.ownerRouteKey);
+    const pendingOwnerRouteKey = persisted ? pendingBindingOwnerRouteKey(persisted.id) : undefined;
+    const existingOwner = this.state.getSessionOwner(sessionId);
+    const claim = persisted && pendingOwnerRouteKey && existingOwner?.ownerRouteKey === pendingOwnerRouteKey
+      ? this.state.transferSessionOwner(pendingOwnerRouteKey, message.routeKey, sessionId)
+      : this.state.claimSessionOwner(message.routeKey, sessionId);
+    if (!claim.ok) throw ownerConflictError(sessionId, claim.owner?.ownerRouteKey ?? "unknown");
     let session: CodexSession;
     try {
       session = await this.codex.resumeSession(sessionId);
     } catch (error) {
-      if (claim.newlyClaimed) this.state.rollbackSessionOwnerClaim(message.routeKey, sessionId);
+      if ("newlyClaimed" in claim && claim.newlyClaimed) this.state.rollbackSessionOwnerClaim(message.routeKey, sessionId);
       throw error;
     }
     const activated = this.state.activateOwnedSession(message.routeKey, session);
     if (!activated.ok) {
-      if (claim.newlyClaimed) this.state.rollbackSessionOwnerClaim(message.routeKey, sessionId);
+      if ("newlyClaimed" in claim && claim.newlyClaimed) this.state.rollbackSessionOwnerClaim(message.routeKey, sessionId);
       throw ownerConflictError(sessionId, activated.owner?.ownerRouteKey ?? "unknown");
     }
     if (this.routeCollaborationModes.has(message.routeKey)) {
@@ -674,10 +687,12 @@ export class Bridge {
     } else {
       this.syncRouteCollaborationModeFromSession(message.routeKey, session.id);
     }
+    this.applyStoredSessionRunPolicy(session.id);
     return session;
   }
 
   private clearPendingInitialRouteBindingIfApplies(message: ChannelMessage): void {
+    this.state.clearPendingBindingForMessage(message);
     if (this.shouldConsumePendingInitialRouteBinding(message)) {
       this.pendingInitialRouteBinding = undefined;
       this.pendingInitialRouteKey = undefined;
@@ -1124,7 +1139,9 @@ export class Bridge {
       return;
     }
     if (rawMode === "approval" || rawMode === "approve" || rawMode === "safe" || rawMode === "审批") {
-      this.codex.setRunPolicy({ permissionMode: "approval", sandbox: "workspace-write" }, sessionId);
+      const policy: CodexRunPolicy = { permissionMode: "approval", sandbox: "workspace-write" };
+      this.codex.setRunPolicy(policy, sessionId);
+      if (sessionId) this.state.setSessionRunPolicy(sessionId, policy);
       const policyStatus = this.runPolicyStatus(sessionId);
       await this.sendText(target, [
         "已切换 Codex 权限模式: approval",
@@ -1147,7 +1164,9 @@ export class Bridge {
         ].join("\n"));
         return;
       }
-      this.codex.setRunPolicy({ permissionMode: "full" }, sessionId);
+      const policy: CodexRunPolicy = { permissionMode: "full" };
+      this.codex.setRunPolicy(policy, sessionId);
+      if (sessionId) this.state.setSessionRunPolicy(sessionId, policy);
       await this.sendText(target, [
         "已切换 Codex 权限模式: full",
         sessionId ? `作用范围: 当前会话 \`${sessionId}\`` : "作用范围: 默认策略（后续新会话）",
@@ -1309,8 +1328,9 @@ export class Bridge {
     const routeKey = message.routeKey;
     const channelStatus = await this.channels.getStatus(message.channelId);
     const binding = this.state.getBinding(routeKey);
-    const pendingInitialBinding = !binding && this.shouldConsumePendingInitialRouteBinding(message)
-      ? this.pendingInitialRouteBinding
+    const pendingInitialBinding = !binding
+      ? this.state.getPendingBindingForMessage(message)?.binding
+        ?? (this.shouldConsumePendingInitialRouteBinding(message) ? this.pendingInitialRouteBinding : undefined)
       : undefined;
     const localSession = binding ? this.state.getSession(binding.sessionId) : undefined;
     const adapterStatus: CodexSessionStatus = binding
@@ -1572,7 +1592,13 @@ export class Bridge {
   }
 
   private runPolicyStatus(sessionId?: string): CodexRunPolicyStatus | undefined {
+    if (sessionId) this.applyStoredSessionRunPolicy(sessionId);
     return this.codex.getRunPolicyStatus?.(sessionId);
+  }
+
+  private applyStoredSessionRunPolicy(sessionId: string): void {
+    const policy = this.state.getSessionRunPolicy(sessionId);
+    if (policy) this.codex.setRunPolicy?.(policy, sessionId);
   }
 }
 

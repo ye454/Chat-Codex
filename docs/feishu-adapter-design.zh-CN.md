@@ -427,13 +427,13 @@ routeKey = feishu:<accountId>:direct:<chat_id>
 
 建议分两步实现。
 
-### P1：独立飞书入口
+### P1：飞书状态检查和统一入口
 
-已加独立入口便于真实验证：
+当前保留状态检查，真实启动统一走主入口：
 
 ```bash
 npm run cli:feishu:status
-npm run cli:feishu:codex
+npm run chat-codex
 ```
 
 行为：
@@ -442,9 +442,9 @@ npm run cli:feishu:codex
 2. 交互式终端缺少 App ID / App Secret 时提示输入，只用于本次进程，不写入仓库。
 3. probe 飞书机器人身份。
 4. 展示中文状态摘要。
-5. `feishu codex` 检查 Codex 后启动 WebSocket 长连接。
+5. `chat-codex` 添加飞书机器人后，用户回到首页选择“启动服务”，再启动 WebSocket 长连接。
 
-这一步不阻塞现有 `weixin codex` 交互。
+微信和飞书不再暴露单渠道 Codex 启动入口。
 
 ### P2：接入统一渠道向导
 
@@ -498,7 +498,7 @@ Codex Chat Bridge
 - `/progress silent` 后不再投递 progress。
 - `/resume` 编号选择在飞书私聊 route 中正常工作。
 - stop 时关闭 WebSocket。
-- CLI help 暴露 `feishu status` 和 `feishu codex`，package scripts 可用。
+- CLI help 暴露 `feishu status`，飞书启动统一通过 `chat-codex`。
 
 真实验证：
 
@@ -507,7 +507,7 @@ Codex Chat Bridge
 3. 启用长连接事件。
 4. 配置 `im.message.p2p_msg:readonly`、`im:message:send_as_bot` 等最小权限。
 5. 设置环境变量。
-6. 运行 `npm run cli:feishu:codex`。
+6. 运行 `npm run chat-codex`，添加飞书机器人并启动服务。
 7. 给机器人发私聊文本。
 8. 确认飞书里能看到：
    - task-start
@@ -530,10 +530,10 @@ Codex Chat Bridge
 1. 添加 `@larksuiteoapi/node-sdk` 依赖。
 2. 新增 `src/channels/feishu`，实现 credentials、client、WS lifecycle 和私聊文本转换。
 3. 加 fake SDK 单元测试。
-4. 加 `cli:feishu:codex` 最小入口。
+4. 加 `feishu status` 状态检查入口。
 5. 用 Bridge 集成测试验证默认进度投递。
 6. 本地真实飞书机器人验证。
-7. 再把飞书纳入统一 `serve` 渠道管理页。
+7. 把飞书纳入统一 `chat-codex` 渠道管理页。
 
 当前代码已完成 1-5。第 6 步需要真实飞书应用完成事件订阅后，由用户在飞书私聊里发送消息验证；第 7 步留到统一渠道向导迭代。
 

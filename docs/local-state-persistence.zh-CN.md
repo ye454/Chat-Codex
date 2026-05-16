@@ -2,9 +2,16 @@
 
 ## 背景
 
-当前 `MemoryStateStore` 只在进程内保存 route/session 绑定。服务重启后，微信或飞书私聊需要重新触发首个 route 绑定策略，用户容易反复选择 Codex session。
+早期 `MemoryStateStore` 只在进程内保存 route/session 绑定。服务重启后，微信或飞书私聊需要重新选择 Codex session，用户容易反复配置。
 
-接下来需要把渠道配置、账号登录态元数据、route/session 绑定持久化到本地文件。第一阶段先用 JSON 文件，不引入 SQLite，目标是实现简单、可排查、可迁移。
+当前已经把渠道配置、账号登录态元数据、route/session 绑定、session 权限和待生效绑定持久化到本地 JSON 文件。第一阶段不引入 SQLite，目标是实现简单、可排查、可迁移。
+
+当前落地状态：
+
+- `FileStateStore` 已实现 `routes.json`、`session-owners.json`、`session-policies.json` 和 `pending-bindings.json` 的读写。
+- 真实微信/飞书启动路径已接入文件状态存储。
+- `ChannelConfigStore` 已实现 `config.json`、`instance.json` 和账号 `account.json` 的目录骨架写入。
+- CLI 已提供渠道管理页和聊天绑定页；schema 迁移和损坏恢复仍在后续阶段。
 
 ## 设计结论
 
@@ -203,21 +210,53 @@ state/
 - 切换 active session 不自动释放旧 session owner。
 - 释放 owner 必须显式操作，并检查 session 没有运行中任务、pending approval 和排队消息。
 
+### session-policies.json
+
+保存 session 级 Codex 运行权限。它不是渠道配置，也不是全局默认值，只对指定 session 后续 turn 生效。
+
+```json
+{
+  "schemaVersion": 1,
+  "updatedAt": "2026-05-16T00:00:00.000Z",
+  "policies": [
+    {
+      "sessionId": "session_abc",
+      "runPolicy": {
+        "permissionMode": "approval",
+        "sandbox": "workspace-write"
+      },
+      "createdAt": "2026-05-16T00:00:00.000Z",
+      "updatedAt": "2026-05-16T00:00:00.000Z"
+    }
+  ]
+}
+```
+
+约束：
+
+- CLI 在“绑定详情”里设置当前 session 权限时写入这里。
+- Bridge 恢复已绑定 session 时，必须把这里的 run policy 应用到 Codex adapter。
+- 没有记录时使用启动时的默认权限。
+- `full` 必须二次确认，不能通过普通回车误触。
+- 权限只影响后续 turn，不改写正在运行的任务。
+
 ### pending-bindings.json
 
-保存首个 route 绑定策略，例如启动时选择“第一个私聊绑定新 session / 绑定已有 session”。
+保存还没有真实 routeKey 的待生效绑定。当前主要用于微信账号添加后预设“主聊天绑定哪个 session”；收到第一条微信私聊后再转成真实 route 绑定。飞书不使用渠道级 pending 绑定，因为飞书机器人下会出现多个 `chat_id`。
 
 ```json
 {
   "schemaVersion": 1,
   "pending": [
     {
-      "id": "first-feishu-direct",
-      "channelId": "feishu-main",
-      "accountId": "default",
+      "id": "weixin-primary-weixin-wx-account-wx-account",
+      "channelId": "weixin-wx-account",
+      "accountId": "wx-account",
       "conversationKind": "direct",
+      "label": "微信 / wx-account / 主聊天",
       "binding": {
-        "type": "new"
+        "type": "existing",
+        "sessionId": "019e2e99..."
       },
       "createdAt": "2026-05-16T00:00:00.000Z"
     }
@@ -228,7 +267,7 @@ state/
 第一个符合条件的 route 到达后：
 
 1. 生成真实 routeKey。
-2. 创建或 claim session owner。
+2. 创建新 session，或把 pending owner 转移为真实 route owner。
 3. 写入 `routes.json` 和 `session-owners.json`。
 4. 删除对应 pending binding。
 
@@ -345,11 +384,12 @@ state/channels/feishu/feishu-main/
 主入口读取 `state/bridge/config.json` 后展示：
 
 ```text
-1. 启动服务
-2. 管理渠道
-3. 管理聊天绑定
-4. Codex 默认设置
-5. 查看状态
+1. 管理渠道
+2. 聊天绑定
+3. 权限设置
+4. 状态详情
+5. 启动服务
+0. 退出
 ```
 
 ### 管理渠道
@@ -420,7 +460,7 @@ file.json.tmp -> fsync -> rename(file.json.tmp, file.json)
 ### P2：渠道实例配置
 
 - 新增 `config.json`。
-- `npm run codex` 从配置读取渠道实例。
+- `npm run chat-codex` 从配置读取渠道实例。
 - 微信和飞书快捷入口可以自动创建默认实例：
   - `weixin-main`
   - `feishu-main`

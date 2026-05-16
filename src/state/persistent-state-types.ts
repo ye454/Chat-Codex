@@ -1,0 +1,125 @@
+import type { ConversationKind } from "../protocol/channel.js";
+import type { CodexRunPolicy } from "../codex/codex-cli.js";
+
+export const LOCAL_STATE_SCHEMA_VERSION = 1;
+
+export interface RouteIdentityRecord {
+  lastSenderId?: string;
+  lastSenderDisplayName?: string;
+  openId?: string;
+  userId?: string;
+  unionId?: string;
+  tenantKey?: string;
+}
+
+export interface RoutePolicyRecord {
+  unboundRoute?: string;
+  progressMode?: string;
+}
+
+export interface RouteRecord {
+  routeKey: string;
+  channelId: string;
+  channelType?: string;
+  accountId: string;
+  conversationKind: ConversationKind;
+  conversationId: string;
+  activeSessionId?: string;
+  displayName?: string;
+  identity?: RouteIdentityRecord;
+  policy?: RoutePolicyRecord;
+  lastSeenAt?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface RoutesDocument {
+  schemaVersion: number;
+  updatedAt: string;
+  routes: RouteRecord[];
+}
+
+export interface SessionOwnerRecord {
+  sessionId: string;
+  ownerRouteKey: string;
+  claimedAt: string;
+  updatedAt: string;
+}
+
+export interface SessionOwnersDocument {
+  schemaVersion: number;
+  updatedAt: string;
+  owners: SessionOwnerRecord[];
+}
+
+export interface SessionPolicyRecord {
+  sessionId: string;
+  runPolicy: CodexRunPolicy;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SessionPoliciesDocument {
+  schemaVersion: number;
+  updatedAt: string;
+  policies: SessionPolicyRecord[];
+}
+
+export type PendingSessionBinding =
+  | { type: "existing"; sessionId: string }
+  | { type: "new" };
+
+export interface PendingBindingRecord {
+  id: string;
+  channelId: string;
+  accountId: string;
+  conversationKind: ConversationKind;
+  conversationId?: string;
+  label?: string;
+  binding: PendingSessionBinding;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface PendingBindingsDocument {
+  schemaVersion: number;
+  updatedAt: string;
+  pending: PendingBindingRecord[];
+}
+
+export interface ChannelInstanceRecord {
+  id: string;
+  type: string;
+  enabled: boolean;
+  stateDir: string;
+  defaultAccountId?: string;
+  credentialSource?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface BridgeConfigDocument {
+  schemaVersion: number;
+  updatedAt: string;
+  channels: ChannelInstanceRecord[];
+  codexDefaults?: {
+    adapter?: string;
+    permission?: string;
+    progressMode?: string;
+    maxConcurrentTurns?: number | null;
+  };
+}
+
+export interface ChannelInstanceDocument extends ChannelInstanceRecord {
+  schemaVersion: number;
+}
+
+export interface ChannelAccountDocument {
+  schemaVersion: number;
+  channelId: string;
+  channelType: string;
+  accountId: string;
+  credentialSource?: string;
+  metadata?: Record<string, unknown>;
+  updatedAt: string;
+}

@@ -107,7 +107,7 @@ Terminal / Weixin / future channels
 - `MockChannelAdapter` 用于自动化测试。
 - `TerminalChannelAdapter` 用于本地 CLI 交互和管道测试，模拟微信输入输出。
 - `WeixinAdapter` 已进入第二阶段初版：二维码登录 API、登录确认轮询、账号 token 文件存储、文本 `sendmessage`、入站消息映射已经实现并通过 fake-fetch 测试。
-- 真实微信启动入口是 `weixin codex`：启动时会先检查 Codex，再检查本地微信凭证；已登录时跳过二维码，未登录时发起二维码登录并在登录完成后启动长轮询。
+- 真实微信启动入口统一为 `chat-codex`：先检查 Codex，再在“管理渠道”里添加或检查本地微信凭证；已登录时跳过二维码，未登录时发起二维码登录，用户回到首页选择“启动服务”后启动长轮询。
 - 真实微信扫码登录、`getupdates` 长轮询闭环和真实微信收发需要用户后续协助测试。
 - `MockCodexAdapter` 用于稳定测试审批、阶段性事件和命令。
 - `AppServerCodexAdapter` 已具备 stdio JSON-RPC 接入能力，默认用于真实 Codex：支持 `initialize`、`thread/start`、`thread/resume`、`turn/start`、`turn/interrupt`，并把 app-server server request 审批转成微信审批。
@@ -432,10 +432,10 @@ type CodexSessionStatus =
 CLI 形态草案：
 
 ```bash
-codex-wechat-bridge start
-codex-wechat-bridge status
-codex-wechat-bridge weixin login
-codex-wechat-bridge codex test
+chat-codex start
+chat-codex status
+chat-codex weixin login
+chat-codex test
 ```
 
 其中 `weixin login` 由本项目的 Weixin Adapter 实现或包装 `openclaw-weixin` 的登录逻辑，不能调用 OpenClaw CLI。
@@ -579,7 +579,7 @@ src/channels/<channel-id>/
 - 已实现从 `$CODEX_HOME/state_5.sqlite`、`$CODEX_HOME/session_index.jsonl` 和 `$CODEX_HOME/sessions/**/*.jsonl` 发现历史会话，并优先展示 Codex 保存的标题或首条用户消息。
 - 已实现 `terminal codex` 启动时先选会话、再选权限模式，并在启动摘要里显示本次会话、工作目录、权限和进度模式。
 - 已用中间件真实调用 `codex exec --json` 并收到回复。
-- `weixin codex` 启动入口已启用运行期 transcript：Bridge 收到微信消息、向微信发送回复、发送媒体，以及遇到被微信策略抑制的 Codex 进度时，都会以彩色聊天记录样式同步打印到启动中间件的终端；被抑制的进度标记为“本地进度（未投递）”，默认非 TTY 输出保持纯文本，方便重定向日志。
+- `chat-codex` 启动入口已启用运行期 transcript：Bridge 收到微信消息、向微信发送回复、发送媒体，以及遇到被微信策略抑制的 Codex 进度时，都会以彩色聊天记录样式同步打印到启动中间件的终端；被抑制的进度标记为“本地进度（未投递）”，默认非 TTY 输出保持纯文本，方便重定向日志。
 - 已把 `codex exec --json` 中可见的 reasoning summary、命令、工具、文件变更等事件转换为通用 progress 事件；是否投递到具体渠道由 `ChannelDeliveryPolicy` 决定。
 
 限制：
@@ -632,7 +632,7 @@ src/channels/<channel-id>/
 
 当前实现状态：
 
-- 已实现 `AppServerCodexAdapter` 初版，默认由 `terminal codex` 和 `weixin codex` 使用。
+- 已实现 `AppServerCodexAdapter` 初版，默认由 `chat-codex` 和 `terminal codex` 使用。
 - 已实现 `codex app-server --listen stdio://` 子进程管理、JSON-RPC request/response、通知分发和停止清理。
 - 已实现 `thread/start`、`thread/resume`、`turn/start`、`turn/interrupt`。
 - 已实现 `/plan`、`/code` 到 `turn/start.collaborationMode` 的桥接；Plan mode completed plan item 会转成最终可投递结果，避免微信 progress suppressed 时看不到计划主体。
