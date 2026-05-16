@@ -1,5 +1,6 @@
 import type {
   ChannelAdapter,
+  ChannelAttachment,
   ChannelCapabilities,
   ChannelLoginResult,
   ChannelMedia,
@@ -125,7 +126,20 @@ export class MockChannelAdapter implements ChannelAdapter {
     this.sentTyping.push({ target, typing, options });
   }
 
-  async emitText(text: string, options: { senderId?: string; conversationId?: string } = {}): Promise<void> {
+  async emitText(text: string, options: { senderId?: string; conversationId?: string; attachments?: ChannelAttachment[] } = {}): Promise<void> {
+    await this.emitMessage({ text, ...options });
+  }
+
+  async emitAttachment(attachments: ChannelAttachment[], options: { text?: string; senderId?: string; conversationId?: string } = {}): Promise<void> {
+    await this.emitMessage({ ...options, attachments });
+  }
+
+  async emitMessage(options: {
+    text?: string;
+    attachments?: ChannelAttachment[];
+    senderId?: string;
+    conversationId?: string;
+  }): Promise<void> {
     if (!this.handler) throw new Error("mock channel handler is not registered");
     const senderId = options.senderId ?? "mock-user";
     const conversationId = options.conversationId ?? senderId;
@@ -143,7 +157,8 @@ export class MockChannelAdapter implements ChannelAdapter {
       accountId,
       sender: { id: senderId, displayName: "Mock User" },
       conversation: { id: conversationId, kind: "direct", displayName: "Mock Direct" },
-      text,
+      text: options.text,
+      attachments: options.attachments,
       timestamp: new Date().toISOString(),
     };
     this.state = { ...this.state, lastInboundAt: message.timestamp };

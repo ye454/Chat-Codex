@@ -9,8 +9,10 @@ import type {
   CodexSessionStatus,
   CodexSessionSummary,
   StartSessionInput,
+  CodexPromptInput,
 } from "./types.js";
 import { buildCodexRootArgs, discoverCodexSessions, displayCodexSessionTitle, findCodexSessionById, type CodexRunPolicy } from "./codex-cli.js";
+import { codexInputPlainText } from "./input.js";
 
 export interface ExecCodexAdapterOptions {
   codexBin?: string;
@@ -86,16 +88,17 @@ export class ExecCodexAdapter implements CodexAdapter {
     return session;
   }
 
-  async *run(sessionId: string, prompt: string): AsyncIterable<CodexEvent> {
+  async *run(sessionId: string, prompt: CodexPromptInput): AsyncIterable<CodexEvent> {
     const stored = this.sessions.get(sessionId);
     if (!stored) throw new Error(`exec session not found locally: ${sessionId}`);
     const session = stored.session;
+    const promptText = codexInputPlainText(prompt);
     const turnId = `exec-turn-${Date.now()}`;
-    stored.status = { type: "running", turnId, task: truncatePrompt(prompt) };
+    stored.status = { type: "running", turnId, task: truncatePrompt(promptText) };
     stored.updatedAt = new Date().toISOString();
     yield { type: "turn.started", sessionId, turnId };
 
-    const args = this.buildArgs(stored, prompt);
+    const args = this.buildArgs(stored, promptText);
     const child = spawn(this.codexBin, args, {
       cwd: session.cwd,
       stdio: ["ignore", "pipe", "pipe"],

@@ -17,7 +17,9 @@ import type {
   CodexSessionSummary,
   CodexRunOptions,
   StartSessionInput,
+  CodexPromptInput,
 } from "./types.js";
+import { codexInputPlainText } from "./input.js";
 
 export class MockCodexAdapter implements CodexAdapter {
   private sequence = 0;
@@ -56,14 +58,15 @@ export class MockCodexAdapter implements CodexAdapter {
     return stored.session;
   }
 
-  async *run(sessionId: string, prompt: string, options: CodexRunOptions = {}): AsyncIterable<CodexEvent> {
+  async *run(sessionId: string, prompt: CodexPromptInput, options: CodexRunOptions = {}): AsyncIterable<CodexEvent> {
     const stored = this.sessions.get(sessionId);
     if (!stored) throw new Error(`mock session not found: ${sessionId}`);
-    this.runs.push({ sessionId, prompt, collaborationMode: options.collaborationMode });
+    const promptText = codexInputPlainText(prompt);
+    this.runs.push({ sessionId, prompt: promptText, collaborationMode: options.collaborationMode });
     const turnId = `turn-${Date.now()}`;
     stored.status = this.withModelInfo({ type: "running", turnId }, this.modelPolicyForSession(sessionId));
     yield { type: "turn.started", sessionId, turnId };
-    if (prompt.includes("审批") || prompt.includes("approval")) {
+    if (promptText.includes("审批") || promptText.includes("approval")) {
       stored.status = this.withModelInfo({ type: "waiting_approval", detail: "mock approval" }, this.modelPolicyForSession(sessionId));
       yield {
         type: "approval.requested",
@@ -82,7 +85,7 @@ export class MockCodexAdapter implements CodexAdapter {
         },
       };
     }
-    const text = `Mock Codex 回复: ${prompt}`;
+    const text = `Mock Codex 回复: ${promptText}`;
     yield { type: "assistant.delta", sessionId, turnId, text };
     yield { type: "assistant.completed", sessionId, turnId, text };
     stored.status = this.withModelInfo({ type: "idle" }, this.modelPolicyForSession(sessionId));

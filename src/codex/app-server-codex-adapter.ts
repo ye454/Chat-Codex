@@ -26,9 +26,11 @@ import type {
   CodexSessionSummary,
   CodexRunOptions,
   StartSessionInput,
+  CodexPromptInput,
 } from "./types.js";
 import { CODEX_REASONING_EFFORTS } from "./types.js";
 import { discoverCodexSessions, displayCodexSessionTitle, findCodexSessionById, type CodexRunPolicy, type CodexSandboxMode } from "./codex-cli.js";
+import { codexInputText, normalizeCodexInput } from "./input.js";
 
 export interface AppServerCodexAdapterOptions {
   codexBin?: string;
@@ -242,13 +244,14 @@ export class AppServerCodexAdapter implements CodexAdapter {
     return session;
   }
 
-  async *run(sessionId: string, prompt: string, options: CodexRunOptions = {}): AsyncIterable<CodexEvent> {
+  async *run(sessionId: string, prompt: CodexPromptInput, options: CodexRunOptions = {}): AsyncIterable<CodexEvent> {
     const stored = this.sessions.get(sessionId);
     if (!stored) throw new Error(`app-server session not found locally: ${sessionId}`);
     await this.ensureStarted();
     const runPolicy = this.runPolicyForSession(sessionId);
     const modelPolicy = this.modelPolicyForSession(sessionId);
     const collaborationMode = options.collaborationMode ?? this.sessionCollaborationModes.get(sessionId);
+    const promptText = codexInputText(prompt);
     const queue = new AsyncEventQueue<CodexEvent>();
     let turnId = "";
     const registerTurn = (response: unknown): void => {
@@ -260,14 +263,14 @@ export class AppServerCodexAdapter implements CodexAdapter {
         queue.push(event);
       }
       this.earlyTurnEvents.delete(turnId);
-      stored.status = withContext(stored, { type: "running", turnId, task: truncatePrompt(prompt) });
+      stored.status = withContext(stored, { type: "running", turnId, task: truncatePrompt(promptText) });
       stored.status = withModelPolicy(stored.status, modelPolicy);
       stored.currentTurnId = turnId;
       stored.updatedAt = new Date().toISOString();
     };
     await this.request<Record<string, unknown>>("turn/start", {
       threadId: sessionId,
-      input: [{ type: "text", text: prompt, text_elements: [] }],
+      input: appServerUserInput(prompt),
       cwd: stored.session.cwd,
       approvalPolicy: approvalPolicyForRunPolicy(runPolicy),
       approvalsReviewer: approvalsReviewerForRunPolicy(runPolicy),
@@ -288,7 +291,7 @@ export class AppServerCodexAdapter implements CodexAdapter {
     }
   }
 
-  async steer(sessionId: string, prompt: string): Promise<void> {
+  async steer(sessionId: string, prompt: CodexPromptInput): Promise<void> {
     const stored = this.sessions.get(sessionId);
     if (!stored) throw new Error(`app-server session not found locally: ${sessionId}`);
     await this.ensureStarted();
@@ -296,7 +299,7 @@ export class AppServerCodexAdapter implements CodexAdapter {
     if (!turnId) throw new Error("no active turn to steer");
     const response = await this.request<Record<string, unknown>>("turn/steer", {
       threadId: sessionId,
-      input: [{ type: "text", text: prompt, text_elements: [] }],
+      input: appServerUserInput(prompt),
       expectedTurnId: turnId,
     });
     const acceptedTurnId = stringValue(response.turnId ?? response.turn_id) ?? stringValue(objectValue(response.turn).id);
@@ -1389,6 +1392,37 @@ function appServerErrorMessage(params: Record<string, unknown>): string {
 
 function isTransientAppServerError(message: string): boolean {
   return /^Reconnecting\.\.\.\s+\d+\/\d+/i.test(message.trim());
+}
+
+function appServerUserInput(input: CodexPromptInput): Array<Record<string, unknown>> {
+  const normalized = normalizeCodexInput(input);
+  const result: Array<Record<string, unknown>> = [];
+  for (const item of normalized.items) {
+    if (item.type === "text") {
+      if (item.text) result.push({ type: "text", text: item.text, text_elements: [] });
+    } else if (item.type === "localImage") {
+      result.push({ type: "localImage", path: item.path });
+    } else if (item.type === "localFile") {
+      result.push({
+        type: "text",
+        text: localFileInputText(item),
+        text_elements: [],
+      });
+    }
+  }
+  if (result.length === 0) {
+    result.push({ type: "text", text: normalized.text, text_elements: [] });
+  }
+  return result;
+}
+
+function localFileInputText(file: { path: string; name?: string; mimeType?: string }): string {
+  return [
+    "用户上传了文件：",
+    `- ${file.name ? `${file.name}: ` : ""}${file.path}${file.mimeType ? ` (${file.mimeType})` : ""}`,
+    "",
+    "请根据用户要求读取这个文件。",
+  ].join("\n");
 }
 
 function objectValue(value: unknown): Record<string, unknown> {

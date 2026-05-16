@@ -16,6 +16,8 @@ secrets/
 # Runtime state
 data/
 /state/
+.chat-codex-uploads/
+chat-codex-uploads/
 logs/
 *.log
 

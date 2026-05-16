@@ -13,6 +13,9 @@
 - `channel-delivery-policy.zh-CN.md`
   中文渠道投递策略设计。说明 `ChannelDeliveryPolicy` 如何按渠道控制 task-start、progress、`/progress` 和 refresh 命令，避免 Bridge Core 写具体平台分支。
 
+- `inbound-media-design.zh-CN.md`
+  入站图片和文件适配设计。说明微信/飞书图片如何下载保存到启动目录 `.chat-codex-uploads/`、图片-only 如何由 `【Chat-Codex中间件提醒】` 询问用户意图、图文消息如何投递给 Codex、执行中收到图片时如何通过结构化 steer 或 pending media 处理，以及 Codex app-server `localImage` 的结构化输入边界。
+
 - `development-and-test.zh-CN.md`
   中文开发与测试规范。说明代码分层、质量要求、每个功能的自测要求、测试报告目录和报告格式。
 
@@ -99,16 +102,17 @@ secrets/feishu.local.md
 1. 读 `requirements.zh-CN.md`，确认项目目标和边界。
 2. 读 `technical-design.zh-CN.md`，确认架构和分阶段路线。
 3. 读 `channel-delivery-policy.zh-CN.md`，确认不同渠道的消息投递策略边界。
-4. 读 `multi-channel-design.zh-CN.md`，确认多渠道 route/session 绑定、并发和配置交互设计。
-5. 读 `local-state-persistence.zh-CN.md`，确认本地文件持久化、渠道账号目录和 session owner 约束。
-6. 读 `cli-core-interaction-design.zh-CN.md`，确认当前 CLI/TUI 首页、渠道配置、微信主聊天绑定和飞书多 chat_id 绑定边界。
-7. 做 TUI 相关开发时读 `ink-tui-interaction-design.zh-CN.md`，确认 Ink 页面、快捷键、状态栏和实现顺序。
-8. 做 TUI 核心功能补齐时读 `tui-core-functionality-followups.zh-CN.md`，确认渠道删除、备注、添加时间、session 活跃时间和运行日志全文展示语义。
-9. 读 `cli-interaction-redesign.zh-CN.md`，了解上一轮普通 CLI 重构背景和历史设计。
-10. 读 `development-and-test.zh-CN.md`，确认开发和测试报告要求。
-11. 读 `git-management.zh-CN.md`，确认提交边界和忽略规则。
-12. Agent 继续读 `agent-guide.zh-CN.md`，确认执行规范。
-13. 需要 Codex 协议或微信插件源码细节时，先读 `../references/README.md`，按里面的说明拉取本地参考源码。
+4. 读 `inbound-media-design.zh-CN.md`，确认微信/飞书入站图片、pending media、Codex `localImage` 和文件处理边界。
+5. 读 `multi-channel-design.zh-CN.md`，确认多渠道 route/session 绑定、并发和配置交互设计。
+6. 读 `local-state-persistence.zh-CN.md`，确认本地文件持久化、渠道账号目录和 session owner 约束。
+7. 读 `cli-core-interaction-design.zh-CN.md`，确认当前 CLI/TUI 首页、渠道配置、微信主聊天绑定和飞书多 chat_id 绑定边界。
+8. 做 TUI 相关开发时读 `ink-tui-interaction-design.zh-CN.md`，确认 Ink 页面、快捷键、状态栏和实现顺序。
+9. 做 TUI 核心功能补齐时读 `tui-core-functionality-followups.zh-CN.md`，确认渠道删除、备注、添加时间、session 活跃时间和运行日志全文展示语义。
+10. 读 `cli-interaction-redesign.zh-CN.md`，了解上一轮普通 CLI 重构背景和历史设计。
+11. 读 `development-and-test.zh-CN.md`，确认开发和测试报告要求。
+12. 读 `git-management.zh-CN.md`，确认提交边界和忽略规则。
+13. Agent 继续读 `agent-guide.zh-CN.md`，确认执行规范。
+14. 需要 Codex 协议或微信插件源码细节时，先读 `../references/README.md`，按里面的说明拉取本地参考源码。
 
 ## 分阶段工作顺序
 

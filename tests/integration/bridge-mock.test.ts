@@ -5,9 +5,10 @@ import { ChannelRegistry } from "../../src/channels/registry.js";
 import { MockChannelAdapter } from "../../src/channels/mock/mock-channel-adapter.js";
 import { MockCodexAdapter } from "../../src/codex/mock-codex-adapter.js";
 import { truncateDisplayText } from "../../src/codex/codex-cli.js";
-import type { CodexAdapter, CodexBackgroundEventHandler, CodexCollaborationMode, CodexEvent, CodexGoal, CodexRunOptions, CodexSession, CodexSessionContextUsage, CodexSessionStatus, CodexSessionSummary, StartSessionInput } from "../../src/codex/types.js";
+import { codexInputPlainText, normalizeCodexInput } from "../../src/codex/input.js";
+import type { CodexAdapter, CodexBackgroundEventHandler, CodexCollaborationMode, CodexEvent, CodexGoal, CodexPromptInput, CodexRunOptions, CodexSession, CodexSessionContextUsage, CodexSessionStatus, CodexSessionSummary, CodexTurnInput, StartSessionInput } from "../../src/codex/types.js";
 import type { TranscriptSink } from "../../src/logging/transcript.js";
-import type { ChannelCapabilities, ChannelMedia, ChannelMessage, ChannelTarget, SendResult } from "../../src/protocol/channel.js";
+import type { ChannelAttachment, ChannelCapabilities, ChannelMedia, ChannelMessage, ChannelTarget, SendResult } from "../../src/protocol/channel.js";
 import type { ChannelDeliveryPolicy } from "../../src/protocol/delivery-policy.js";
 import fs from "node:fs";
 import os from "node:os";
@@ -264,16 +265,21 @@ class SteerableBlockingCodexAdapter extends MockCodexAdapter {
   readonly prompts: string[] = [];
   readonly promptRuns: Array<{ sessionId: string; prompt: string }> = [];
   readonly steers: Array<{ sessionId: string; prompt: string }> = [];
+  readonly promptInputs: CodexTurnInput[] = [];
+  readonly steerInputs: CodexTurnInput[] = [];
   failSteer = false;
   cancelled = false;
 
-  override async *run(sessionId: string, prompt: string): AsyncIterable<CodexEvent> {
-    this.prompts.push(prompt);
-    this.promptRuns.push({ sessionId, prompt });
+  override async *run(sessionId: string, prompt: CodexPromptInput): AsyncIterable<CodexEvent> {
+    const input = normalizeCodexInput(prompt);
+    const promptText = codexInputPlainText(input);
+    this.promptInputs.push(input);
+    this.prompts.push(promptText);
+    this.promptRuns.push({ sessionId, prompt: promptText });
     const turnId = `steerable-turn-${this.prompts.length}`;
-    this.localStatuses.set(sessionId, { type: "running", turnId, task: prompt });
+    this.localStatuses.set(sessionId, { type: "running", turnId, task: promptText });
     yield { type: "turn.started", sessionId, turnId };
-    if (this.prompts.length === 1) {
+    if (promptText === "第一条" || promptText === "A 长任务") {
       await new Promise<void>((resolve) => {
         this.releaseFirst = resolve;
       });
@@ -284,15 +290,17 @@ class SteerableBlockingCodexAdapter extends MockCodexAdapter {
       return;
     }
     this.localStatuses.set(sessionId, { type: "idle" });
-    yield { type: "assistant.completed", sessionId, turnId, text: `完成: ${prompt}` };
+    yield { type: "assistant.completed", sessionId, turnId, text: `完成: ${promptText}` };
     yield { type: "turn.completed", sessionId, turnId };
   }
 
-  async steer(sessionId: string, prompt: string): Promise<void> {
+  async steer(sessionId: string, prompt: CodexPromptInput): Promise<void> {
     if (this.failSteer) throw new Error("steer rejected");
     const status = this.localStatuses.get(sessionId);
     if (!status || status.type !== "running") throw new Error("no active turn");
-    this.steers.push({ sessionId, prompt });
+    const input = normalizeCodexInput(prompt);
+    this.steerInputs.push(input);
+    this.steers.push({ sessionId, prompt: codexInputPlainText(input) });
   }
 
   override async cancel(sessionId: string): Promise<void> {
@@ -929,6 +937,211 @@ test("Bridge scopes mid-turn steer to the originating route", async () => {
   assert.equal(codex.steers[0]?.prompt, "A 补充");
   assert.notEqual(codex.steers[0]?.sessionId, codex.promptRuns.find((run) => run.prompt === "B 普通任务")?.sessionId);
   assert.equal(channelB.sentMessages.some((message) => message.text.includes("已投递到当前 Codex 任务")), false);
+});
+
+test("Bridge stores image-only messages as pending media without running Codex", async () => {
+  const channel = new MockChannelAdapter();
+  const codex = new SteerableBlockingCodexAdapter();
+  const bridge = new Bridge({ channel, codex, cwd: process.cwd() });
+
+  await bridge.start();
+  await channel.emitAttachment([mockImageAttachment("/tmp/chat-codex-image-only.png")]);
+  await channel.emitText("/status");
+  await bridge.stop();
+
+  assert.deepEqual(codex.prompts, []);
+  assert.ok(channel.sentMessages.some((message) => message.text.includes("【Chat-Codex中间件提醒】")));
+  const status = channel.sentMessages.at(-1)?.text ?? "";
+  assert.match(status, /待处理图片: `1`/);
+});
+
+test("Bridge combines pending image-only media with the next ordinary text", async () => {
+  const channel = new MockChannelAdapter();
+  const codex = new SteerableBlockingCodexAdapter();
+  const bridge = new Bridge({ channel, codex, cwd: process.cwd() });
+  const imagePath = "/tmp/chat-codex-pending.png";
+
+  await bridge.start();
+  await channel.emitAttachment([mockImageAttachment(imagePath)]);
+  await channel.emitText("解释这张图");
+  await bridge.waitForIdle();
+  await bridge.stop();
+
+  assert.equal(codex.promptInputs.length, 1);
+  assert.deepEqual(codex.promptInputs[0]?.items, [
+    { type: "text", text: "解释这张图" },
+    { type: "localImage", path: imagePath },
+  ]);
+});
+
+test("Bridge sends same-message text and image directly to Codex", async () => {
+  const channel = new MockChannelAdapter();
+  const codex = new SteerableBlockingCodexAdapter();
+  const bridge = new Bridge({ channel, codex, cwd: process.cwd() });
+  const imagePath = "/tmp/chat-codex-direct.png";
+
+  await bridge.start();
+  await channel.emitAttachment([mockImageAttachment(imagePath)], { text: "检查这个 UI" });
+  await bridge.waitForIdle();
+  await bridge.stop();
+
+  assert.equal(codex.promptInputs.length, 1);
+  assert.deepEqual(codex.promptInputs[0]?.items, [
+    { type: "text", text: "检查这个 UI" },
+    { type: "localImage", path: imagePath },
+  ]);
+});
+
+test("Bridge keeps pending media scoped to the originating route", async () => {
+  const channel = new MockChannelAdapter();
+  const codex = new SteerableBlockingCodexAdapter();
+  const bridge = new Bridge({ channel, codex, cwd: process.cwd() });
+  const imageA = "/tmp/chat-codex-route-a.png";
+  const imageB = "/tmp/chat-codex-route-b.png";
+
+  await bridge.start();
+  await channel.emitAttachment([mockImageAttachment(imageA)], { senderId: "alice", conversationId: "alice" });
+  await channel.emitAttachment([mockImageAttachment(imageB)], { senderId: "bob", conversationId: "bob" });
+  await channel.emitText("处理 B 的图", { senderId: "bob", conversationId: "bob" });
+  await bridge.waitForIdle();
+  await channel.emitText("/status", { senderId: "alice", conversationId: "alice" });
+  await bridge.stop();
+
+  assert.equal(codex.promptInputs.length, 1);
+  assert.deepEqual(codex.promptInputs[0]?.items, [
+    { type: "text", text: "处理 B 的图" },
+    { type: "localImage", path: imageB },
+  ]);
+  assert.match(channel.sentMessages.at(-1)?.text ?? "", /待处理图片: `1`/);
+});
+
+test("Bridge cancels pending media with /cancel", async () => {
+  const channel = new MockChannelAdapter();
+  const codex = new SteerableBlockingCodexAdapter();
+  const bridge = new Bridge({ channel, codex, cwd: process.cwd() });
+
+  await bridge.start();
+  await channel.emitAttachment([mockImageAttachment("/tmp/chat-codex-cancel.png")]);
+  await channel.emitText("/cancel");
+  await channel.emitText("/status");
+  await bridge.stop();
+
+  assert.deepEqual(codex.prompts, []);
+  assert.ok(channel.sentMessages.some((message) => message.text.includes("已取消 1 张待处理图片")));
+  assert.match(channel.sentMessages.at(-1)?.text ?? "", /待处理图片: `0`/);
+});
+
+test("Bridge clears pending media with /stop", async () => {
+  const channel = new MockChannelAdapter();
+  const codex = new SteerableBlockingCodexAdapter();
+  const bridge = new Bridge({ channel, codex, cwd: process.cwd() });
+
+  await bridge.start();
+  await channel.emitText("/new");
+  await channel.emitAttachment([mockImageAttachment("/tmp/chat-codex-stop.png")]);
+  await channel.emitText("/stop");
+  await channel.emitText("/status");
+  await bridge.stop();
+
+  assert.ok(channel.sentMessages.some((message) => message.text.includes("已清空 1 张待处理图片")));
+  assert.match(channel.sentMessages.at(-1)?.text ?? "", /待处理图片: `0`/);
+});
+
+test("Bridge steers text plus image into the active route turn", async () => {
+  const channel = new MockChannelAdapter();
+  const codex = new SteerableBlockingCodexAdapter();
+  const bridge = new Bridge({ channel, codex, cwd: process.cwd(), steerDebounceMs: 1 });
+  const imagePath = "/tmp/chat-codex-steer.png";
+
+  await bridge.start();
+  await channel.emitText("第一条");
+  await waitFor(() => codex.prompts.length === 1);
+  await channel.emitAttachment([mockImageAttachment(imagePath)], { text: "补充截图" });
+  await waitFor(() => codex.steerInputs.length === 1);
+
+  codex.release();
+  await bridge.waitForIdle();
+  await bridge.stop();
+
+  assert.deepEqual(codex.steerInputs[0]?.items, [
+    { type: "text", text: "补充截图" },
+    { type: "localImage", path: imagePath },
+  ]);
+  assert.ok(channel.sentMessages.some((message) => message.text.includes("已投递到当前 Codex 任务")));
+});
+
+test("Bridge keeps image-only media pending while the route is busy", async () => {
+  const channel = new MockChannelAdapter();
+  const codex = new SteerableBlockingCodexAdapter();
+  const bridge = new Bridge({ channel, codex, cwd: process.cwd(), steerDebounceMs: 1 });
+  const imagePath = "/tmp/chat-codex-busy-pending.png";
+
+  await bridge.start();
+  await channel.emitText("第一条");
+  await waitFor(() => codex.prompts.length === 1);
+  await channel.emitAttachment([mockImageAttachment(imagePath)]);
+  await channel.emitText("/status");
+  const status = channel.sentMessages.at(-1)?.text ?? "";
+  await channel.emitText("这张图用于补充当前任务");
+  await waitFor(() => codex.steerInputs.length === 1);
+
+  codex.release();
+  await bridge.waitForIdle();
+  await bridge.stop();
+
+  assert.equal(codex.steerInputs.length, 1);
+  assert.match(status, /待处理图片: `1`/);
+  assert.deepEqual(codex.steerInputs[0]?.items, [
+    { type: "text", text: "这张图用于补充当前任务" },
+    { type: "localImage", path: imagePath },
+  ]);
+});
+
+test("Bridge starts a new turn when pending media is described after the busy turn ends", async () => {
+  const channel = new MockChannelAdapter();
+  const codex = new SteerableBlockingCodexAdapter();
+  const bridge = new Bridge({ channel, codex, cwd: process.cwd(), steerDebounceMs: 1 });
+  const imagePath = "/tmp/chat-codex-after-busy.png";
+
+  await bridge.start();
+  await channel.emitText("第一条");
+  await waitFor(() => codex.prompts.length === 1);
+  await channel.emitAttachment([mockImageAttachment(imagePath)]);
+  codex.release();
+  await bridge.waitForIdle();
+  await channel.emitText("现在处理刚才那张图");
+  await bridge.waitForIdle();
+  await bridge.stop();
+
+  assert.equal(codex.promptInputs.length, 2);
+  assert.deepEqual(codex.promptInputs[1]?.items, [
+    { type: "text", text: "现在处理刚才那张图" },
+    { type: "localImage", path: imagePath },
+  ]);
+});
+
+test("Bridge falls back to route queue with image input when structured steer is rejected", async () => {
+  const channel = new MockChannelAdapter();
+  const codex = new SteerableBlockingCodexAdapter();
+  codex.failSteer = true;
+  const bridge = new Bridge({ channel, codex, cwd: process.cwd(), steerDebounceMs: 1 });
+  const imagePath = "/tmp/chat-codex-steer-fallback.png";
+
+  await bridge.start();
+  await channel.emitText("第一条");
+  await waitFor(() => codex.prompts.length === 1);
+  await channel.emitAttachment([mockImageAttachment(imagePath)], { text: "补充失败后排队" });
+  await waitFor(() => channel.sentMessages.some((message) => message.text.includes("已加入队列")));
+
+  codex.release();
+  await bridge.waitForIdle();
+  await bridge.stop();
+
+  assert.equal(codex.promptInputs.length, 2);
+  assert.deepEqual(codex.promptInputs[1]?.items, [
+    { type: "text", text: "补充失败后排队" },
+    { type: "localImage", path: imagePath },
+  ]);
 });
 
 test("Bridge rejects semantic mutations while the current route is busy", async () => {
@@ -1760,6 +1973,17 @@ test("Bridge keeps approvals scoped to the originating channel route", async () 
   assert.equal(codex.resolvedApprovals.length, 1);
   assert.equal(codex.resolvedApprovals[0].decision, "approve");
 });
+
+function mockImageAttachment(localPath: string): ChannelAttachment {
+  return {
+    id: path.basename(localPath),
+    type: "image",
+    name: path.basename(localPath),
+    mimeType: "image/png",
+    localPath,
+    downloadState: "available",
+  };
+}
 
 async function waitFor(predicate: () => boolean | Promise<boolean>, timeoutMs = 1000): Promise<void> {
   const deadline = Date.now() + timeoutMs;

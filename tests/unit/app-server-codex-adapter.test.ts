@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { AppServerCodexAdapter } from "../../src/codex/app-server-codex-adapter.js";
-import type { CodexEvent } from "../../src/codex/types.js";
+import type { CodexEvent, CodexTurnInput } from "../../src/codex/types.js";
 
 function tempDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "app-server-codex-test-"));
@@ -221,6 +221,12 @@ rl.on("line", (line) => {
       send({ method: "turn/completed", params: { threadId, turn: { id: turnId, items: [], itemsView: "complete", status: "completed", error: null, startedAt: 1778716800, completedAt: 1778716801, durationMs: 1000 } } });
       return;
     }
+    if (prompt.includes("structured image start")) {
+      const image = (message.params.input || []).find((item) => item.type === "localImage");
+      send({ method: "item/completed", params: { threadId, turnId, completedAtMs: Date.now(), item: { type: "agentMessage", id: "msg-1", text: "start image " + image.path, phase: null, memoryCitation: null } } });
+      send({ method: "turn/completed", params: { threadId, turn: { id: turnId, items: [], itemsView: "complete", status: "completed", error: null, startedAt: 1778716800, completedAt: 1778716801, durationMs: 1000 } } });
+      return;
+    }
     if (prompt.includes("commentary message")) {
       send({ method: "item/started", params: { threadId, turnId, startedAtMs: Date.now(), item: { type: "agentMessage", id: "commentary-1", text: "", phase: "commentary", memoryCitation: null } } });
       send({ method: "item/agentMessage/delta", params: { threadId, turnId, itemId: "commentary-1", delta: "我正在检查状态。" } });
@@ -272,8 +278,9 @@ rl.on("line", (line) => {
       return;
     }
     const text = message.params.input?.[0]?.text || "";
+    const image = (message.params.input || []).find((item) => item.type === "localImage");
     send({ id: message.id, result: { turnId } });
-    send({ method: "item/completed", params: { threadId: message.params.threadId, turnId, completedAtMs: Date.now(), item: { type: "agentMessage", id: "steer-msg-1", text: "steered " + text, phase: null, memoryCitation: null } } });
+    send({ method: "item/completed", params: { threadId: message.params.threadId, turnId, completedAtMs: Date.now(), item: { type: "agentMessage", id: "steer-msg-1", text: image ? "steered image " + text + " " + image.path : "steered " + text, phase: null, memoryCitation: null } } });
     send({ method: "turn/completed", params: { threadId: message.params.threadId, turn: { id: turnId, items: [], itemsView: "complete", status: "completed", error: null, startedAt: 1778716800, completedAt: 1778716801, durationMs: 1000 } } });
     return;
   }
@@ -380,6 +387,63 @@ test("AppServerCodexAdapter sends turn steer to the active app-server turn", asy
 
   assert.ok(events.some((event) => event.type === "turn.started"));
   assert.ok(events.some((event) => event.type === "assistant.completed" && event.text === "steered 补充输入"));
+  assert.ok(events.some((event) => event.type === "turn.completed"));
+});
+
+test("AppServerCodexAdapter sends localImage on turn start", async () => {
+  const root = tempDir();
+  const adapter = new AppServerCodexAdapter({ codexBin: fakeCodexBin(root) });
+  const session = await adapter.startSession({
+    routeKey: "route-1",
+    cwd: root,
+    title: "test",
+  });
+  const imagePath = path.join(root, "screenshot.png");
+  const input: CodexTurnInput = {
+    text: "structured image start",
+    items: [
+      { type: "text", text: "structured image start" },
+      { type: "localImage", path: imagePath },
+    ],
+  };
+  const events: CodexEvent[] = [];
+
+  for await (const event of adapter.run(session.id, input)) {
+    events.push(event);
+  }
+  await adapter.stop();
+
+  assert.ok(events.some((event) => event.type === "assistant.completed" && event.text === `start image ${imagePath}`));
+  assert.ok(events.some((event) => event.type === "turn.completed"));
+});
+
+test("AppServerCodexAdapter sends localImage on turn steer", async () => {
+  const root = tempDir();
+  const adapter = new AppServerCodexAdapter({ codexBin: fakeCodexBin(root) });
+  const session = await adapter.startSession({
+    routeKey: "route-1",
+    cwd: root,
+    title: "test",
+  });
+  const imagePath = path.join(root, "steer.png");
+  const input: CodexTurnInput = {
+    text: "补充截图",
+    items: [
+      { type: "text", text: "补充截图" },
+      { type: "localImage", path: imagePath },
+    ],
+  };
+  const events: CodexEvent[] = [];
+
+  for await (const event of adapter.run(session.id, "hang until steer")) {
+    events.push(event);
+    if (event.type === "turn.started") {
+      await adapter.steer(session.id, input);
+    }
+  }
+  await adapter.stop();
+
+  assert.ok(events.some((event) => event.type === "assistant.completed" && event.text === `steered image 补充截图 ${imagePath}`));
   assert.ok(events.some((event) => event.type === "turn.completed"));
 });
 

@@ -2,8 +2,9 @@ import type { ApprovalDecision, PendingApproval } from "../approvals/types.js";
 import { ApprovalManager } from "../approvals/approval-manager.js";
 import type { CodexRunPolicy, CodexRunPolicyStatus } from "../codex/codex-cli.js";
 import { truncateDisplayText } from "../codex/codex-cli.js";
-import type { CodexAdapter, CodexCollaborationMode, CodexEvent, CodexGoal, CodexGoalStatus, CodexModelOption, CodexModelPolicy, CodexProgressKind, CodexReasoningEffort, CodexSession, CodexSessionContextUsage, CodexSessionModelInfo, CodexSessionStatus } from "../codex/types.js";
+import type { CodexAdapter, CodexCollaborationMode, CodexEvent, CodexGoal, CodexGoalStatus, CodexModelOption, CodexModelPolicy, CodexProgressKind, CodexPromptInput, CodexReasoningEffort, CodexSession, CodexSessionContextUsage, CodexSessionModelInfo, CodexSessionStatus, CodexTurnInput } from "../codex/types.js";
 import { CODEX_REASONING_EFFORTS } from "../codex/types.js";
+import { codexInputPlainText, codexInputText, normalizeCodexInput, withCodexInputText } from "../codex/input.js";
 import { parseCommand } from "../commands/parser.js";
 import type { Logger } from "../logging/logger.js";
 import { SilentLogger } from "../logging/logger.js";
@@ -17,6 +18,17 @@ import { MemoryStateStore } from "../state/memory-state-store.js";
 import { pendingBindingOwnerRouteKey } from "../state/memory-state-store.js";
 import type { SessionBindings } from "../state/session-bindings.js";
 import { BRIDGE_SEND_FILE_PREFIX, extractBridgeSendFileRefs, stripBridgeSendFileRefs } from "./media-extractor.js";
+import {
+  PendingMediaManager,
+  cancelledPendingMediaText,
+  clearedPendingMediaText,
+  classifyInboundAttachments,
+  codexInputFromTextAndAttachments,
+  inboundMediaSaveFailedText,
+  inboundMediaUnsupportedText,
+  pendingMediaOverflowText,
+  pendingMediaPromptText,
+} from "./inbound-media.js";
 import type { TurnScheduler } from "./turn-scheduler.js";
 import { TurnSchedulerAbortError, UnlimitedTurnScheduler } from "./turn-scheduler.js";
 
@@ -44,7 +56,7 @@ export interface BridgeOptions {
 interface QueuedPrompt {
   message: ChannelMessage;
   target: ChannelTarget;
-  prompt: string;
+  input: CodexPromptInput;
   collaborationMode?: CodexCollaborationMode;
   sendFile: boolean;
 }
@@ -52,7 +64,7 @@ interface QueuedPrompt {
 interface QueuedSteer {
   message: ChannelMessage;
   target: ChannelTarget;
-  text: string;
+  input: CodexPromptInput;
 }
 
 interface RouteSteerState {
@@ -126,6 +138,7 @@ export class Bridge {
   private readonly routeTargets = new Map<string, ChannelTarget>();
   private readonly routeQueues = new Map<string, QueuedPrompt[]>();
   private readonly routeSteerStates = new Map<string, RouteSteerState>();
+  private readonly pendingMedia = new PendingMediaManager();
   private readonly routeWorkers = new Map<string, Promise<void>>();
   private readonly routeSessionSelections = new Map<string, SessionSelectionState>();
   private readonly backgroundTurns = new Map<string, BackgroundTurnState>();
@@ -169,6 +182,7 @@ export class Bridge {
 
   async stop(): Promise<void> {
     this.clearAllRouteSteerStates();
+    this.pendingMedia.clearAll();
     this.stopBackgroundEvents?.();
     this.stopBackgroundEvents = undefined;
     await this.channels.stop();
@@ -177,17 +191,31 @@ export class Bridge {
   }
 
   async handleMessage(message: ChannelMessage): Promise<void> {
-    const text = message.text?.trim();
-    if (!text) return;
-    this.transcript?.inbound(message, text);
+    const text = message.text?.trim() ?? "";
+    const attachments = classifyInboundAttachments(message.attachments);
+    const hasInboundMedia = attachments.usable.length > 0 || attachments.failed.length > 0 || attachments.unsupported.length > 0;
+    if (!text && !hasInboundMedia) return;
+    this.transcript?.inbound(message, text || inboundAttachmentTranscriptText(attachments.usable.length));
     const target = replyTargetFromMessage(message);
     this.routeMessages.set(message.routeKey, message);
     this.routeTargets.set(message.routeKey, target);
     this.state.recordRouteMessage(message);
     this.claimPendingInitialRouteBindingRoute(message);
-    const command = parseCommand(text);
-    if (command.isCommand) {
+    const command = text ? parseCommand(text) : undefined;
+    if (command?.isCommand) {
       await this.handleCommand(message, target, command.name ?? "", command.args, text);
+      return;
+    }
+    if (attachments.failed.length > 0) {
+      await this.sendText(target, inboundMediaSaveFailedText());
+      if (attachments.usable.length === 0) return;
+    }
+    if (attachments.unsupported.length > 0 && attachments.usable.length === 0) {
+      await this.sendText(target, inboundMediaUnsupportedText());
+      return;
+    }
+    if (!text && attachments.usable.length > 0) {
+      await this.addPendingMedia(message, target, attachments.usable);
       return;
     }
     const sessionSelection = this.routeSessionSelections.get(message.routeKey);
@@ -195,8 +223,16 @@ export class Bridge {
       await this.handleSessionSelectionReply(message, target, text, sessionSelection);
       return;
     }
-    if (await this.tryEnqueueSteer(message, target, text)) return;
-    await this.enqueuePrompt(message, target, text);
+    if (this.shouldAskBeforeBindingSession(message)) {
+      await this.enqueuePrompt(message, target, text);
+      return;
+    }
+    const pendingAttachments = this.pendingMedia.consume(message.routeKey);
+    const input = pendingAttachments.length > 0 || attachments.usable.length > 0
+      ? codexInputFromTextAndAttachments(text, [...pendingAttachments, ...attachments.usable])
+      : text;
+    if (await this.tryEnqueueSteer(message, target, input)) return;
+    await this.enqueuePrompt(message, target, input);
   }
 
   async waitForIdle(): Promise<void> {
@@ -258,7 +294,12 @@ export class Bridge {
         if (this.routeSessionSelections.delete(message.routeKey)) {
           await this.sendText(target, "已退出切换会话。");
         } else {
-          await this.sendText(target, "当前没有需要取消的操作。");
+          const cancelledMedia = this.pendingMedia.cancel(message.routeKey);
+          if (cancelledMedia > 0) {
+            await this.sendText(target, cancelledPendingMediaText(cancelledMedia));
+          } else {
+            await this.sendText(target, "当前没有需要取消的操作。");
+          }
         }
         return;
       case "whoami":
@@ -373,10 +414,24 @@ export class Bridge {
     return session;
   }
 
+  private async addPendingMedia(
+    message: ChannelMessage,
+    target: ChannelTarget,
+    attachments: ChannelMessage["attachments"],
+  ): Promise<void> {
+    const result = this.pendingMedia.add(message.routeKey, attachments ?? [], message.id);
+    if (result.accepted.length > 0) {
+      await this.sendText(target, pendingMediaPromptText(result.total));
+    }
+    if (result.rejected.length > 0) {
+      await this.sendText(target, pendingMediaOverflowText(result.rejected.length, result.total));
+    }
+  }
+
   private async enqueuePrompt(
     message: ChannelMessage,
     target: ChannelTarget,
-    prompt: string,
+    prompt: CodexPromptInput,
     options?: { collaborationMode?: CodexCollaborationMode; sendFile?: boolean },
   ): Promise<void> {
     if (this.shouldAskBeforeBindingSession(message)) {
@@ -388,7 +443,7 @@ export class Bridge {
     queue.push({
       message,
       target,
-      prompt,
+      input: prompt,
       collaborationMode: options?.collaborationMode ?? this.routeCollaborationModes.get(message.routeKey),
       sendFile: options?.sendFile ?? false,
     });
@@ -420,11 +475,11 @@ export class Bridge {
   private async tryEnqueueSteer(
     message: ChannelMessage,
     target: ChannelTarget,
-    text: string,
+    prompt: CodexPromptInput,
   ): Promise<boolean> {
     if (!(await this.canAttemptRouteSteer(message.routeKey))) return false;
     const state = this.routeSteerStates.get(message.routeKey) ?? { queue: [], draining: false };
-    state.queue.push({ message, target, text });
+    state.queue.push({ message, target, input: prompt });
     this.routeSteerStates.set(message.routeKey, state);
     this.scheduleRouteSteerDrain(message.routeKey, state);
     return true;
@@ -497,7 +552,7 @@ export class Bridge {
     while (queue.length > 0 && batch.length < this.steerBatchMaxMessages) {
       const item = queue[0];
       if (!item) break;
-      const nextChars = item.text.length;
+      const nextChars = codexInputPlainText(item.input).length;
       if (batch.length > 0 && chars + nextChars > this.steerBatchMaxChars) break;
       queue.shift();
       batch.push(item);
@@ -516,13 +571,13 @@ export class Bridge {
     if (!binding || !steer) {
       throw new Error("Codex adapter does not support steer for this route");
     }
-    await steer(binding.sessionId, composeSteerBatchText(batch));
+    await steer(binding.sessionId, composeSteerBatchInput(batch));
     await this.sendText(batch[batch.length - 1].target, steerAcceptedText(batch.length));
   }
 
   private async enqueuePromptFallback(items: QueuedSteer[]): Promise<void> {
     for (const item of items) {
-      await this.enqueuePrompt(item.message, item.target, item.text);
+      await this.enqueuePrompt(item.message, item.target, item.input);
     }
   }
 
@@ -597,7 +652,7 @@ export class Bridge {
       const task = queue?.shift();
       if (!task) return;
       try {
-        await this.forwardPrompt(task.message, task.target, task.prompt, queue?.length ?? 0, task.sendFile, task.collaborationMode);
+        await this.forwardPrompt(task.message, task.target, task.input, queue?.length ?? 0, task.sendFile, task.collaborationMode);
       } catch (error) {
         if (error instanceof TurnSchedulerAbortError) continue;
         await this.sendText(task.target, `Codex 执行失败: ${error instanceof Error ? error.message : String(error)}`);
@@ -608,12 +663,13 @@ export class Bridge {
   private async forwardPrompt(
     message: ChannelMessage,
     target: ChannelTarget,
-    prompt: string,
+    prompt: CodexPromptInput,
     remainingQueued: number,
     sendFile: boolean,
     collaborationMode: CodexCollaborationMode | undefined,
   ): Promise<void> {
     const session = await this.ensureSession(message);
+    const promptText = codexInputText(prompt);
     const abortController = new AbortController();
     this.routeAbortControllers.set(message.routeKey, abortController);
     try {
@@ -634,13 +690,17 @@ export class Bridge {
         await this.withTyping(target, async () => {
           let finalText = "";
           let finalPlanText = "";
-          const codexPrompt = sendFile ? withSendFileInstruction(prompt) : prompt;
+          const codexPrompt = sendFile
+            ? typeof prompt === "string"
+              ? withSendFileInstruction(prompt)
+              : withCodexInputText(prompt, withSendFileInstruction(promptText))
+            : prompt;
           for await (const event of this.codex.run(session.id, codexPrompt, collaborationMode ? { collaborationMode } : undefined)) {
             if (event.type === "turn.started") {
               this.state.setSessionStatus(session.id, {
                 type: "running",
                 turnId: event.turnId,
-                task: truncateForChannel(prompt, 120),
+                task: truncateForChannel(promptText || codexInputPlainText(prompt), 120),
               });
             } else if (event.type === "assistant.progress") {
               const progressText = `Codex 进度:\n${truncateForChannel(event.text)}`;
@@ -1046,8 +1106,12 @@ export class Bridge {
 
   private async stopCurrentTask(message: ChannelMessage, target: ChannelTarget): Promise<void> {
     const binding = this.state.getBinding(message.routeKey);
+    const clearedMedia = this.pendingMedia.clear(message.routeKey);
     if (!binding) {
-      await this.sendText(target, "当前没有活跃 Codex 会话。");
+      await this.sendText(target, [
+        "当前没有活跃 Codex 会话。",
+        clearedMedia > 0 ? clearedPendingMediaText(clearedMedia) : undefined,
+      ].filter(Boolean).join("\n"));
       return;
     }
     const status = await this.codex.getStatus(binding.sessionId);
@@ -1057,6 +1121,7 @@ export class Bridge {
       await this.sendText(target, [
         "当前没有正在运行的 Codex 任务。",
         clearedSteers > 0 ? `已清空 ${clearedSteers} 条待投递补充消息。` : undefined,
+        clearedMedia > 0 ? clearedPendingMediaText(clearedMedia) : undefined,
       ].filter(Boolean).join("\n"));
       return;
     }
@@ -1076,6 +1141,7 @@ export class Bridge {
       "已请求停止当前 Codex 任务。",
       clearedSteers > 0 ? `已清空 ${clearedSteers} 条待投递补充消息。` : undefined,
       clearedQueued > 0 ? `已清空 ${clearedQueued} 条排队消息。` : undefined,
+      clearedMedia > 0 ? clearedPendingMediaText(clearedMedia) : undefined,
     ].filter(Boolean).join("\n"));
   }
 
@@ -1562,6 +1628,7 @@ export class Bridge {
       `- 处理状态: ${workerRunning ? "正在处理" : "空闲"}`,
       `- 排队消息: \`${this.routeQueues.get(routeKey)?.length ?? 0}\``,
       `- 待投递补充消息: \`${this.routeSteerPendingCount(routeKey)}\``,
+      `- 待处理图片: \`${this.pendingMedia.count(routeKey)}\``,
       `- 协作模式: ${formatCollaborationModeForStatus(this.collaborationModeForRoute(routeKey, binding?.sessionId))}`,
       ...formatGoalStatusLines(goal),
       `- 待审批: \`${approvals.length}\``,
@@ -1813,12 +1880,24 @@ function isSteerableStatus(status: CodexSessionStatus["type"]): boolean {
   return status === "running" || status === "waiting_approval" || status === "waiting_input";
 }
 
-function composeSteerBatchText(batch: QueuedSteer[]): string {
-  if (batch.length === 1) return batch[0].text;
-  return batch.map((item, index) => [
-    `用户补充消息 ${index + 1}:`,
-    item.text,
-  ].join("\n")).join("\n\n");
+function composeSteerBatchInput(batch: QueuedSteer[]): CodexTurnInput {
+  if (batch.length === 1) return normalizeCodexInput(batch[0].input);
+  const items: CodexTurnInput["items"] = [];
+  const textParts: string[] = [];
+  batch.forEach((item, index) => {
+    const input = normalizeCodexInput(item.input);
+    const label = `用户补充消息 ${index + 1}:`;
+    const text = input.text ? `${label}\n${input.text}` : label;
+    textParts.push(text);
+    items.push({ type: "text", text });
+    for (const inputItem of input.items) {
+      if (inputItem.type !== "text") items.push({ ...inputItem });
+    }
+  });
+  return {
+    text: textParts.join("\n\n"),
+    items,
+  };
 }
 
 function steerAcceptedText(count: number): string {
@@ -1826,6 +1905,10 @@ function steerAcceptedText(count: number): string {
     return "已投递到当前 Codex 任务，会在下一次工具调用或模型继续推理时生效。";
   }
   return `已投递 ${count} 条补充消息到当前 Codex 任务，会在下一次工具调用或模型继续推理时生效。`;
+}
+
+function inboundAttachmentTranscriptText(count: number): string {
+  return count > 0 ? `[收到 ${count} 个附件]` : "[收到附件]";
 }
 
 function ownerConflictError(sessionId: string, ownerRouteKey: string): Error {

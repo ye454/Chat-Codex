@@ -39,6 +39,10 @@ export interface ChannelAttachment {
   mimeType?: string;
   sizeBytes?: number;
   caption?: string;
+  localPath?: string;
+  url?: string;
+  downloadState?: "available" | "failed" | "unsupported";
+  error?: string;
   raw?: unknown;
 }
 
@@ -68,6 +72,7 @@ export interface ChannelStatus {
 export interface ChannelCapabilities {
   text: boolean;
   media: boolean;
+  receiveMedia?: boolean;
   typing: boolean;
   direct: boolean;
   group: boolean;

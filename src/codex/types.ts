@@ -1,7 +1,9 @@
 import type { ApprovalDecision, ApprovalRequest } from "../approvals/types.js";
 import type { CodexRunPolicy, CodexRunPolicyStatus } from "./codex-cli.js";
+import type { CodexPromptInput } from "./input.js";
 
 export type { CodexRunPolicy, CodexRunPolicyStatus } from "./codex-cli.js";
+export type { CodexInputItem, CodexPromptInput, CodexTurnInput } from "./input.js";
 
 export const CODEX_REASONING_EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh"] as const;
 
@@ -145,8 +147,8 @@ export interface CodexAdapter {
   onBackgroundEvent?(handler: CodexBackgroundEventHandler): () => void;
   startSession(input: StartSessionInput): Promise<CodexSession>;
   resumeSession(sessionId: string): Promise<CodexSession>;
-  run(sessionId: string, prompt: string, options?: CodexRunOptions): AsyncIterable<CodexEvent>;
-  steer?(sessionId: string, prompt: string): Promise<void>;
+  run(sessionId: string, prompt: CodexPromptInput, options?: CodexRunOptions): AsyncIterable<CodexEvent>;
+  steer?(sessionId: string, prompt: CodexPromptInput): Promise<void>;
   cancel?(sessionId: string): Promise<void>;
   getStatus(sessionId: string): Promise<CodexSessionStatus>;
   listSessions(routeKey?: string): Promise<CodexSessionSummary[]>;
