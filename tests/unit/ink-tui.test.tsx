@@ -98,6 +98,8 @@ test("Ink TUI exposes add channel actions when channels already exist", async ()
   assert.match(view.lastFrame() ?? "", /已配置渠道/);
   assert.match(view.lastFrame() ?? "", /2\. 添加微信账号/);
   assert.match(view.lastFrame() ?? "", /3\. 添加飞书机器人/);
+  assert.match(view.lastFrame() ?? "", /4\. 修改选中渠道备注/);
+  assert.match(view.lastFrame() ?? "", /6\. 删除选中渠道/);
 
   view.stdin.write("\u001B[B");
   view.stdin.write("\u001B[B");
@@ -296,6 +298,63 @@ test("Runtime TUI renders startup summary and transcript logs", async () => {
   assert.match(view.lastFrame() ?? "", /你好/);
   assert.match(view.lastFrame() ?? "", /Ctrl\+C 停止服务/);
   assert.doesNotMatch(view.lastFrame() ?? "", /q\/Esc 停止/);
+
+  view.unmount();
+});
+
+test("Ink TUI shows session last active time in binding views", async () => {
+  const dashboard = dashboardFixture();
+  dashboard.routes.bound = 1;
+  dashboard.bindings[0].activeSession = {
+    id: "session-active",
+    shortId: "session-a",
+    title: "活跃会话",
+    cwd: "/repo",
+    updatedAt: "2026-05-16T00:00:00.000Z",
+  };
+  const view = render(<ChatCodexTui actions={mockActions(dashboard)} onDone={() => undefined} />);
+  await waitForInk();
+
+  view.stdin.write("b");
+  await waitForInk();
+  assert.match(view.lastFrame() ?? "", /最近 05-16/);
+
+  view.stdin.write("\r");
+  await waitForInk();
+  assert.match(view.lastFrame() ?? "", /最近活跃/);
+  assert.match(view.lastFrame() ?? "", /活跃会话/);
+
+  view.unmount();
+});
+
+test("Runtime TUI keeps full log messages and caps store at 300 entries", async () => {
+  const store = new RuntimeLogStore();
+  const longMessage = "这是一条很长的运行日志，用于确认运行期 TUI 不再把正文截断成省略号，而是完整交给终端自动换行展示。full-log-message-tail";
+  store.add("system", "INFO", longMessage);
+  for (let index = 0; index < 305; index += 1) {
+    store.add("progress", "TEST", `log-${index}`);
+  }
+
+  assert.equal(store.snapshot().length, 300);
+  assert.equal(store.snapshot()[0]?.message, "log-5");
+
+  const displayStore = new RuntimeLogStore();
+  displayStore.add("system", "INFO", longMessage);
+  const view = render(<RuntimeLogView summary={{
+    title: "Chat Codex 运行中",
+    channels: ["feishu-default"],
+    cwd: "/repo",
+    policy: { permissionMode: "approval", sandbox: "workspace-write" },
+    routePolicy: "首条消息自动创建新 session",
+  }} store={displayStore} />);
+  await waitForInk();
+
+  assert.match(view.lastFrame() ?? "", /full-log-message-tail/);
+  assert.doesNotMatch(view.lastFrame() ?? "", /full-log-message-tai…/);
+
+  view.stdin.write("c");
+  await waitForInk();
+  assert.equal(displayStore.snapshot().length, 0);
 
   view.unmount();
 });

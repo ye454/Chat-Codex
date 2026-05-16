@@ -24,6 +24,13 @@ export interface FileStateStoreOptions {
   cwd?: string;
 }
 
+export interface RemoveChannelStateResult {
+  channelId: string;
+  removedRoutes: number;
+  releasedSessions: number;
+  removedPendingBindings: number;
+}
+
 interface LoadedFileState {
   rootDir: string;
   routes: Map<string, RouteRecord>;
@@ -135,6 +142,15 @@ export class FileStateStore extends MemoryStateStore {
     }
   }
 
+  override deletePendingBinding(id: string): PendingBindingRecord | undefined {
+    const record = super.deletePendingBinding(id);
+    if (record) {
+      this.persistedPendingBindings.delete(record.id);
+      this.persist();
+    }
+    return record;
+  }
+
   override listPendingBindings(): PendingBindingRecord[] {
     return [...this.persistedPendingBindings.values()]
       .map((record) => ({ ...record, binding: { ...record.binding } }))
@@ -175,6 +191,39 @@ export class FileStateStore extends MemoryStateStore {
 
   listRoutes(): RouteRecord[] {
     return [...this.routes.values()].sort((left, right) => left.routeKey.localeCompare(right.routeKey));
+  }
+
+  removeChannelState(channelId: string): RemoveChannelStateResult {
+    const routes = [...this.routes.values()].filter((route) => route.channelId === channelId);
+    const pending = [...this.persistedPendingBindings.values()].filter((record) => record.channelId === channelId);
+    const releasedSessions = new Set<string>();
+
+    for (const route of routes) {
+      for (const owner of this.sessionBindings.listOwners(route.routeKey)) {
+        releasedSessions.add(owner.sessionId);
+        this.sessionBindings.rollbackClaim(route.routeKey, owner.sessionId);
+      }
+      const active = this.sessionBindings.getActive(route.routeKey);
+      if (active) {
+        releasedSessions.add(active.sessionId);
+        this.sessionBindings.unbindActiveSession(route.routeKey);
+      }
+      this.routes.delete(route.routeKey);
+    }
+
+    for (const record of pending) {
+      const removed = super.deletePendingBinding(record.id);
+      if (removed?.binding.type === "existing") releasedSessions.add(removed.binding.sessionId);
+      this.persistedPendingBindings.delete(record.id);
+    }
+
+    this.persist();
+    return {
+      channelId,
+      removedRoutes: routes.length,
+      releasedSessions: releasedSessions.size,
+      removedPendingBindings: pending.length,
+    };
   }
 
   private setRouteActiveSession(routeKey: string, sessionId: string | undefined): void {

@@ -2,6 +2,7 @@ import React from "react";
 import { Box, Text } from "ink";
 import type { CodexRunPolicy } from "../../codex/codex-cli.js";
 import type { SelectableSessionChoice, SessionDisplay } from "../actions/binding-actions.js";
+import { formatSessionActiveTime } from "../actions/binding-actions.js";
 import type { Flash, Screen } from "./types.js";
 
 const FIELD_WIDTH = 22;
@@ -29,16 +30,18 @@ export function Section({ title, children }: { title: string; children: React.Re
 
 export function ListRow({ active, left, right, tone }: { active: boolean; left: string; right?: string; tone?: "default" | "primary" | "success" | "warning" | "danger" | "muted" }): React.JSX.Element {
   const color = rowColor(active, tone);
+  const rightWidth = right?.includes("最近") ? 40 : 32;
+  const leftWidth = right?.includes("最近") ? 44 : 54;
   return (
     <Box>
-      <Text color={color} bold={active || tone === "primary" || tone === "success"}>{active ? "> " : "  "}{padRight(truncate(left, 52), 54)}</Text>
-      {right ? <Text color={color}>{truncate(right, 32)}</Text> : null}
+      <Text color={color} bold={active || tone === "primary" || tone === "success"}>{active ? "> " : "  "}{padRight(truncate(left, leftWidth - 2), leftWidth)}</Text>
+      {right ? <Text color={color}>{truncate(right, rightWidth)}</Text> : null}
     </Box>
   );
 }
 
 export function SessionRow({ active, index, session }: { active: boolean; index: number; session: SelectableSessionChoice }): React.JSX.Element {
-  return <ListRow active={active} left={`${index + 1}. ${session.current ? "当前" : "可用"}   ${session.title ?? session.id}`} right={session.shortId} />;
+  return <ListRow active={active} left={`${index + 1}. ${session.current ? "当前" : "可用"}   ${session.title ?? session.id}`} right={`${session.shortId}  最近 ${formatSessionActiveTime(session.updatedAt)}`} />;
 }
 
 export function KeyValue({ label, value }: { label: string; value: string }): React.JSX.Element {
@@ -65,6 +68,10 @@ export function Muted({ text }: { text: string }): React.JSX.Element {
 
 export function formatSession(session: SessionDisplay): string {
   return `${session.title ?? session.id} / ${session.shortId}`;
+}
+
+export function formatSessionWithActivity(session: SessionDisplay): string {
+  return `${formatSession(session)}  最近 ${formatSessionActiveTime(session.updatedAt)}`;
 }
 
 export function formatPermission(policy: CodexRunPolicy): string {
@@ -111,7 +118,8 @@ function footerHint(screen: Screen["name"], context?: "firstRun" | "emptyChannel
   if (context === "firstRun") return "↑↓ 选择  Enter 执行  1/w 微信  2/f 飞书  3/p 权限  4/d 工作目录  0/q 退出";
   if (context === "emptyChannels") return "↑↓ 选择  Enter 执行  1/w 微信  2/f 飞书  Esc/q 返回";
   if (screen === "home") return "↑↓ 选择  Enter 执行  w 微信  f 飞书  c 渠道  b 绑定  p 权限  d 目录  q 退出";
-  if (screen === "channels") return "↑↓ 选择  Enter 执行  w 添加微信  f 添加飞书  e 启停  Esc 返回";
+  if (screen === "channels") return "↑↓ 选择  Enter 执行  w 微信  f 飞书  e 启停  Esc 返回";
+  if (screen === "channelRename") return "输入后 Enter 保存；留空清除备注  Esc 返回";
   if (screen === "bindings") return "↑↓ 选择  Enter 详情  n 新建  m 手动绑定  u 解绑  p 权限  Esc 返回";
   if (screen === "addWeixin") return "Enter 获取/检查二维码  Esc 返回";
   if (screen === "addFeishu") return "输入后 Enter 下一步  Secret 不回显  Esc 返回";

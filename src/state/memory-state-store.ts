@@ -194,6 +194,14 @@ export class MemoryStateStore {
     this.releasePendingBindingOwner(record);
   }
 
+  deletePendingBinding(id: string): PendingBindingRecord | undefined {
+    const record = this.pendingBindings.get(id);
+    if (!record) return undefined;
+    this.pendingBindings.delete(id);
+    this.releasePendingBindingOwner(record);
+    return clonePendingBinding(record);
+  }
+
   listPendingBindings(): PendingBindingRecord[] {
     return [...this.pendingBindings.values()]
       .map(clonePendingBinding)

@@ -35,6 +35,7 @@ test("BindingActions lists selectable sessions and excludes sessions owned by an
   assert.equal(formatOwnerRouteLabel(state, secondRoute), "飞书 / default / 李四");
   const text = actions.formatSessionChoices(firstRoute, choices);
   assert.match(text, /1\. 可用/);
+  assert.match(text, /最近 05-16/);
   assert.match(text, /m\. 手动输入 Session ID/);
   assert.doesNotMatch(text, /2\. 手动输入 Session ID/);
 });

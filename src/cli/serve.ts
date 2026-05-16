@@ -25,8 +25,8 @@ import { checkNewSessionWorkdir, resolveNewSessionWorkdir } from "../codex/workd
 import { ConsoleLogger } from "../logging/logger.js";
 import { ConsoleTranscriptSink } from "../logging/transcript.js";
 import type { ChannelLoginResult, ChannelStatus } from "../protocol/channel.js";
-import { BindingActions, formatOwnerRouteLabel, formatRunPolicyForUser, type BindingSummary, type SessionChoices } from "./actions/binding-actions.js";
-import { ChannelActions, feishuChannelId, formatManagedChannelList, type ManagedChannelSummary } from "./actions/channel-actions.js";
+import { BindingActions, formatOwnerRouteLabel, formatRunPolicyForUser, formatSessionActiveTime, type BindingSummary, type SessionChoices } from "./actions/binding-actions.js";
+import { ChannelActions, feishuChannelId, formatChannelRecordLabel, formatFullDateTime, formatManagedChannelList, type ManagedChannelSummary } from "./actions/channel-actions.js";
 import { LauncherActions } from "./actions/launcher-actions.js";
 import type { PreparedServeStartup, RealCodexAdapterMode, ServeChannelPlan, ServeStartupOptions } from "./launcher-types.js";
 import { runChatCodexTui } from "./tui/run-tui.js";
@@ -383,15 +383,20 @@ async function manageConfiguredChannel(
       "渠道详情",
       "",
       `类型: ${channel.record.type === "weixin" ? "微信" : "飞书"}`,
-      `账号: ${channel.status.account ?? channel.record.defaultAccountId ?? "default"}`,
+      `备注: ${channel.record.displayName ?? "未设置"}`,
+      `账号标识: ${channel.status.account ?? channel.record.defaultAccountId ?? "default"}`,
       `实例: ${channel.record.id}`,
       `状态: ${formatChannelStateForUser(channel.status.state)}`,
       `启用: ${channel.record.enabled ? "是" : "否"}`,
+      `添加时间: ${formatFullDateTime(channel.record.createdAt)}`,
+      `更新时间: ${formatFullDateTime(channel.record.updatedAt)}`,
       channel.status.lastError ? `最近错误: ${channel.status.lastError}` : undefined,
       "",
       channel.record.type === "weixin" ? "1. 设置微信主聊天绑定" : "1. 查看说明",
-      `2. ${channel.record.enabled ? "停用" : "启用"}这个渠道`,
-      "3. 状态详情",
+      "2. 修改备注",
+      `3. ${channel.record.enabled ? "停用" : "启用"}这个渠道（保留聊天绑定）`,
+      "4. 删除这个渠道",
+      "5. 状态详情",
       "0. 返回",
     ].filter(Boolean).join("\n"));
     const choice = normalizeText(await rl.question("请选择 [0 返回]: "));
@@ -405,16 +410,67 @@ async function manageConfiguredChannel(
       continue;
     }
     if (choice === "2") {
-      channelActions.setChannelEnabled(channel.record.id, !channel.record.enabled);
-      console.log(channel.record.enabled ? "已停用渠道。" : "已启用渠道。");
+      await renameConfiguredChannel(rl, channelActions, channel);
       return;
     }
     if (choice === "3") {
+      channelActions.setChannelEnabled(channel.record.id, !channel.record.enabled);
+      console.log(channel.record.enabled ? "已停用渠道，原聊天绑定保持不变。" : "已启用渠道，原聊天绑定保持不变。");
+      return;
+    }
+    if (choice === "4") {
+      await removeConfiguredChannel(rl, channelActions, channel);
+      return;
+    }
+    if (choice === "5") {
       console.log(formatChannelStatusDetails(channel.status, channel.capabilities));
       continue;
     }
     console.log("没有这个选项，请重新选择。");
   }
+}
+
+async function renameConfiguredChannel(
+  rl: Interface,
+  channelActions: ChannelActions,
+  channel: ManagedChannelSummary,
+): Promise<void> {
+  console.log("");
+  console.log([
+    "修改渠道备注",
+    "",
+    `渠道: ${formatChannelRecordLabel(channel.record, channel.status)}`,
+    "备注只影响展示，不改变渠道实例、账号标识或聊天绑定。",
+  ].join("\n"));
+  const answer = await rl.question("请输入新备注；直接回车清除备注；输入 0 取消: ");
+  if (answer.trim() === "0" || isBackText(answer.trim())) {
+    console.log("已取消修改备注。");
+    return;
+  }
+  const updated = channelActions.renameChannel(channel.record.id, answer.trim() || undefined);
+  console.log(updated ? `已更新渠道备注：${formatChannelRecordLabel(updated)}` : "这个渠道已经不存在。");
+}
+
+async function removeConfiguredChannel(
+  rl: Interface,
+  channelActions: ChannelActions,
+  channel: ManagedChannelSummary,
+): Promise<void> {
+  console.log("");
+  console.log([
+    "删除渠道",
+    "",
+    `确认删除 ${formatChannelRecordLabel(channel.record, channel.status)}？`,
+    "这会删除该渠道配置、本机渠道状态目录、已发现聊天记录、待生效绑定，并释放相关 session 占用。",
+    "不会删除 Codex session 本体。",
+  ].join("\n"));
+  const answer = await rl.question("确认删除请输入 YES [其他输入取消]: ");
+  if (answer.trim() !== "YES") {
+    console.log("已取消删除渠道。");
+    return;
+  }
+  const result = channelActions.removeChannel(channel.record.id);
+  console.log(result.message);
 }
 
 async function configureWeixinPrimaryBinding(
@@ -442,7 +498,7 @@ async function configureWeixinPrimaryBinding(
       "请选择这个微信主聊天使用哪个 Codex session：",
       "",
       ...(choices.selectable.length > 0
-        ? choices.selectable.map((session, index) => `  ${index + 1}. ${session.title ?? session.id}    ${session.shortId}`)
+        ? choices.selectable.map((session, index) => `  ${index + 1}. ${session.title ?? session.id}    ${session.shortId}    最近 ${formatSessionActiveTime(session.updatedAt)}`)
         : ["  暂无可选历史 session"]),
       "",
       "操作:",
@@ -453,7 +509,7 @@ async function configureWeixinPrimaryBinding(
     if (choices.unavailable.length > 0) {
       lines.push("", "不可选（已绑定其他聊天）:");
       for (const session of choices.unavailable) {
-        lines.push(`  已绑定到 ${session.ownerLabel}    ${session.title ?? session.id}    ${session.shortId}`);
+        lines.push(`  已绑定到 ${session.ownerLabel}    ${session.title ?? session.id}    ${session.shortId}    最近 ${formatSessionActiveTime(session.updatedAt)}`);
       }
     }
     console.log(lines.join("\n"));
@@ -499,6 +555,7 @@ async function configureWeixinPrimaryBinding(
       "已设置微信主聊天绑定",
       `聊天: 微信 / ${accountId} / 主聊天`,
       `待绑定 session: ${formatCodexSessionTitleForDisplay(session) ?? session.id} / ${shortSessionId(session.id)}`,
+      `最近活跃: ${formatSessionActiveTime(session.updatedAt, "full")}`,
       "说明: 收到第一条微信私聊后生效。",
     ].join("\n"));
     return;
@@ -701,6 +758,7 @@ async function createAndBindNewSession(rl: Interface, startup: PreparedServeStar
       "",
       `聊天: ${result.binding.label}`,
       `当前 session: ${result.session.title ?? result.session.id} / ${result.session.shortId}`,
+      `最近活跃: ${formatSessionActiveTime(result.session.updatedAt, "full")}`,
       result.session.cwd ? `工作目录: ${result.session.cwd}` : undefined,
       "",
       "1. 返回绑定详情",
@@ -829,7 +887,7 @@ function formatPersistedBindingList(bindings: BindingSummary[]): string {
     "",
     ...bindings.map((binding, index) => {
       const session = binding.activeSession
-        ? `${binding.activeSession.title ?? binding.activeSession.id} / ${binding.activeSession.shortId}`
+        ? `${binding.activeSession.title ?? binding.activeSession.id} / ${binding.activeSession.shortId}，最近活跃 ${formatSessionActiveTime(binding.activeSession.updatedAt)}`
         : "未绑定";
       const permission = binding.permission ? `，${formatRunPolicyForUser(binding.permission)}` : "";
       return `${index + 1}. ${binding.label}    ${session}${permission}`;
@@ -1263,7 +1321,7 @@ function formatSessionChoice(index: number, session: DiscoveredCodexSession): st
   const title = formatCodexSessionTitleForDisplay(session);
   const parts = [`${index}. ${title ?? session.id}`];
   parts.push(`   Session ID: ${session.id}`);
-  if (session.updatedAt) parts.push(`   最近更新: ${session.updatedAt}`);
+  parts.push(`   最近活跃: ${formatSessionActiveTime(session.updatedAt, "full")}`);
   if (session.cwd) parts.push(`   工作目录: ${session.cwd}`);
   return parts.join("\n");
 }

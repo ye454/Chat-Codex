@@ -16,8 +16,15 @@ export interface UpsertChannelInstanceInput {
   enabled?: boolean;
   stateDir?: string;
   accountId?: string;
+  displayName?: string;
   credentialSource?: string;
   metadata?: Record<string, unknown>;
+}
+
+export interface RemoveChannelConfigResult {
+  ok: boolean;
+  channel?: ChannelInstanceRecord;
+  removedStateDir: boolean;
 }
 
 export interface ChannelConfigStoreOptions {
@@ -47,6 +54,7 @@ export class ChannelConfigStore {
       enabled: input.enabled ?? existing?.enabled ?? true,
       stateDir,
       defaultAccountId: input.accountId ?? existing?.defaultAccountId,
+      displayName: normalizeDisplayName(input.displayName) ?? existing?.displayName,
       credentialSource: input.credentialSource ?? existing?.credentialSource,
       createdAt: existing?.createdAt ?? now,
       updatedAt: now,
@@ -89,8 +97,49 @@ export class ChannelConfigStore {
       enabled,
       stateDir: existing.stateDir,
       accountId: existing.defaultAccountId,
+      displayName: existing.displayName,
       credentialSource: existing.credentialSource,
     });
+  }
+
+  setChannelDisplayName(id: string, displayName?: string): ChannelInstanceRecord | undefined {
+    const config = this.readConfig();
+    const existing = config.channels.find((channel) => channel.id === id);
+    if (!existing) return undefined;
+    const now = new Date().toISOString();
+    const record: ChannelInstanceRecord = {
+      ...existing,
+      displayName: normalizeDisplayName(displayName),
+      updatedAt: now,
+    };
+    config.channels = [
+      ...config.channels.filter((channel) => channel.id !== id),
+      record,
+    ].sort((left, right) => left.id.localeCompare(right.id));
+    config.updatedAt = now;
+    writeJsonFileAtomic(this.configPath, config);
+    this.writeInstanceFiles(record, undefined, undefined);
+    return record;
+  }
+
+  removeChannelInstance(id: string, options: { removeStateDir?: boolean } = {}): RemoveChannelConfigResult {
+    const config = this.readConfig();
+    const existing = config.channels.find((channel) => channel.id === id);
+    if (!existing) return { ok: false, removedStateDir: false };
+    const now = new Date().toISOString();
+    config.channels = config.channels.filter((channel) => channel.id !== id);
+    config.updatedAt = now;
+    writeJsonFileAtomic(this.configPath, config);
+
+    let removedStateDir = false;
+    if (options.removeStateDir ?? true) {
+      const absoluteStateDir = this.resolveStateDir(existing.stateDir);
+      if (fs.existsSync(absoluteStateDir)) {
+        fs.rmSync(absoluteStateDir, { recursive: true, force: true });
+        removedStateDir = true;
+      }
+    }
+    return { ok: true, channel: existing, removedStateDir };
   }
 
   resolveStateDir(stateDir: string): string {
@@ -153,4 +202,9 @@ export class ChannelConfigStore {
     return path.join(this.resolveStateDir(record.stateDir), "accounts", accountId);
   }
 
+}
+
+function normalizeDisplayName(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : undefined;
 }

@@ -16,6 +16,7 @@ export type Screen =
   | { name: "home" }
   | { name: "channels" }
   | { name: "channelDetail"; channelId: string }
+  | { name: "channelRename"; channelId: string }
   | { name: "addWeixin"; login?: import("../actions/launcher-actions.js").WeixinLoginSession }
   | { name: "weixinBinding"; channelId: string }
   | { name: "addFeishu"; step: FeishuInputStep; values: Partial<FeishuCredentials> }

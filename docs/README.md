@@ -40,6 +40,9 @@
 - `ink-tui-interaction-design.zh-CN.md`
   Ink TUI 交互设计。说明 `chat-codex` TUI 的页面结构、键盘快捷键、状态栏、微信/飞书配置流程、聊天绑定流程、工作目录设置、启动衔接和实施顺序。
 
+- `tui-core-functionality-followups.zh-CN.md`
+  TUI 核心功能完善设计。说明渠道删除、渠道备注、添加时间、禁用/删除绑定语义、session 最近活跃时间和运行期日志完整展示。
+
 - `feishu-adapter-design.zh-CN.md`
   飞书适配设计。说明第一阶段如何用飞书 WebSocket 长连接接入私聊文本消息，并默认投递 Codex 进度。
 
@@ -100,11 +103,12 @@ secrets/feishu.local.md
 5. 读 `local-state-persistence.zh-CN.md`，确认本地文件持久化、渠道账号目录和 session owner 约束。
 6. 读 `cli-core-interaction-design.zh-CN.md`，确认当前 CLI/TUI 首页、渠道配置、微信主聊天绑定和飞书多 chat_id 绑定边界。
 7. 做 TUI 相关开发时读 `ink-tui-interaction-design.zh-CN.md`，确认 Ink 页面、快捷键、状态栏和实现顺序。
-8. 读 `cli-interaction-redesign.zh-CN.md`，了解上一轮普通 CLI 重构背景和历史设计。
-9. 读 `development-and-test.zh-CN.md`，确认开发和测试报告要求。
-10. 读 `git-management.zh-CN.md`，确认提交边界和忽略规则。
-11. Agent 继续读 `agent-guide.zh-CN.md`，确认执行规范。
-12. 需要 Codex 协议或微信插件源码细节时，先读 `../references/README.md`，按里面的说明拉取本地参考源码。
+8. 做 TUI 核心功能补齐时读 `tui-core-functionality-followups.zh-CN.md`，确认渠道删除、备注、添加时间、session 活跃时间和运行日志全文展示语义。
+9. 读 `cli-interaction-redesign.zh-CN.md`，了解上一轮普通 CLI 重构背景和历史设计。
+10. 读 `development-and-test.zh-CN.md`，确认开发和测试报告要求。
+11. 读 `git-management.zh-CN.md`，确认提交边界和忽略规则。
+12. Agent 继续读 `agent-guide.zh-CN.md`，确认执行规范。
+13. 需要 Codex 协议或微信插件源码细节时，先读 `../references/README.md`，按里面的说明拉取本地参考源码。
 
 ## 分阶段工作顺序
 

@@ -3,6 +3,7 @@ import { Box, useApp, useInput } from "ink";
 import type { CodexRunPolicy } from "../../codex/codex-cli.js";
 import type { FeishuCredentials } from "../../channels/feishu/feishu-types.js";
 import type { BindingSummary, SessionChoices } from "../actions/binding-actions.js";
+import { formatManagedChannelLabel } from "../actions/channel-actions.js";
 import {
   feishuCredentialDefaults,
   type FeishuBotSetupResult,
@@ -17,6 +18,7 @@ import {
   BindingDetailView,
   BindingsView,
   ChannelDetailView,
+  ChannelRenameView,
   ChannelsView,
   HelpView,
   HomeView,
@@ -82,7 +84,7 @@ export function ChatCodexTui({ actions, onDone }: ChatCodexTuiProps): React.JSX.
     ...bindings.map((binding) => ({ kind: "route" as const, binding })),
     ...pendingBindings.map((pending) => ({ kind: "pending" as const, pending })),
   ];
-  const currentChannel = screen.name === "channelDetail"
+  const currentChannel = screen.name === "channelDetail" || screen.name === "channelRename"
     ? channels.find((item) => item.record.id === screen.channelId)
     : undefined;
   const currentBinding = screen.name === "bindingDetail"
@@ -162,7 +164,7 @@ export function ChatCodexTui({ actions, onDone }: ChatCodexTuiProps): React.JSX.
       setScreen({ name: "channels" });
       return;
     }
-    if (screen.name === "channelDetail" || screen.name === "addFeishu") {
+    if (screen.name === "channelDetail" || screen.name === "channelRename" || screen.name === "addFeishu") {
       setScreen({ name: "channels" });
       return;
     }
@@ -182,7 +184,7 @@ export function ChatCodexTui({ actions, onDone }: ChatCodexTuiProps): React.JSX.
   };
 
   useInput((input, key) => {
-    if (screen.name === "addFeishu" || screen.name === "manualSession" || screen.name === "workdirInput") {
+    if (screen.name === "addFeishu" || screen.name === "manualSession" || screen.name === "workdirInput" || screen.name === "channelRename") {
       if (key.escape) back();
       return;
     }
@@ -274,7 +276,7 @@ export function ChatCodexTui({ actions, onDone }: ChatCodexTuiProps): React.JSX.
   };
 
   const handleChannelsInput = async (input: string, enter: boolean): Promise<void> => {
-    const actionCount = channels.length === 0 ? 2 : channels.length + 5;
+    const actionCount = channels.length === 0 ? 2 : channels.length + 7;
     const picked = numericPick(input, actionCount);
     const actionIndex = picked ?? selected;
     const actionRequested = enter || picked !== undefined;
@@ -297,16 +299,24 @@ export function ChatCodexTui({ actions, onDone }: ChatCodexTuiProps): React.JSX.
     }
     const targetChannel = channels[Math.min(channelCursor, channels.length - 1)];
     if (actionIndex === channels.length + 2 && actionRequested) {
-      if (!targetChannel) return;
-      const updated = await actions.setChannelEnabled(targetChannel.record.id, !targetChannel.record.enabled);
-      await refresh(updated?.record.enabled ? "已启用渠道。" : "已停用渠道。");
+      if (targetChannel) openRenameChannel(targetChannel.record.id);
       return;
     }
     if (actionIndex === channels.length + 3 && actionRequested) {
-      if (targetChannel) setScreen({ name: "channelDetail", channelId: targetChannel.record.id });
+      if (!targetChannel) return;
+      const updated = await actions.setChannelEnabled(targetChannel.record.id, !targetChannel.record.enabled);
+      await refresh(updated?.record.enabled ? "已启用渠道，原聊天绑定保持不变。" : "已停用渠道，原聊天绑定保持不变。");
       return;
     }
     if (actionIndex === channels.length + 4 && actionRequested) {
+      if (targetChannel) confirmRemoveChannel(targetChannel);
+      return;
+    }
+    if (actionIndex === channels.length + 5 && actionRequested) {
+      if (targetChannel) setScreen({ name: "channelDetail", channelId: targetChannel.record.id });
+      return;
+    }
+    if (actionIndex === channels.length + 6 && actionRequested) {
       goHome();
       return;
     }
@@ -315,7 +325,7 @@ export function ChatCodexTui({ actions, onDone }: ChatCodexTuiProps): React.JSX.
       const toggleTarget = channel ?? targetChannel;
       if (!toggleTarget) return;
       const updated = await actions.setChannelEnabled(toggleTarget.record.id, !toggleTarget.record.enabled);
-      await refresh(updated?.record.enabled ? "已启用渠道。" : "已停用渠道。");
+      await refresh(updated?.record.enabled ? "已启用渠道，原聊天绑定保持不变。" : "已停用渠道，原聊天绑定保持不变。");
       return;
     }
     if (!channel) return;
@@ -323,13 +333,13 @@ export function ChatCodexTui({ actions, onDone }: ChatCodexTuiProps): React.JSX.
   };
 
   const handleChannelDetailInput = async (input: string, enter: boolean, record: LauncherDashboard["channels"][number]["record"]): Promise<void> => {
-    const picked = numericPick(input, 3);
+    const picked = numericPick(input, 5);
     const actionIndex = picked ?? selected;
     const explicitAction = enter || picked !== undefined || input === "b" || input === "c" || input === "e";
     if (!explicitAction) return;
     if (input === "e") {
       const updated = await actions.setChannelEnabled(record.id, !record.enabled);
-      await refresh(updated?.record.enabled ? "已启用渠道。" : "已停用渠道。");
+      await refresh(updated?.record.enabled ? "已启用渠道，原聊天绑定保持不变。" : "已停用渠道，原聊天绑定保持不变。");
       return;
     }
     if (record.type === "weixin" && (input === "b" || actionIndex === 0) && (enter || picked !== undefined || input === "b")) {
@@ -341,11 +351,20 @@ export function ChatCodexTui({ actions, onDone }: ChatCodexTuiProps): React.JSX.
       return;
     }
     if (actionIndex === 1) {
-      const updated = await actions.setChannelEnabled(record.id, !record.enabled);
-      await refresh(updated?.record.enabled ? "已启用渠道。" : "已停用渠道。");
+      openRenameChannel(record.id);
       return;
     }
     if (actionIndex === 2) {
+      const updated = await actions.setChannelEnabled(record.id, !record.enabled);
+      await refresh(updated?.record.enabled ? "已启用渠道，原聊天绑定保持不变。" : "已停用渠道，原聊天绑定保持不变。");
+      return;
+    }
+    if (actionIndex === 3) {
+      const target = channels.find((item) => item.record.id === record.id);
+      if (target) confirmRemoveChannel(target);
+      return;
+    }
+    if (actionIndex === 4) {
       setScreen({ name: "status" });
     }
   };
@@ -590,6 +609,35 @@ export function ChatCodexTui({ actions, onDone }: ChatCodexTuiProps): React.JSX.
     await refresh();
   };
 
+  const openRenameChannel = (channelId: string): void => {
+    const channel = channels.find((item) => item.record.id === channelId);
+    setManualValue(channel?.record.displayName ?? "");
+    setScreen({ name: "channelRename", channelId });
+  };
+
+  const saveChannelName = async (channelId: string, value: string): Promise<void> => {
+    const updated = await actions.renameChannel(channelId, value.trim() || undefined);
+    setFlash({
+      kind: updated ? "success" : "error",
+      message: updated ? `已更新渠道备注：${formatManagedChannelLabel(updated)}` : "这个渠道已经不存在。",
+    });
+    await refresh();
+    setScreen({ name: "channels" });
+  };
+
+  const confirmRemoveChannel = (channel: LauncherDashboard["channels"][number]): void => {
+    setConfirm({
+      message: `确认删除 ${formatManagedChannelLabel(channel)}？会移除渠道配置、聊天记录和绑定占用；不会删除 Codex session。本操作按 y 确认，按 n 取消。`,
+      yes: async () => {
+        const result = await actions.removeChannel(channel.record.id);
+        setConfirm(undefined);
+        setFlash({ kind: result.ok ? "success" : "error", message: result.message });
+        setScreen({ name: "channels" });
+        await refresh();
+      },
+    });
+  };
+
   const confirmUnbind = (binding: BindingSummary): void => {
     setConfirm({
       message: `确认解绑 ${binding.label} 当前 session？按 y 确认，按 n 取消。`,
@@ -625,6 +673,9 @@ export function ChatCodexTui({ actions, onDone }: ChatCodexTuiProps): React.JSX.
     if (screen.name === "home") return <HomeView dashboard={dashboard} selected={selected} />;
     if (screen.name === "channels") return <ChannelsView channels={channels} selected={selected} channelCursor={channelCursor} />;
     if (screen.name === "channelDetail") return <ChannelDetailView channel={currentChannel} selected={selected} />;
+    if (screen.name === "channelRename") return <ChannelRenameView channel={currentChannel} value={manualValue || currentChannel?.record.displayName || ""} onChange={setManualValue} onSubmit={async (value) => {
+      await saveChannelName(screen.channelId, value);
+    }} />;
     if (screen.name === "addWeixin") return <AddWeixinView screen={screen} loading={loading} />;
     if (screen.name === "weixinBinding") {
       const channel = channels.find((item) => item.record.id === screen.channelId)?.record;
@@ -670,10 +721,11 @@ export function ChatCodexTui({ actions, onDone }: ChatCodexTuiProps): React.JSX.
 }
 
 function maxSelectableIndex(screen: Screen, channels: LauncherDashboard["channels"], bindingItemCount: number): number {
-  if (screen.name === "channels") return channels.length > 0 ? channels.length + 4 : 1;
+  if (screen.name === "channels") return channels.length > 0 ? channels.length + 6 : 1;
   if (screen.name === "bindings") return Math.max(0, bindingItemCount - 1);
   if (screen.name === "home") return channels.length === 0 ? 4 : 5;
-  if (screen.name === "channelDetail" || screen.name === "bindingDetail") return 3;
+  if (screen.name === "channelDetail") return 4;
+  if (screen.name === "bindingDetail") return 3;
   if (screen.name === "permission") return 1;
   if (screen.name === "workdir") return 1;
   return 30;

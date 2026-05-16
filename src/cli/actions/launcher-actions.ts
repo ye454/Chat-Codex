@@ -30,7 +30,7 @@ import {
   type SessionDisplay,
   type UnbindSessionResult,
 } from "./binding-actions.js";
-import { ChannelActions, feishuChannelId, type ManagedChannelSummary } from "./channel-actions.js";
+import { ChannelActions, feishuChannelId, type ManagedChannelSummary, type RemoveChannelResult } from "./channel-actions.js";
 
 const WEIXIN_LOGIN_CHECK_TIMEOUT_MS = 15_000;
 
@@ -119,6 +119,16 @@ export class LauncherActions {
     const updated = this.channelActions.setChannelEnabled(channelId, enabled);
     if (!updated) return undefined;
     return (await this.listChannels()).find((channel) => channel.record.id === channelId);
+  }
+
+  async renameChannel(channelId: string, displayName?: string): Promise<ManagedChannelSummary | undefined> {
+    const updated = this.channelActions.renameChannel(channelId, displayName);
+    if (!updated) return undefined;
+    return (await this.listChannels()).find((channel) => channel.record.id === channelId);
+  }
+
+  async removeChannel(channelId: string): Promise<RemoveChannelResult> {
+    return this.channelActions.removeChannel(channelId);
   }
 
   async startWeixinLogin(): Promise<WeixinLoginSession> {

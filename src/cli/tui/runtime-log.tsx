@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { Box, Text } from "ink";
+import { Box, Text, useInput } from "ink";
 import type { ChannelMedia, ChannelMessage, ChannelTarget } from "../../protocol/channel.js";
 import type { TranscriptSink } from "../../logging/transcript.js";
 import type { Logger } from "../../logging/logger.js";
@@ -39,6 +39,11 @@ export class RuntimeLogStore {
     });
     this.nextId += 1;
     if (this.entries.length > 300) this.entries.splice(0, this.entries.length - 300);
+    for (const listener of this.listeners) listener();
+  }
+
+  clear(): void {
+    this.entries.splice(0, this.entries.length);
     for (const listener of this.listeners) listener();
   }
 
@@ -95,10 +100,46 @@ export class RuntimeTuiLogger implements Logger {
   }
 }
 
-export function RuntimeLogView({ summary, store }: { summary: RuntimeLogSummary; store: RuntimeLogStore }): React.JSX.Element {
+export function RuntimeLogView({ summary, store, interactive = true }: { summary: RuntimeLogSummary; store: RuntimeLogStore; interactive?: boolean }): React.JSX.Element {
   const [logs, setLogs] = useState<RuntimeLogEntry[]>(store.snapshot());
+  const [scrollOffset, setScrollOffset] = useState(0);
   useEffect(() => store.subscribe(() => setLogs(store.snapshot())), [store]);
-  const visibleLogs = useMemo(() => logs.slice(-12), [logs]);
+  const visibleCount = 12;
+  useInput((input, key) => {
+    const maxScroll = Math.max(0, logs.length - visibleCount);
+    const pageKey = key as typeof key & { pageUp?: boolean; pageDown?: boolean; end?: boolean };
+    if (key.upArrow) {
+      setScrollOffset((value) => Math.min(maxScroll, value + 1));
+      return;
+    }
+    if (key.downArrow) {
+      setScrollOffset((value) => Math.max(0, value - 1));
+      return;
+    }
+    if (pageKey.pageUp) {
+      setScrollOffset((value) => Math.min(maxScroll, value + visibleCount));
+      return;
+    }
+    if (pageKey.pageDown) {
+      setScrollOffset((value) => Math.max(0, value - visibleCount));
+      return;
+    }
+    if (pageKey.end) {
+      setScrollOffset(0);
+      return;
+    }
+    if (input === "c") {
+      store.clear();
+      setScrollOffset(0);
+    }
+  }, { isActive: interactive });
+  useEffect(() => {
+    setScrollOffset((value) => Math.min(value, Math.max(0, logs.length - visibleCount)));
+  }, [logs.length]);
+  const visibleLogs = useMemo(() => {
+    const end = Math.max(0, logs.length - scrollOffset);
+    return logs.slice(Math.max(0, end - visibleCount), end);
+  }, [logs, scrollOffset]);
   return (
     <Box flexDirection="column">
       <Frame title={summary.title} subtitle="已启动  Ctrl+C 停止" borderColor="green">
@@ -117,7 +158,7 @@ export function RuntimeLogView({ summary, store }: { summary: RuntimeLogSummary;
       </Frame>
       <Box marginTop={1} flexDirection="column">
         <Text color="gray">等待微信 / 飞书消息。收到消息、回复、进度和媒体发送都会在这里追加。</Text>
-        <Text color="gray">按 Ctrl+C 停止服务并退出。</Text>
+        <Text color="gray">↑↓ 滚动  PgUp/PgDn 翻页  End 最新  c 清屏  Ctrl+C 停止服务</Text>
       </Box>
     </Box>
   );
@@ -136,7 +177,7 @@ function RuntimeLogRow({ entry }: { entry: RuntimeLogEntry }): React.JSX.Element
   return (
     <Box flexDirection="column" marginBottom={1}>
       <Text color={color}>{formatClock(entry.time)}  {kindLabel(entry.kind)}  {truncate(entry.source, 48)}</Text>
-      {truncate(entry.message.trim() || "空消息", 84).split(/\r?\n/).map((line, index) => <Text key={index}>  {line}</Text>)}
+      {(entry.message.trim() || "空消息").split(/\r?\n/).map((line, index) => <Text key={index} wrap="wrap">  {line}</Text>)}
     </Box>
   );
 }

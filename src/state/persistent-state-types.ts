@@ -93,6 +93,7 @@ export interface ChannelInstanceRecord {
   enabled: boolean;
   stateDir: string;
   defaultAccountId?: string;
+  displayName?: string;
   credentialSource?: string;
   createdAt: string;
   updatedAt: string;

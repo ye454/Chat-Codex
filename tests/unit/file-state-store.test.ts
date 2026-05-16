@@ -159,6 +159,87 @@ test("ChannelConfigStore writes channel account metadata separately from local c
   });
 });
 
+test("ChannelConfigStore persists display name and removes channel state directory", () => {
+  const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-channel-config-"));
+  const rootDir = path.join(baseDir, "state", "bridge");
+  const store = new ChannelConfigStore({ bridgeDir: rootDir });
+
+  const created = store.upsertChannelInstance({
+    id: "feishu-main",
+    type: "feishu",
+    accountId: "default",
+    displayName: "研发助手",
+  });
+  const renamed = store.setChannelDisplayName("feishu-main", "大龙虾");
+
+  assert.ok(renamed);
+  assert.equal(renamed.displayName, "大龙虾");
+  assert.equal(renamed.createdAt, created.createdAt);
+  assert.equal(store.listChannelInstances()[0]?.displayName, "大龙虾");
+
+  const stateDir = store.resolveStateDir(created.stateDir);
+  assert.equal(fs.existsSync(stateDir), true);
+  const removed = store.removeChannelInstance("feishu-main");
+
+  assert.equal(removed.ok, true);
+  assert.equal(removed.removedStateDir, true);
+  assert.equal(fs.existsSync(stateDir), false);
+  assert.equal(store.listChannelInstances().length, 0);
+});
+
+test("FileStateStore removes channel routes and releases active and pending owners", () => {
+  const rootDir = tempStateDir();
+  const store = new FileStateStore({ rootDir });
+  const feishuRoute = "feishu-main:default:direct:oc_user";
+  const weixinRoute = "weixin-main:wx:direct:wx_user";
+
+  store.recordRouteMessage(feishuMessage(feishuRoute));
+  store.bindSession(feishuRoute, codexSession("session_feishu"));
+  store.recordRouteMessage({
+    ...feishuMessage(weixinRoute),
+    id: "wx_message",
+    channelId: "weixin-main",
+    accountId: "wx",
+    sender: { id: "wx_user", displayName: "微信用户" },
+    conversation: { id: "wx_user", kind: "direct", displayName: "微信私聊" },
+  });
+  store.setPendingBinding({
+    id: "weixin-primary-feishu-main-default",
+    channelId: "feishu-main",
+    accountId: "default",
+    conversationKind: "direct",
+    label: "飞书 / default / 待生效",
+    binding: { type: "existing", sessionId: "session_pending_feishu" },
+  });
+  store.setPendingBinding({
+    id: "weixin-primary-weixin-main-wx",
+    channelId: "weixin-main",
+    accountId: "wx",
+    conversationKind: "direct",
+    label: "微信 / wx / 主聊天",
+    binding: { type: "existing", sessionId: "session_pending_weixin" },
+  });
+
+  const removed = store.removeChannelState("feishu-main");
+
+  assert.deepEqual(removed, {
+    channelId: "feishu-main",
+    removedRoutes: 1,
+    releasedSessions: 2,
+    removedPendingBindings: 1,
+  });
+  assert.equal(store.listRoutes().some((route) => route.channelId === "feishu-main"), false);
+  assert.equal(store.listRoutes().some((route) => route.channelId === "weixin-main"), true);
+  assert.equal(store.getSessionOwner("session_feishu"), undefined);
+  assert.equal(store.getSessionOwner("session_pending_feishu"), undefined);
+  assert.equal(store.getSessionOwner("session_pending_weixin")?.ownerRouteKey, pendingBindingOwnerRouteKey("weixin-primary-weixin-main-wx"));
+
+  const reloaded = new FileStateStore({ rootDir });
+  assert.equal(reloaded.listRoutes().some((route) => route.channelId === "feishu-main"), false);
+  assert.equal(reloaded.getSessionOwner("session_feishu"), undefined);
+  assert.equal(reloaded.listPendingBindings().map((pending) => pending.id).join(","), "weixin-primary-weixin-main-wx");
+});
+
 function tempStateDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "codex-bridge-state-"));
 }

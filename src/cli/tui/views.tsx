@@ -4,6 +4,8 @@ import { PasswordInput, TextInput } from "@inkjs/ui";
 import type { CodexRunPolicy } from "../../codex/codex-cli.js";
 import type { ChannelInstanceRecord, PendingBindingRecord } from "../../state/persistent-state-types.js";
 import type { BindingSummary, SessionChoices } from "../actions/binding-actions.js";
+import { formatSessionActiveTime } from "../actions/binding-actions.js";
+import { channelDisplayName, formatFullDateTime, formatManagedChannelLabel, formatShortDateTime } from "../actions/channel-actions.js";
 import type { LauncherDashboard, StartValidation } from "../actions/launcher-actions.js";
 import { formatChannelStatusDetails } from "../serve-wizard.js";
 import type { PermissionTarget, Screen, SessionTarget } from "./types.js";
@@ -11,6 +13,7 @@ import {
   channelStatus,
   formatPermission,
   formatSession,
+  formatSessionWithActivity,
   Frame,
   KeyValue,
   ListRow,
@@ -80,7 +83,7 @@ export function HomeView({ dashboard, selected }: { dashboard: LauncherDashboard
           ? <Muted text="暂无渠道。按 w 添加微信账号，或按 f 添加飞书机器人。" />
           : dashboard.channels.map((channel) => (
             <Text key={channel.record.id}>
-              {channel.record.type === "weixin" ? "微信" : "飞书"} / {channel.status.account ?? channel.record.defaultAccountId ?? "default"}    {channel.record.enabled ? "已启用" : "已停用"}    <Text color={statusColor(channel.status.state)}>{channelStatus(channel.status.state)}</Text>
+              {formatManagedChannelLabel(channel)}    {channel.record.enabled ? "已启用" : "已停用"}    <Text color={statusColor(channel.status.state)}>{channelStatus(channel.status.state)}</Text>    添加 {formatShortDateTime(channel.record.createdAt)}
             </Text>
           ))}
       </Section>
@@ -114,13 +117,13 @@ export function ChannelsView({ channels, selected, channelCursor = 0 }: { channe
   }
   const actionOffset = channels.length;
   const targetChannel = channels[Math.min(channelCursor, channels.length - 1)];
-  const targetName = targetChannel
-    ? `${targetChannel.record.type === "weixin" ? "微信" : "飞书"} / ${targetChannel.status.account ?? targetChannel.record.defaultAccountId ?? "default"}`
-    : "未选择";
+  const targetName = targetChannel ? formatManagedChannelLabel(targetChannel) : "未选择";
   const actions = [
     ["添加微信账号", "扫码登录微信"],
     ["添加飞书机器人", "输入凭证并校验连通性"],
+    ["修改选中渠道备注", targetName],
     [targetChannel?.record.enabled ? "停用选中渠道" : "启用选中渠道", targetName],
+    ["删除选中渠道", "移除配置、聊天记录和绑定占用"],
     ["查看选中渠道详情", targetName],
     ["返回首页", "回到启动页"],
   ];
@@ -131,8 +134,8 @@ export function ChannelsView({ channels, selected, channelCursor = 0 }: { channe
           <ListRow
             key={channel.record.id}
             active={selected === index}
-            left={`${index + 1}. ${channel.record.type === "weixin" ? "微信" : "飞书"} / ${channel.status.account ?? channel.record.defaultAccountId ?? "default"}`}
-            right={`${channel.record.enabled ? "已启用" : "已停用"}   ${channelStatus(channel.status.state)}`}
+            left={`${index + 1}. ${formatManagedChannelLabel(channel)}`}
+            right={`${channel.record.enabled ? "已启用" : "已停用"}   ${channelStatus(channel.status.state)}   添加 ${formatShortDateTime(channel.record.createdAt)}`}
             tone={channel.status.state === "connected" ? "success" : channel.status.state === "failed" ? "danger" : channel.status.state === "login_required" ? "warning" : undefined}
           />
         ))}
@@ -154,18 +157,40 @@ export function ChannelsView({ channels, selected, channelCursor = 0 }: { channe
 export function ChannelDetailView({ channel, selected }: { channel?: LauncherDashboard["channels"][number]; selected: number }): React.JSX.Element {
   if (!channel) return <Frame title="渠道详情"><Muted text="这个渠道已经不存在。" /></Frame>;
   const items = channel.record.type === "weixin"
-    ? ["设置微信主聊天绑定", channel.record.enabled ? "停用这个渠道" : "启用这个渠道", "状态详情"]
-    : ["输入/更新本进程凭证", channel.record.enabled ? "停用这个渠道" : "启用这个渠道", "状态详情"];
+    ? ["设置微信主聊天绑定", "修改备注", channel.record.enabled ? "停用这个渠道" : "启用这个渠道", "删除这个渠道", "状态详情"]
+    : ["输入/更新本进程凭证", "修改备注", channel.record.enabled ? "停用这个渠道" : "启用这个渠道", "删除这个渠道", "状态详情"];
   return (
     <Frame title="渠道详情" subtitle="Enter 执行  e 启停  Esc 返回">
       <KeyValue label="类型" value={channel.record.type === "weixin" ? "微信" : "飞书"} />
-      <KeyValue label="账号" value={channel.status.account ?? channel.record.defaultAccountId ?? "default"} />
+      <KeyValue label="备注" value={channel.record.displayName ?? "未设置"} />
+      <KeyValue label="账号标识" value={channel.status.account ?? channel.record.defaultAccountId ?? "default"} />
       <KeyValue label="实例" value={channel.record.id} />
+      <KeyValue label="启用" value={channel.record.enabled ? "是" : "否"} />
       <KeyValue label="状态" value={channelStatus(channel.status.state)} />
+      <KeyValue label="添加时间" value={formatFullDateTime(channel.record.createdAt)} />
+      <KeyValue label="更新时间" value={formatFullDateTime(channel.record.updatedAt)} />
       {channel.status.lastError ? <KeyValue label="最近错误" value={channel.status.lastError} /> : null}
       <Section title="操作">
         {items.map((item, index) => <ListRow key={item} active={selected === index} left={`${index + 1}. ${item}`} />)}
       </Section>
+    </Frame>
+  );
+}
+
+export function ChannelRenameView({ channel, value, onChange, onSubmit }: { channel?: LauncherDashboard["channels"][number]; value: string; onChange(value: string): void; onSubmit(value: string): void | Promise<void> }): React.JSX.Element {
+  return (
+    <Frame title="修改渠道备注" subtitle="Enter 保存  Esc 返回">
+      {channel ? (
+        <>
+          <KeyValue label="渠道" value={formatManagedChannelLabel(channel)} />
+          <KeyValue label="账号标识" value={channel.status.account ?? channel.record.defaultAccountId ?? "default"} />
+          <Muted text="备注只影响展示，不改变渠道实例、账号标识或聊天绑定。" />
+          <Box marginTop={1}>
+            <Text>备注: </Text>
+            <TextInput defaultValue={value} placeholder={channelDisplayName(channel.record, channel.status)} onChange={onChange} onSubmit={onSubmit} />
+          </Box>
+        </>
+      ) : <Muted text="这个渠道已经不存在。" />}
     </Frame>
   );
 }
@@ -216,7 +241,7 @@ export function WeixinBindingView({ channel, choices, selected }: { channel?: Ch
       </Section>
       {choices?.unavailable.length ? (
         <Section title="不可选（已绑定其他聊天）">
-          {choices.unavailable.map((item) => <Text key={item.id}>已绑定到 {item.ownerLabel}    {formatSession(item)}</Text>)}
+          {choices.unavailable.map((item) => <Text key={item.id}>已绑定到 {item.ownerLabel}    {formatSessionWithActivity(item)}</Text>)}
         </Section>
       ) : null}
     </Frame>
@@ -231,7 +256,7 @@ export function BindingsView({ bindings, pendingBindings, selected }: { bindings
           key={binding.route.routeKey}
           active={selected === index}
           left={`${index + 1}. ${binding.label}`}
-          right={binding.activeSession ? formatSession(binding.activeSession) : "未绑定"}
+          right={binding.activeSession ? formatSessionWithActivity(binding.activeSession) : "未绑定"}
         />
       ))}
       {pendingBindings.map((pending, index) => (
@@ -259,6 +284,7 @@ export function BindingDetailView({ binding, selected }: { binding?: BindingSumm
       <KeyValue label="聊天" value={binding.label} />
       <KeyValue label="当前 session" value={binding.activeSession ? formatSession(binding.activeSession) : "未绑定"} />
       <KeyValue label="当前权限" value={binding.permission ? formatPermission(binding.permission) : "使用默认权限"} />
+      {binding.activeSession ? <KeyValue label="最近活跃" value={formatSessionActiveTime(binding.activeSession.updatedAt, "full")} /> : null}
       {binding.activeSession?.cwd ? <KeyValue label="工作目录" value={binding.activeSession.cwd} /> : null}
       {binding.route.lastSeenAt ? <KeyValue label="最近消息" value={binding.route.lastSeenAt} /> : null}
       <Section title="操作">
@@ -279,7 +305,7 @@ export function SessionSelectView({ choices, selected, binding }: { target: Sess
       </Section>
       {choices.unavailable.length ? (
         <Section title="不可选">
-          {choices.unavailable.map((item) => <Text key={item.id}>已绑定到 {item.ownerLabel}    {formatSession(item)}</Text>)}
+          {choices.unavailable.map((item) => <Text key={item.id}>已绑定到 {item.ownerLabel}    {formatSessionWithActivity(item)}</Text>)}
         </Section>
       ) : null}
     </Frame>
@@ -346,6 +372,9 @@ export function StatusView({ dashboard }: { dashboard: LauncherDashboard }): Rea
       <Section title="渠道">
         {dashboard.channels.length ? dashboard.channels.map((channel) => (
           <Box key={channel.record.id} flexDirection="column" marginBottom={1}>
+            <KeyValue label="备注" value={channel.record.displayName ?? "未设置"} />
+            <KeyValue label="添加时间" value={formatFullDateTime(channel.record.createdAt)} />
+            <KeyValue label="更新时间" value={formatFullDateTime(channel.record.updatedAt)} />
             <Text>{formatChannelStatusDetails(channel.status, channel.capabilities)}</Text>
           </Box>
         )) : <Muted text="暂无渠道。" />}

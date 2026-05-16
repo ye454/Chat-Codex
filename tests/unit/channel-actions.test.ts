@@ -5,7 +5,10 @@ import os from "node:os";
 import path from "node:path";
 import { ChannelActions, feishuChannelId, formatManagedChannelList, weixinChannelId } from "../../src/cli/actions/channel-actions.js";
 import { ChannelConfigStore } from "../../src/state/channel-config-store.js";
+import { FileStateStore } from "../../src/state/file-state-store.js";
 import type { StoredWeixinAccount } from "../../src/channels/weixin/weixin-account-store.js";
+import type { ChannelMessage } from "../../src/protocol/channel.js";
+import type { CodexSession } from "../../src/codex/types.js";
 
 test("ChannelActions registers independent Weixin accounts and Feishu bots", async () => {
   const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-channel-actions-"));
@@ -95,11 +98,78 @@ test("ChannelActions persists interactive Feishu credentials in local state", as
   assert.equal((await restartedStatusAdapter.getStatus()).state, "connected");
 });
 
+test("ChannelActions renames and removes channels without touching other channels", () => {
+  const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-channel-actions-"));
+  const bridgeDir = path.join(baseDir, "state", "bridge");
+  const configStore = new ChannelConfigStore({ bridgeDir });
+  const actions = new ChannelActions({ configStore, env: {} });
+
+  const feishu = actions.registerFeishuBot({ appId: "cli_remove", appSecret: "secret-remove", accountId: "remove-bot" });
+  const weixin = actions.registerWeixinAccount(weixinAccount("wx.keep"));
+  const renamed = actions.renameChannel(feishu.id, "删除测试机器人");
+  const state = new FileStateStore({ rootDir: bridgeDir });
+  const routeKey = `${feishu.id}:remove-bot:direct:oc_remove`;
+  state.recordRouteMessage(feishuMessage(feishu.id, routeKey));
+  state.bindSession(routeKey, codexSession("session_remove"));
+  state.setPendingBinding({
+    id: "pending-remove",
+    channelId: feishu.id,
+    accountId: "remove-bot",
+    conversationKind: "direct",
+    label: "飞书 / remove-bot / 待生效",
+    binding: { type: "existing", sessionId: "session_pending_remove" },
+  });
+
+  assert.equal(renamed?.displayName, "删除测试机器人");
+  actions.setChannelEnabled(feishu.id, false);
+  const afterDisable = new FileStateStore({ rootDir: bridgeDir });
+  assert.equal(afterDisable.getSessionOwner("session_remove")?.ownerRouteKey, routeKey);
+  assert.equal(afterDisable.getSessionOwner("session_pending_remove")?.ownerRouteKey, "pending:pending-remove");
+
+  const removed = actions.removeChannel(feishu.id);
+
+  assert.equal(removed.ok, true);
+  if (removed.ok) {
+    assert.equal(removed.removedRoutes, 1);
+    assert.equal(removed.releasedSessions, 2);
+    assert.equal(removed.removedPendingBindings, 1);
+    assert.equal(removed.removedStateDir, true);
+  }
+  assert.deepEqual(actions.listChannelInstances().map((channel) => channel.id), [weixin.id]);
+  const reloaded = new FileStateStore({ rootDir: bridgeDir });
+  assert.equal(reloaded.getSessionOwner("session_remove"), undefined);
+  assert.equal(reloaded.getSessionOwner("session_pending_remove"), undefined);
+  assert.equal(fs.existsSync(configStore.resolveStateDir(feishu.stateDir)), false);
+  assert.equal(fs.existsSync(configStore.resolveStateDir(weixin.stateDir)), true);
+});
+
 function weixinAccount(accountId: string): StoredWeixinAccount {
   return {
     accountId,
     token: `token-${accountId}`,
     baseUrl: "https://weixin.example.test",
     savedAt: "2026-05-16T00:00:00.000Z",
+  };
+}
+
+function codexSession(id: string): CodexSession {
+  return {
+    id,
+    cwd: "/tmp/work",
+    title: `Session ${id}`,
+    createdAt: "2026-05-16T00:00:00.000Z",
+  };
+}
+
+function feishuMessage(channelId: string, routeKey: string): ChannelMessage {
+  return {
+    id: "om_remove",
+    routeKey,
+    channelId,
+    accountId: "remove-bot",
+    sender: { id: "ou_remove", displayName: "飞书用户" },
+    conversation: { id: "oc_remove", kind: "direct", displayName: "飞书私聊" },
+    text: "你好",
+    timestamp: "2026-05-16T00:00:00.000Z",
   };
 }

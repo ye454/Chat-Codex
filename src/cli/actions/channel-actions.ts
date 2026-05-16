@@ -12,6 +12,7 @@ import { WeixinAdapter } from "../../channels/weixin/weixin-adapter.js";
 import { FileWeixinAccountStore, normalizeWeixinAccountId, type StoredWeixinAccount } from "../../channels/weixin/weixin-account-store.js";
 import type { ChannelAdapter, ChannelCapabilities, ChannelStatus } from "../../protocol/channel.js";
 import { ChannelConfigStore } from "../../state/channel-config-store.js";
+import { FileStateStore, type RemoveChannelStateResult } from "../../state/file-state-store.js";
 import type { ChannelInstanceRecord } from "../../state/persistent-state-types.js";
 
 export interface ChannelActionsOptions {
@@ -25,6 +26,15 @@ export interface ManagedChannelSummary {
   status: ChannelStatus;
   capabilities: ChannelCapabilities;
 }
+
+export type RemoveChannelResult =
+  | (RemoveChannelStateResult & {
+    ok: true;
+    channel: ChannelInstanceRecord;
+    removedStateDir: boolean;
+    message: string;
+  })
+  | { ok: false; reason: "not_found"; channelId: string; message: string };
 
 export class ChannelActions {
   readonly configStore: ChannelConfigStore;
@@ -56,6 +66,34 @@ export class ChannelActions {
 
   setChannelEnabled(id: string, enabled: boolean): ChannelInstanceRecord | undefined {
     return this.configStore.setChannelEnabled(id, enabled);
+  }
+
+  renameChannel(id: string, displayName?: string): ChannelInstanceRecord | undefined {
+    return this.configStore.setChannelDisplayName(id, displayName);
+  }
+
+  removeChannel(id: string): RemoveChannelResult {
+    const existing = this.configStore.listChannelInstances().find((channel) => channel.id === id);
+    if (!existing) {
+      return {
+        ok: false,
+        reason: "not_found",
+        channelId: id,
+        message: `没有找到这个渠道：${id}`,
+      };
+    }
+    const state = new FileStateStore({ rootDir: this.configStore.bridgeDir });
+    const stateResult = state.removeChannelState(id);
+    const configResult = this.configStore.removeChannelInstance(id, { removeStateDir: true });
+    const channel = configResult.channel ?? existing;
+    const label = formatChannelRecordLabel(channel);
+    return {
+      ok: true,
+      ...stateResult,
+      channel,
+      removedStateDir: configResult.removedStateDir,
+      message: `已删除 ${label}：移除 ${stateResult.removedRoutes} 个聊天，释放 ${stateResult.releasedSessions} 个 session，移除 ${stateResult.removedPendingBindings} 个待生效绑定。`,
+    };
   }
 
   registerWeixinAccount(account: StoredWeixinAccount): ChannelInstanceRecord {
@@ -184,7 +222,7 @@ export function formatManagedChannelList(channels: ManagedChannelSummary[]): str
   } else {
     lines.push("已配置渠道");
     channels.forEach((channel, index) => {
-      lines.push(`${index + 1}. ${formatChannelType(channel.record.type)} / ${channel.status.account ?? channel.record.defaultAccountId ?? "default"}    ${channel.record.enabled ? "已启用" : "已停用"}    ${formatChannelState(channel.status.state)}`);
+      lines.push(`${index + 1}. ${formatManagedChannelLabel(channel)}    ${channel.record.enabled ? "已启用" : "已停用"}    ${formatChannelState(channel.status.state)}    添加 ${formatShortDateTime(channel.record.createdAt)}`);
       lines.push(`   实例: ${channel.record.id}`);
       if (channel.status.lastError) lines.push(`   最近错误: ${channel.status.lastError}`);
     });
@@ -200,6 +238,30 @@ export function formatManagedChannelList(channels: ManagedChannelSummary[]): str
     "0. 返回",
   );
   return lines.join("\n");
+}
+
+export function formatManagedChannelLabel(channel: ManagedChannelSummary): string {
+  return `${formatChannelType(channel.record.type)} / ${channelDisplayName(channel.record, channel.status)}`;
+}
+
+export function formatChannelRecordLabel(record: ChannelInstanceRecord, status?: ChannelStatus): string {
+  return `${formatChannelType(record.type)} / ${channelDisplayName(record, status)}`;
+}
+
+export function channelDisplayName(record: ChannelInstanceRecord, status?: ChannelStatus): string {
+  return record.displayName ?? status?.account ?? record.defaultAccountId ?? record.id;
+}
+
+export function formatShortDateTime(iso: string | undefined): string {
+  const date = parseDate(iso);
+  if (!date) return "未知";
+  return `${pad2(date.getMonth() + 1)}-${pad2(date.getDate())} ${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
+}
+
+export function formatFullDateTime(iso: string | undefined): string {
+  const date = parseDate(iso);
+  if (!date) return "未知";
+  return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())} ${pad2(date.getHours())}:${pad2(date.getMinutes())}:${pad2(date.getSeconds())}`;
 }
 
 export function loadFeishuCredentialsForAccount(accountId: string | undefined, env: NodeJS.ProcessEnv = process.env): FeishuCredentials {
@@ -242,6 +304,16 @@ function formatChannelType(type: string): string {
   if (type === "weixin") return "微信";
   if (type === "feishu" || type === "lark") return "飞书";
   return type;
+}
+
+function parseDate(iso: string | undefined): Date | undefined {
+  if (!iso) return undefined;
+  const date = new Date(iso);
+  return Number.isNaN(date.getTime()) ? undefined : date;
+}
+
+function pad2(value: number): string {
+  return value.toString().padStart(2, "0");
 }
 
 function formatChannelState(state: string): string {

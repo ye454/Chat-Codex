@@ -10,6 +10,7 @@ import {
 import type { CodexSession } from "../../codex/types.js";
 import type { FileStateStore } from "../../state/file-state-store.js";
 import type { RouteRecord, SessionOwnerRecord } from "../../state/persistent-state-types.js";
+import { formatFullDateTime, formatShortDateTime } from "./channel-actions.js";
 
 export interface BindingActionsOptions {
   cwd?: string;
@@ -220,6 +221,7 @@ export class BindingActions {
       `聊天: ${binding.label}`,
       `当前 session: ${formatSessionDisplay(binding.activeSession)}`,
       `当前权限: ${formatRunPolicyForUser(binding.permission)}`,
+      binding.activeSession ? `最近活跃: ${formatSessionActiveTime(binding.activeSession.updatedAt, "full")}` : undefined,
       binding.activeSession?.cwd ? `工作目录: ${binding.activeSession.cwd}` : undefined,
       binding.route.lastSeenAt ? `最近消息: ${binding.route.lastSeenAt}` : undefined,
       "",
@@ -238,7 +240,7 @@ export class BindingActions {
       "",
       ...choices.selectable.map((choice, index) => {
         const marker = choice.current ? "当前" : "可用";
-        return `  ${index + 1}. ${marker}  ${padDisplay(choice.title ?? choice.id, 28)} ${choice.shortId}`;
+        return `  ${index + 1}. ${marker}  ${padDisplay(choice.title ?? choice.id, 28)} ${choice.shortId}  最近 ${formatSessionActiveTime(choice.updatedAt, "short")}`;
       }),
       "",
       "操作:",
@@ -248,7 +250,7 @@ export class BindingActions {
     if (choices.unavailable.length > 0) {
       lines.push("", "不可选:");
       for (const choice of choices.unavailable) {
-        lines.push(`  已绑定到 ${choice.ownerLabel}  ${padDisplay(choice.title ?? choice.id, 28)} ${choice.shortId}`);
+        lines.push(`  已绑定到 ${choice.ownerLabel}  ${padDisplay(choice.title ?? choice.id, 28)} ${choice.shortId}  最近 ${formatSessionActiveTime(choice.updatedAt, "short")}`);
       }
     }
     if (choices.selectable.length === 0) {
@@ -265,6 +267,7 @@ export class BindingActions {
       "",
       `聊天: ${result.binding.label}`,
       `当前 session: ${formatSessionDisplay(result.session)}`,
+      `最近活跃: ${formatSessionActiveTime(result.session.updatedAt, "full")}`,
       result.session.cwd ? `工作目录: ${result.session.cwd}` : undefined,
       "",
       "1. 返回绑定详情",
@@ -334,6 +337,10 @@ export function formatRunPolicyForUser(policy: CodexRunPolicy | undefined): stri
 function formatSessionDisplay(session: SessionDisplay | undefined): string {
   if (!session) return "未绑定";
   return `${session.title ?? session.id} / ${session.shortId}`;
+}
+
+export function formatSessionActiveTime(updatedAt: string | undefined, style: "short" | "full" = "short"): string {
+  return style === "full" ? formatFullDateTime(updatedAt) : formatShortDateTime(updatedAt);
 }
 
 function sessionDisplay(session: DiscoveredCodexSession): SessionDisplay {
