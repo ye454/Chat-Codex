@@ -22,6 +22,7 @@ import {
 export interface FileStateStoreOptions {
   rootDir?: string;
   cwd?: string;
+  env?: NodeJS.ProcessEnv;
 }
 
 export interface RemoveChannelStateResult {
@@ -296,7 +297,7 @@ export class FileStateStore extends MemoryStateStore {
 }
 
 function loadFileState(options: FileStateStoreOptions): LoadedFileState {
-  const rootDir = options.rootDir ?? defaultBridgeStateDir(options.cwd);
+  const rootDir = options.rootDir ?? defaultBridgeStateDir(options.cwd, options.env);
   const routes = loadRoutes(path.join(rootDir, "routes.json"));
   const owners = loadOwners(path.join(rootDir, "session-owners.json"));
   const sessionPolicies = loadSessionPolicies(path.join(rootDir, "session-policies.json"));

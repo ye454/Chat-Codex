@@ -2,13 +2,15 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import type { ChannelAttachment, ChannelMessage } from "../protocol/channel.js";
+import { defaultChatCodexHomeDir, resolveConfiguredUserPath } from "../runtime/user-data-dir.js";
 
 export const CHAT_CODEX_UPLOAD_DIR_ENV = "CHAT_CODEX_UPLOAD_DIR";
-export const DEFAULT_UPLOAD_DIR_NAME = ".chat-codex-uploads";
+export const DEFAULT_UPLOAD_DIR_NAME = "uploads";
 
 export interface ResolveUploadRootOptions {
   startCwd?: string;
   env?: NodeJS.ProcessEnv;
+  homeDir?: string;
 }
 
 export interface SaveInboundMediaOptions {
@@ -30,9 +32,10 @@ export interface SavedInboundMedia {
 
 export function resolveInboundMediaUploadRoot(options: ResolveUploadRootOptions = {}): string {
   const startCwd = options.startCwd ?? process.cwd();
-  const configured = options.env?.[CHAT_CODEX_UPLOAD_DIR_ENV] ?? process.env[CHAT_CODEX_UPLOAD_DIR_ENV];
-  if (!configured) return path.resolve(startCwd, DEFAULT_UPLOAD_DIR_NAME);
-  return path.isAbsolute(configured) ? configured : path.resolve(startCwd, configured);
+  const env = options.env ?? process.env;
+  const configured = env[CHAT_CODEX_UPLOAD_DIR_ENV];
+  if (!configured?.trim()) return path.join(defaultChatCodexHomeDir(options.homeDir), DEFAULT_UPLOAD_DIR_NAME);
+  return resolveConfiguredUserPath(configured, startCwd);
 }
 
 export async function saveInboundMedia(options: SaveInboundMediaOptions): Promise<SavedInboundMedia> {

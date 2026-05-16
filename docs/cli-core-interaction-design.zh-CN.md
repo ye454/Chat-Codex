@@ -4,9 +4,9 @@
 
 当前底层持久化第一阶段已经具备：
 
-- `state/bridge/routes.json` 保存聊天 route 与 active Codex session。
-- `state/bridge/session-owners.json` 保存全局 `sessionId -> ownerRouteKey`，阻止同一个 session 被多个聊天复用。
-- `state/bridge/config.json` 和 `state/channels/<type>/<channelId>/...` 保存渠道实例和账号目录骨架。
+- `~/.chat-codex/state/bridge/routes.json` 保存聊天 route 与 active Codex session。
+- `~/.chat-codex/state/bridge/session-owners.json` 保存全局 `sessionId -> ownerRouteKey`，阻止同一个 session 被多个聊天复用。
+- `~/.chat-codex/state/bridge/config.json` 和 `~/.chat-codex/state/channels/<type>/<channelId>/...` 保存渠道实例和账号目录骨架。
 
 现在主要问题是 CLI 交互仍然混乱：
 

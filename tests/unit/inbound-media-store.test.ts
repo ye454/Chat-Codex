@@ -14,9 +14,10 @@ import {
 } from "../../src/bridge/inbound-media-store.js";
 import type { ChannelAttachment, ChannelMessage } from "../../src/protocol/channel.js";
 
-test("resolveInboundMediaUploadRoot defaults to process cwd upload directory", () => {
+test("resolveInboundMediaUploadRoot defaults to user upload directory", () => {
   const startCwd = path.join(os.tmpdir(), "chat-codex-start");
-  assert.equal(resolveInboundMediaUploadRoot({ startCwd, env: {} }), path.join(startCwd, ".chat-codex-uploads"));
+  const homeDir = path.join(os.tmpdir(), "chat-codex-home");
+  assert.equal(resolveInboundMediaUploadRoot({ startCwd, env: {}, homeDir }), path.join(homeDir, ".chat-codex", "uploads"));
 });
 
 test("resolveInboundMediaUploadRoot supports env override", () => {

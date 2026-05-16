@@ -30,6 +30,7 @@ export interface RemoveChannelConfigResult {
 export interface ChannelConfigStoreOptions {
   bridgeDir?: string;
   cwd?: string;
+  env?: NodeJS.ProcessEnv;
 }
 
 export class ChannelConfigStore {
@@ -38,7 +39,7 @@ export class ChannelConfigStore {
   private readonly configPath: string;
 
   constructor(options: ChannelConfigStoreOptions = {}) {
-    this.bridgeDir = options.bridgeDir ?? defaultBridgeStateDir(options.cwd);
+    this.bridgeDir = options.bridgeDir ?? defaultBridgeStateDir(options.cwd, options.env);
     this.stateRootDir = path.dirname(this.bridgeDir);
     this.configPath = path.join(this.bridgeDir, "config.json");
   }

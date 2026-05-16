@@ -109,20 +109,20 @@ export interface ChannelAttachment {
 
 ### 入站媒体存储
 
-入站媒体必须保存到 Git 忽略的本地目录，不写入仓库。默认目录放在 Chat-Codex 进程启动工作目录下：
+入站媒体必须保存到本机用户目录，不写入仓库。默认目录固定在当前系统用户目录下，不再跟随启动 `chat-codex` 时的工作目录变化：
 
 ```text
-<chat-codex-start-cwd>/.chat-codex-uploads/<channelId>/<accountId>/<routeHash>/<yyyy-mm>/<messageId>-<attachmentId>.<ext>
+~/.chat-codex/uploads/<channelId>/<accountId>/<routeHash>/<yyyy-mm>/<messageId>-<attachmentId>.<ext>
 ```
 
-这里的 `chat-codex-start-cwd` 是启动 `npm run chat-codex` 或 `chat-codex` 时的进程工作目录，不等同于某个 Codex session 的工作目录。Codex 新会话可以选择其它工作目录，但上传附件默认仍存放在 Chat-Codex 启动目录下，便于用户知道“聊天渠道上传给中间件的文件”在哪里。
+这里的上传目录不等同于某个 Codex session 的工作目录。Codex 新会话可以选择其它工作目录，但聊天渠道上传给中间件的附件默认统一保存在 `~/.chat-codex/uploads/`，避免 npm/global 启动时因为所在目录不同而找不到历史文件。
 
 目录命名选择：
 
-- 默认使用 `.chat-codex-uploads/`，语义明确且尽量减少对项目目录的打扰。
+- 默认使用 `~/.chat-codex/uploads/`，语义明确且不打扰用户项目目录。
 - 不建议使用通用名 `uploads/`、`attachments/`，容易和用户项目自己的目录冲突。
-- 本仓库 `.gitignore` 必须忽略 `.chat-codex-uploads/` 和 `chat-codex-uploads/`。
-- 如果用户在自己的 Git 仓库目录下启动 Chat-Codex，程序不应静默修改用户项目 `.gitignore`。后续实现可以在检测到该目录未被忽略时提示用户添加：
+- 本仓库 `.gitignore` 仍保留 `.chat-codex-uploads/` 和 `chat-codex-uploads/` 忽略项，用于兼容旧版本或用户显式覆盖到项目目录。
+- 如果用户把 `CHAT_CODEX_UPLOAD_DIR` 显式配置到自己的 Git 仓库目录下，程序不应静默修改用户项目 `.gitignore`。后续实现可以在检测到该目录未被忽略时提示用户添加：
 
 ```gitignore
 .chat-codex-uploads/
@@ -131,13 +131,14 @@ chat-codex-uploads/
 
 配置覆盖：
 
-- 默认：`process.cwd()/.chat-codex-uploads/`。
-- 后续允许通过环境变量覆盖：
+- 默认：`~/.chat-codex/uploads/`。
+- 允许通过环境变量覆盖：
 
 ```text
 CHAT_CODEX_UPLOAD_DIR=/absolute/path/to/chat-codex-uploads
 ```
 
+- 相对路径按启动时 `process.cwd()` 解析，用于开发测试或临时迁移。
 - TUI 后续可以增加“上传附件目录”配置项，但第一阶段先用默认目录和环境变量。
 - 无论存储目录如何配置，投递给 Codex 的路径必须是绝对路径，避免 Codex session 工作目录变化后找不到文件。
 
@@ -176,7 +177,7 @@ export interface CodexTurnInput {
 ```json
 [
   { "type": "text", "text": "用户说明", "text_elements": [] },
-  { "type": "localImage", "path": "/absolute/path/.chat-codex-uploads/weixin/default/route/2026-05/msg-att.png" }
+  { "type": "localImage", "path": "/Users/me/.chat-codex/uploads/weixin/default/route/2026-05/msg-att.png" }
 ]
 ```
 
@@ -415,7 +416,7 @@ receiveMedia: true;
 
 2. 增加本地入站媒体存储：
    - 新建 `src/bridge/inbound-media-store.ts` 或 `src/protocol/media-store.ts`。
-   - 默认保存到 `<chat-codex-start-cwd>/.chat-codex-uploads/...`。
+   - 默认保存到 `~/.chat-codex/uploads/...`。
    - 支持 `CHAT_CODEX_UPLOAD_DIR` 覆盖上传目录。
    - 本仓库 `.gitignore` 忽略默认上传目录；对用户项目只提醒，不静默改 `.gitignore`。
    - 增加 MIME、大小、路径安全检查。
@@ -467,8 +468,8 @@ receiveMedia: true;
 - `/status` 同时显示 pending media 数量和待投递 steer buffer 数量。
 - AppServer adapter 发送 `localImage` 到 `turn/start`。
 - AppServer adapter 发送 `localImage` 到 `turn/steer`。
-- 默认上传目录解析为 `process.cwd()/.chat-codex-uploads/`，并能被 `CHAT_CODEX_UPLOAD_DIR` 覆盖。
-- `.chat-codex-uploads/` 不出现在本仓库 `git status` 中。
+- 默认上传目录解析为 `~/.chat-codex/uploads/`，并能被 `CHAT_CODEX_UPLOAD_DIR` 覆盖。
+- 默认上传目录不出现在本仓库 `git status` 中；旧版 `.chat-codex-uploads/` 仍被 `.gitignore` 忽略。
 - 微信图片下载失败时给用户明确提醒。
 - 飞书非 text 图片消息不再 `unsupported_message_type`，而是映射为 attachment。
 

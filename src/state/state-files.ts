@@ -1,8 +1,25 @@
 import fs from "node:fs";
 import path from "node:path";
+import { defaultChatCodexHomeDir, resolveConfiguredUserPath } from "../runtime/user-data-dir.js";
 
-export function defaultBridgeStateDir(cwd = process.cwd()): string {
-  return path.join(cwd, "state", "bridge");
+export const CHAT_CODEX_STATE_DIR_ENV = "CHAT_CODEX_STATE_DIR";
+export const DEFAULT_STATE_DIR_NAME = "state";
+
+export interface ResolveChatCodexStateRootOptions {
+  cwd?: string;
+  env?: NodeJS.ProcessEnv;
+  homeDir?: string;
+}
+
+export function resolveChatCodexStateRoot(options: ResolveChatCodexStateRootOptions = {}): string {
+  const env = options.env ?? process.env;
+  const configured = env[CHAT_CODEX_STATE_DIR_ENV];
+  if (configured?.trim()) return resolveConfiguredUserPath(configured, options.cwd);
+  return path.join(defaultChatCodexHomeDir(options.homeDir), DEFAULT_STATE_DIR_NAME);
+}
+
+export function defaultBridgeStateDir(cwd?: string, env?: NodeJS.ProcessEnv): string {
+  return path.join(resolveChatCodexStateRoot({ cwd, env }), "bridge");
 }
 
 export function readJsonFile<T>(filePath: string, fallback: T): T {

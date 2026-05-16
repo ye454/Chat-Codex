@@ -30,6 +30,7 @@
 <a href="#项目介绍">项目介绍</a> ·
 <a href="#能力概览">能力概览</a> ·
 <a href="#安装使用">安装使用</a> ·
+<a href="#运行数据与环境变量">运行数据与环境变量</a> ·
 <a href="#技术栈">技术栈</a> ·
 <a href="#开发快速开始">开发快速开始</a> ·
 <a href="#开发命令">开发命令</a> ·
@@ -65,6 +66,19 @@ chat-codex
 ```
 
 首次启动后按 TUI 引导完成 Codex 检查、渠道管理、聊天绑定和启动服务。
+
+## 运行数据与环境变量
+
+默认情况下，开发版和 npm 全局安装版都会把运行数据写到当前系统用户目录下，不随启动目录变化。
+
+| 项目 | 默认值 | 说明 |
+| --- | --- | --- |
+| 状态根目录 | `~/.chat-codex/state/` | 保存 Bridge 配置、route/session 绑定、渠道账号状态和本机凭证。 |
+| 上传目录 | `~/.chat-codex/uploads/` | 保存微信/飞书收到的图片和文件，再以本地路径投递给 Codex。 |
+| `CHAT_CODEX_STATE_DIR` | 未设置 | 覆盖状态根目录；相对路径按启动 `chat-codex` 时的工作目录解析。 |
+| `CHAT_CODEX_UPLOAD_DIR` | 未设置 | 覆盖上传目录；相对路径按启动 `chat-codex` 时的工作目录解析。 |
+
+旧版本曾默认写入启动目录下的 `state/` 和 `.chat-codex-uploads/`。升级后如果需要读取旧数据，可以把旧 `state/` 移到 `~/.chat-codex/state/`，或临时设置 `CHAT_CODEX_STATE_DIR=/old/start/dir/state`。
 
 ## 技术栈
 

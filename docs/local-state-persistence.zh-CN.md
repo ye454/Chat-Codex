@@ -40,16 +40,16 @@
 
 ## 状态目录结构
 
-默认根目录：
+默认根目录固定在当前系统用户目录下，不再跟随启动 `chat-codex` 时的工作目录变化：
 
 ```text
-state/
+~/.chat-codex/state/
 ```
 
 建议结构：
 
 ```text
-state/
+~/.chat-codex/state/
   bridge/
     config.json
     routes.json
@@ -74,12 +74,14 @@ state/
 
 说明：
 
-- `state/bridge/` 是中间件全局状态，由 Bridge/CLI 管理。
-- `state/channels/<type>/` 是渠道类型目录，便于排查和迁移。
-- `state/channels/<type>/<channelId>/` 是渠道实例目录。
+- `~/.chat-codex/state/bridge/` 是中间件全局状态，由 Bridge/CLI 管理。
+- `~/.chat-codex/state/channels/<type>/` 是渠道类型目录，便于排查和迁移。
+- `~/.chat-codex/state/channels/<type>/<channelId>/` 是渠道实例目录。
 - `accounts/<accountId>/` 是该渠道实例下的账号目录。
 - `channelId` 必须是运行时唯一实例 ID，例如 `weixin-main`、`feishu-main`、`feishu-work`。
 - `accountId` 是渠道账号标识，例如微信账号归一化 ID、飞书 `default` 或工作区别名。
+- 可以用 `CHAT_CODEX_STATE_DIR=/absolute/path/to/state` 覆盖状态根目录；相对路径按启动时 `process.cwd()` 解析，用于开发测试或临时迁移。
+- 仓库根目录下的 `state/` 仍保留在 `.gitignore`，只用于旧版本迁移和本地开发显式覆盖，不再是 npm/global 启动的默认位置。
 
 ## Bridge 全局状态
 
@@ -278,7 +280,7 @@ state/
 ### 微信
 
 ```text
-state/channels/weixin/weixin-main/
+~/.chat-codex/state/channels/weixin/weixin-main/
   instance.json
   accounts/
     <weixin-account-id>/
@@ -300,7 +302,7 @@ state/channels/weixin/weixin-main/
 ### 飞书
 
 ```text
-state/channels/feishu/feishu-main/
+~/.chat-codex/state/channels/feishu/feishu-main/
   instance.json
   accounts/
     default/
@@ -311,13 +313,13 @@ state/channels/feishu/feishu-main/
 建议内容：
 
 - `account.json`：appId 掩码、bot open_id、botName、domain、credentialSource。
-- `credentials.local.json`：交互添加时保存真实 `appId`、`appSecret`、`domain`、`verificationToken`、`encryptKey` 等本机凭证；该文件位于被 Git 忽略的 `state/` 下，权限应为 `0600`。
+- `credentials.local.json`：交互添加时保存真实 `appId`、`appSecret`、`domain`、`verificationToken`、`encryptKey` 等本机凭证；该文件位于 `~/.chat-codex/state/` 下，权限应为 `0600`。
 - `cache.json`：最近 connection 状态、message 去重窗口、reaction typing 缓存等非敏感缓存。
 
 安全要求：
 
 - `FEISHU_APP_SECRET` 不写入 `config.json`、`instance.json`、`account.json`、日志、测试报告或 Git 跟踪文件。
-- secret 可以来自环境变量、`secrets/feishu.local.md`，或交互输入后写入本机 `state/channels/feishu/<channelId>/accounts/<accountId>/credentials.local.json`。
+- secret 可以来自环境变量、`secrets/feishu.local.md`，或交互输入后写入本机 `~/.chat-codex/state/channels/feishu/<channelId>/accounts/<accountId>/credentials.local.json`。
 - `account.json` 中 App ID 可以掩码展示，不能写真实 App Secret。
 
 ## routeKey 规则
@@ -382,7 +384,7 @@ state/channels/feishu/feishu-main/
 
 ## CLI 交互
 
-主入口读取 `state/bridge/config.json` 后展示：
+主入口读取 `~/.chat-codex/state/bridge/config.json` 后展示：
 
 ```text
 1. 管理渠道
@@ -443,11 +445,21 @@ file.json.tmp -> fsync -> rename(file.json.tmp, file.json)
 
 ## 安全与 Git 边界
 
-- `state/` 必须继续被 `.gitignore` 忽略。
+- npm/global 启动默认写入 `~/.chat-codex/state/`，不写入用户当前项目目录。
+- 仓库根目录 `state/` 必须继续被 `.gitignore` 忽略，用于旧版本迁移、显式 `CHAT_CODEX_STATE_DIR=./state` 和本地开发。
 - `secrets/` 必须继续被 `.gitignore` 忽略。
 - Bridge 配置文件只记录 secret 来源，不记录 secret。
 - 测试报告和 README 只能写变量名和占位值。
 - `/status` 默认不展示完整用户 ID；需要身份排查时用 `/whoami` 或 CLI 详细状态。
+
+## 旧版本迁移
+
+旧版本默认把状态写到启动目录下的 `./state/`。如果升级后发现账号列表为空，可以选择二者之一：
+
+- 推荐迁移：把旧启动目录下的 `state/` 移到 `~/.chat-codex/state/`。
+- 临时兼容：启动前设置 `CHAT_CODEX_STATE_DIR=/old/start/dir/state`，继续读取旧目录。
+
+不要把真实账号凭证复制进 Git 跟踪目录。迁移前后可以用 `git status --short` 确认没有 `state/`、token、cookie 或 `credentials.local.json` 进入仓库。
 
 ## 迁移路径
 
@@ -468,8 +480,8 @@ file.json.tmp -> fsync -> rename(file.json.tmp, file.json)
 
 ### P3：账号目录隔离
 
-- 微信登录态迁移到 `state/channels/weixin/<channelId>/accounts/<accountId>/`。
-- 飞书账号状态写入 `state/channels/feishu/<channelId>/accounts/<accountId>/`。
+- 微信登录态迁移到 `~/.chat-codex/state/channels/weixin/<channelId>/accounts/<accountId>/`。
+- 飞书账号状态写入 `~/.chat-codex/state/channels/feishu/<channelId>/accounts/<accountId>/`。
 - 状态页展示渠道、账号和能力摘要。
 
 ### P4：CLI 管理页
@@ -492,5 +504,5 @@ file.json.tmp -> fsync -> rename(file.json.tmp, file.json)
 - 同一个 Codex session 已绑定微信私聊时，飞书 `/use <session>` 必须拒绝。
 - 切换 active session 后，旧 session owner 不自动释放。
 - 删除或禁用渠道实例后，不自动删除 session owner。
-- secret 不出现在 `state/bridge/*.json`、README、docs、reports、src、tests。
+- secret 不出现在 `~/.chat-codex/state/bridge/*.json`、README、docs、reports、src、tests。
 - `npm test` 通过，并新增文件持久化测试报告。

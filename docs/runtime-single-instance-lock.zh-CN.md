@@ -2,21 +2,21 @@
 
 ## 背景
 
-`chat-codex` 统一入口会同时启动多个已启用渠道，例如微信账号和飞书机器人。当前如果用户在同一个仓库或同一个 `state/bridge/` 下重复执行启动，可能出现多个中间件进程同时连接同一批通讯渠道。
+`chat-codex` 统一入口会同时启动多个已启用渠道，例如微信账号和飞书机器人。默认状态目录固定在 `~/.chat-codex/state/`，如果用户重复执行启动，可能出现多个中间件进程同时连接同一批通讯渠道。
 
 重复启动的风险：
 
 - 微信或飞书入站消息被多个进程同时消费，导致重复回复。
 - 两个 Bridge 同时驱动同一个 Codex session，造成上下文串线。
 - 审批、文件发送、typing、进度投递可能重复或错发。
-- 本地 `state/bridge/*.json` 被多个进程并发读写，产生状态覆盖。
+- 本地 `~/.chat-codex/state/bridge/*.json` 被多个进程并发读写，产生状态覆盖。
 - 用户看到多个运行期 TUI，不知道哪个才是真正服务进程。
 
 因此需要在启动通讯渠道前做运行期单实例检测，确保同一个本地状态目录下只有一个 Chat Codex 中间件实例在运行。
 
 ## 目标
 
-- 同一个 `state/bridge/` 下只允许一个运行中的 Bridge 实例。
+- 同一个 Bridge 状态目录下只允许一个运行中的 Bridge 实例。默认目录是 `~/.chat-codex/state/bridge/`，可通过 `CHAT_CODEX_STATE_DIR` 覆盖。
 - 第二个进程启动时，如果已有实例健康运行，必须拒绝启动渠道。
 - 崩溃后留下的残留锁可以被识别，并允许用户清理后重新启动。
 - 锁不保护 Codex CLI 本身，只保护 Chat Codex 中间件和通讯渠道绑定。
@@ -35,35 +35,35 @@
 第一版使用全局运行锁：
 
 ```text
-state/bridge/runtime.lock/
+~/.chat-codex/state/bridge/runtime.lock/
 ```
 
 理由：
 
-- 当前 `state/bridge/` 下的 routes、session owners、pending bindings 是共享状态。
+- 当前 Bridge 状态目录下的 routes、session owners、pending bindings 是共享状态。
 - 即使两个进程启动不同渠道，也会共享 session owner 和 route 状态，容易产生并发写入风险。
 - 全局锁实现简单，能直接解决重复启动通讯渠道的主要风险。
 
 后续如果确实需要多进程分别管理不同渠道，再设计 per-channel lock：
 
 ```text
-state/channels/<type>/<channelId>/runtime.lock/
+~/.chat-codex/state/channels/<type>/<channelId>/runtime.lock/
 ```
 
-但 per-channel lock 必须同时解决共享 `state/bridge/` 的并发写入问题，不能只锁渠道连接。
+但 per-channel lock 必须同时解决共享 Bridge 状态目录的并发写入问题，不能只锁渠道连接。
 
 ## 锁文件结构
 
 锁目录：
 
 ```text
-state/bridge/runtime.lock/
+~/.chat-codex/state/bridge/runtime.lock/
 ```
 
 锁信息：
 
 ```text
-state/bridge/runtime.lock/owner.json
+~/.chat-codex/state/bridge/runtime.lock/owner.json
 ```
 
 建议结构：
@@ -104,7 +104,7 @@ interface RuntimeLockOwner {
 
 1. 准备 startup 和 channel plan。
 2. 读取已启用渠道并通过启动前校验。
-3. 尝试创建 `state/bridge/runtime.lock/` 目录。
+3. 尝试创建 Bridge 状态目录下的 `runtime.lock/` 目录。
 4. 如果创建成功，写入 `owner.json`，启动心跳。
 5. 如果目录已存在，读取 `owner.json` 并判断是否为活锁或残留锁。
 6. 只有拿到锁后才允许启动通讯渠道。
@@ -400,7 +400,7 @@ npm run chat-codex
 
 ## 验收标准
 
-- 同一 `state/bridge/` 下无法同时启动两个 Chat Codex 中间件实例。
+- 同一 Bridge 状态目录下无法同时启动两个 Chat Codex 中间件实例。
 - 第二个进程不会连接微信或飞书。
 - 正常退出后锁被释放。
 - 崩溃残留锁能被识别并清理。

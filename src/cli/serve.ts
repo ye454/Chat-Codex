@@ -323,7 +323,7 @@ async function addFeishuBot(rl: Interface, channelActions: ChannelActions): Prom
     "请手动输入这次要添加的 App ID / App Secret。",
     "账号标识必填，是本地名称，用来区分多个飞书机器人。",
     `飞书域默认 ${DEFAULT_FEISHU_DOMAIN}，普通用户可直接回车。`,
-    "凭证会保存到本机 state/ 目录的 credentials.local.json，不会写入 Git 跟踪文件。",
+    "凭证会保存到本机用户状态目录的 credentials.local.json，不会写入 Git 跟踪文件。",
     "也可以在启动前通过 FEISHU_APP_ID / FEISHU_APP_SECRET 环境变量覆盖。",
     "输入 0 返回上一级。",
   ].join("\n"));
@@ -353,7 +353,7 @@ async function addFeishuBot(rl: Interface, channelActions: ChannelActions): Prom
     "飞书机器人已添加",
     `账号标识: ${record.defaultAccountId ?? DEFAULT_FEISHU_ACCOUNT_ID}`,
     `渠道实例: ${record.id}`,
-    "凭证: 已保存到本机 state/，重启后会自动读取。",
+    "凭证: 已保存到本机用户状态目录，重启后会自动读取。",
     "",
     "下一步: 启动服务后，让用户在飞书里私聊机器人。",
     "每个飞书私聊会按 chat_id 生成独立聊天绑定。",

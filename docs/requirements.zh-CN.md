@@ -74,7 +74,7 @@ Git 管理要求：
 
 - 当前项目目录本身是独立 Git 仓库。
 - Git 忽略规则必须防止提交 `node_modules/`、`dist/`、运行态状态、日志、微信登录态、token、cookie、本地 Codex 参考仓库和解压参考目录。
-- `src/state/` 是源码目录，必须被 Git 追踪；运行态状态只允许写入根目录 `/state/` 或后续配置的运行态目录。
+- `src/state/` 是源码目录，必须被 Git 追踪；运行态状态默认写入 `~/.chat-codex/state/`，或写入 `CHAT_CODEX_STATE_DIR` 指定的运行态目录。
 - 每个实现阶段提交前必须运行测试并更新 `reports/tests/` 中文测试报告。
 - 详细规范见 `docs/git-management.zh-CN.md`。
 

@@ -5,10 +5,37 @@ import os from "node:os";
 import path from "node:path";
 import { FileStateStore } from "../../src/state/file-state-store.js";
 import { ChannelConfigStore } from "../../src/state/channel-config-store.js";
+import { CHAT_CODEX_STATE_DIR_ENV, defaultBridgeStateDir, resolveChatCodexStateRoot } from "../../src/state/state-files.js";
 import type { ChannelMessage } from "../../src/protocol/channel.js";
 import type { CodexSession } from "../../src/codex/types.js";
 import type { BridgeConfigDocument, ChannelAccountCredentialsDocument, ChannelAccountDocument, PendingBindingsDocument, RoutesDocument, SessionOwnersDocument, SessionPoliciesDocument } from "../../src/state/persistent-state-types.js";
 import { pendingBindingOwnerRouteKey } from "../../src/state/memory-state-store.js";
+
+test("default state root uses fixed user directory", () => {
+  const homeDir = path.join(os.tmpdir(), "chat-codex-home");
+
+  assert.equal(resolveChatCodexStateRoot({ env: {}, homeDir }), path.join(homeDir, ".chat-codex", "state"));
+  assert.equal(defaultBridgeStateDir("/tmp/chat-codex-start", {}), path.join(os.homedir(), ".chat-codex", "state", "bridge"));
+});
+
+test("FileStateStore and ChannelConfigStore support CHAT_CODEX_STATE_DIR override", () => {
+  const stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "chat-codex-state-root-"));
+  const cwd = path.join(os.tmpdir(), "chat-codex-start");
+  const env = { [CHAT_CODEX_STATE_DIR_ENV]: stateRoot };
+
+  const fileState = new FileStateStore({ cwd, env });
+  const configStore = new ChannelConfigStore({ cwd, env });
+
+  assert.equal(fileState.rootDir, path.join(stateRoot, "bridge"));
+  assert.equal(configStore.bridgeDir, path.join(stateRoot, "bridge"));
+});
+
+test("CHAT_CODEX_STATE_DIR relative override resolves from startup cwd", () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "chat-codex-start-"));
+  const env = { [CHAT_CODEX_STATE_DIR_ENV]: "runtime-state" };
+
+  assert.equal(defaultBridgeStateDir(cwd, env), path.join(cwd, "runtime-state", "bridge"));
+});
 
 test("FileStateStore persists active route binding and session owner", () => {
   const rootDir = tempStateDir();

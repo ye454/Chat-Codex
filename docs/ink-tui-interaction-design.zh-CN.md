@@ -63,7 +63,7 @@ TUI 组件允许：
 
 TUI 组件禁止：
 
-- 直接写 `state/bridge/*.json`。
+- 直接写 Bridge 状态目录下的 JSON 文件。
 - 直接读写 `session-owners.json` 判断 owner 冲突。
 - 直接 new `WeixinAdapter` 或 `FeishuAdapter` 做业务判断。
 - 直接调用 Codex adapter 创建 session。
@@ -531,7 +531,7 @@ Session 选择页快捷键：
 - 当前阶段不支持给一个 Codex session 添加多个工作目录；多工作区能力留作后续高级设计。
 - 输入不存在的目录时，先显示确认提示，再创建目录并保存。
 - 保存后刷新首页、启动确认页和运行日志页中的工作目录。
-- 工作目录通过 actions/services 修改当前启动进程内的默认值；当前阶段不持久化固定默认目录，TUI 不直接写 `state/bridge/config.json`。
+- 工作目录通过 actions/services 修改当前启动进程内的默认值；当前阶段不持久化固定默认目录，TUI 不直接写 Bridge 状态目录下的 `config.json`。
 
 ## 状态详情
 

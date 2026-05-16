@@ -14,7 +14,7 @@
   中文渠道投递策略设计。说明 `ChannelDeliveryPolicy` 如何按渠道控制 task-start、progress、`/progress` 和 refresh 命令，避免 Bridge Core 写具体平台分支。
 
 - `inbound-media-design.zh-CN.md`
-  入站图片和文件适配设计。说明微信/飞书图片如何下载保存到启动目录 `.chat-codex-uploads/`、图片-only 如何由 `【Chat-Codex中间件提醒】` 询问用户意图、图文消息如何投递给 Codex、执行中收到图片时如何通过结构化 steer 或 pending media 处理，以及 Codex app-server `localImage` 的结构化输入边界。
+  入站图片和文件适配设计。说明微信/飞书图片如何下载保存到用户目录 `~/.chat-codex/uploads/`、图片-only 如何由 `【Chat-Codex中间件提醒】` 询问用户意图、图文消息如何投递给 Codex、执行中收到图片时如何通过结构化 steer 或 pending media 处理，以及 Codex app-server `localImage` 的结构化输入边界。
 
 - `development-and-test.zh-CN.md`
   中文开发与测试规范。说明代码分层、质量要求、每个功能的自测要求、测试报告目录和报告格式。
@@ -157,4 +157,4 @@ npm run cli:feishu:status
 
 `weixin login` 已具备二维码登录入口，会在终端渲染二维码并保留备用链接。真实微信通道 + Codex 统一通过 `npm run chat-codex` 启动；默认 app-server 模式可以把 Codex command/file/permissions 审批请求推送到微信，并由 `/OK` 或 `/NO` 回写 Codex。真实扫码登录完成后要追加真实微信通道测试报告。
 
-`feishu status` 会读取 `FEISHU_APP_ID`、`FEISHU_APP_SECRET` 等环境变量并检查机器人身份；飞书私聊文本通道 + Codex 统一通过 `npm run chat-codex` 添加机器人并启动服务。交互添加的飞书 App Secret 会写入被 Git 忽略的本机 `state/channels/feishu/.../credentials.local.json`，也可以放在本机环境变量或 `secrets/`；不要写入 Git 跟踪文件。
+`feishu status` 会读取 `FEISHU_APP_ID`、`FEISHU_APP_SECRET` 等环境变量并检查机器人身份；飞书私聊文本通道 + Codex 统一通过 `npm run chat-codex` 添加机器人并启动服务。交互添加的飞书 App Secret 会写入本机 `~/.chat-codex/state/channels/feishu/.../credentials.local.json`，也可以放在本机环境变量或 `secrets/`；不要写入 Git 跟踪文件。

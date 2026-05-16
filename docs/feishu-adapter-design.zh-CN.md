@@ -112,7 +112,7 @@ FEISHU_ACCOUNT_ID=default       # 默认 default
 secrets/feishu.local.md
 ```
 
-该文件可以写成可复制到终端的 `export FEISHU_APP_ID=...` 格式。`secrets/` 已加入 `.gitignore`，仓库文档和测试报告不得记录真实 `appSecret`。通过 `chat-codex` 交互添加飞书机器人时，凭证也可以写入被 Git 忽略的 `state/channels/feishu/<channelId>/accounts/<accountId>/credentials.local.json`，用于重启后自动恢复。
+该文件可以写成可复制到终端的 `export FEISHU_APP_ID=...` 格式。`secrets/` 已加入 `.gitignore`，仓库文档和测试报告不得记录真实 `appSecret`。通过 `chat-codex` 交互添加飞书机器人时，凭证也可以写入本机 `~/.chat-codex/state/channels/feishu/<channelId>/accounts/<accountId>/credentials.local.json`，用于重启后自动恢复。
 
 后续多渠道配置落地后，再迁移到：
 
@@ -458,7 +458,7 @@ npm run chat-codex
 行为：
 
 1. `feishu status` 读取 `FEISHU_APP_ID`、`FEISHU_APP_SECRET`、`FEISHU_DOMAIN`、`FEISHU_ACCOUNT_ID` 等环境变量做一次性状态检查。
-2. `chat-codex` 交互式添加飞书机器人时提示输入 App ID / App Secret，并保存到本机 `state/channels/feishu/<channelId>/accounts/<accountId>/credentials.local.json`，重启后自动读取；该路径被 Git 忽略，不写入仓库。
+2. `chat-codex` 交互式添加飞书机器人时提示输入 App ID / App Secret，并保存到本机 `~/.chat-codex/state/channels/feishu/<channelId>/accounts/<accountId>/credentials.local.json`，重启后自动读取；该路径不在仓库内，不写入 Git。
 3. 运行时加载凭证顺序为：当前进程内存、本机 `credentials.local.json`、环境变量。
 4. probe 飞书机器人身份。
 5. 展示中文状态摘要。

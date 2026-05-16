@@ -306,7 +306,7 @@ Terminal/Mock 使用默认完整投递策略。飞书等后续渠道应由各自
 
 后续治理点：
 
-- `FileStateStore` 已落地第一阶段文件持久化，真实微信/飞书启动路径会读写 `state/bridge/routes.json`、`state/bridge/session-owners.json`、`state/bridge/session-policies.json` 和 `state/bridge/pending-bindings.json`。
+- `FileStateStore` 已落地第一阶段文件持久化，真实微信/飞书启动路径会读写 `~/.chat-codex/state/bridge/routes.json`、`~/.chat-codex/state/bridge/session-owners.json`、`~/.chat-codex/state/bridge/session-policies.json` 和 `~/.chat-codex/state/bridge/pending-bindings.json`。
 - 渠道实例管理和聊天绑定页已落地普通 CLI 版本；TUI 仍只作为后续展示层。
 - 真实第二渠道、飞书群聊/thread、微信群聊真实链路都还没有验证。
 - `RouteRuntime` 还没有从 `bridge.ts` 拆出，route 级队列、进度模式、active turn 状态后续应独立成模块。
@@ -643,8 +643,8 @@ Codex Adapter:
 - Unbound route policy: ask
 
 Channels:
-1. weixin-main  type=weixin  enabled=true  stateDir=state/weixin-main
-2. lark-work    type=lark    enabled=true  stateDir=state/lark-work
+1. weixin-main  type=weixin  enabled=true  stateDir=state/channels/weixin/weixin-main
+2. lark-work    type=lark    enabled=true  stateDir=state/channels/lark/lark-work
 
 操作:
 1. 管理渠道
@@ -695,7 +695,7 @@ d. 删除选中渠道实例
 ```text
 添加微信渠道
 - Channel ID [weixin-main]:
-- State dir [state/channels/weixin-main]:
+- State dir [state/channels/weixin/weixin-main]:
 - Capabilities:
   direct: yes
   group: no（待真实验证）

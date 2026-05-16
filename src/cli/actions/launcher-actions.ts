@@ -205,7 +205,7 @@ export class LauncherActions {
         record,
         message: [
           "飞书机器人已添加。",
-          "凭证只保存在本次进程内存里；重启后请使用环境变量或重新手动添加。",
+          "凭证已保存到本机用户状态目录，重启后会自动读取。",
           "启动服务后，让用户在飞书里私聊机器人。",
         ].join(" "),
       };
@@ -442,7 +442,7 @@ export class LauncherActions {
   }
 
   private stateStore(): FileStateStore {
-    return new FileStateStore();
+    return new FileStateStore({ rootDir: this.channelActions.configStore.bridgeDir });
   }
 
   private createRealCodexAdapter(): CodexAdapter {

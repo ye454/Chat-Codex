@@ -25,7 +25,7 @@
 
 ## 总原则
 
-- TUI 仍然只是 UI 层，不能直接读写 `state/bridge/*.json` 或直接操作渠道 adapter。
+- TUI 仍然只是 UI 层，不能直接读写 Bridge 状态目录下的 JSON 文件或直接操作渠道 adapter。
 - TUI 和普通 prompt CLI 必须复用同一套 `LauncherActions`、`ChannelActions`、`BindingActions` 和 state store 能力。
 - 备注名、删除渠道、解绑 session owner 等业务动作必须先落到 actions/services，再由 TUI/CLI 调用。
 - 禁用是可恢复操作；删除是破坏性操作，必须二次确认。
@@ -113,7 +113,7 @@ TUI 渠道页操作：
 
 删除时应清理：
 
-- `state/bridge/config.json` 里的渠道实例。
+- Bridge 状态目录 `config.json` 里的渠道实例。
 - 该渠道的 `stateDir`，包括微信账号状态或飞书本机凭证文件。
 - `routes.json` 中 `channelId` 等于该渠道的 routes。
 - routes 上的 active session 绑定。

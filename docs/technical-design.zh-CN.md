@@ -256,7 +256,7 @@ WeixinAdapter implements ChannelAdapter
 - 参考 `openclaw-weixin@2.4.3` 的 HTTP JSON API，直接实现 `get_bot_qrcode`、`get_qrcode_status`、`getupdates`、`sendmessage`、`notifystart`、`notifystop` 的薄客户端。
 - 图片和普通文件发送参考 `openclaw-weixin@2.4.3` 的媒体链路：`getuploadurl` 申请上传参数，本地文件用 AES-128-ECB 加密后上传 CDN，再通过 `sendmessage` 发送 `image_item` 或 `file_item`。远程媒体 URL 会先下载到本地临时文件再走同一链路。
 - 登录轮询支持 `need_verifycode` 分支；CLI 会提示输入手机微信显示的配对数字后继续轮询。
-- 登录 token 默认保存在项目根目录下 `state/weixin/`，该目录被 Git 忽略。
+- 登录 token 默认保存在用户状态目录 `~/.chat-codex/state/channels/weixin/...`，不写入项目目录或 Git 跟踪文件。
 - 账号 ID 会做文件名安全归一化，例如 `abc@im.bot` 归一化为 `abc-im-bot`。
 - `context_token` 会从微信入站消息带入 `ChannelTarget.context.contextToken`，但文本、图片和文件发送默认不回传给 `sendmessage`；它只作为观测、调试和后续兼容回退字段。typing 可继续单独使用该字段请求 `typing_ticket`，但 typing 失败不影响消息投递。
 - typing 使用 `getconfig` 获取 `typing_ticket`，再调用 `sendtyping`。Bridge 在 Codex 运行期间每 5 秒续发一次 typing start，任务完成或 `/stop` 后发送 typing stop；typing 失败只记录警告，不中断 Codex 正常回复。

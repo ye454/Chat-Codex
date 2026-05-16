@@ -42,8 +42,8 @@ export class ChannelActions {
   private readonly feishuRuntimeCredentials = new Map<string, FeishuCredentials>();
 
   constructor(options: ChannelActionsOptions = {}) {
-    this.configStore = options.configStore ?? new ChannelConfigStore({ cwd: options.cwd });
     this.env = options.env ?? process.env;
+    this.configStore = options.configStore ?? new ChannelConfigStore({ cwd: options.cwd, env: this.env });
   }
 
   async listChannelSummaries(): Promise<ManagedChannelSummary[]> {
