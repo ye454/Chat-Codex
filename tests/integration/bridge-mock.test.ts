@@ -6,7 +6,7 @@ import { MockChannelAdapter } from "../../src/channels/mock/mock-channel-adapter
 import { MockCodexAdapter } from "../../src/codex/mock-codex-adapter.js";
 import { truncateDisplayText } from "../../src/codex/codex-cli.js";
 import { codexInputPlainText, normalizeCodexInput } from "../../src/codex/input.js";
-import type { CodexAdapter, CodexBackgroundEventHandler, CodexCollaborationMode, CodexEvent, CodexGoal, CodexPromptInput, CodexRunOptions, CodexSession, CodexSessionContextUsage, CodexSessionStatus, CodexSessionSummary, CodexTurnInput, StartSessionInput } from "../../src/codex/types.js";
+import type { CodexAdapter, CodexBackgroundEventHandler, CodexCollaborationMode, CodexCompactResult, CodexEvent, CodexGoal, CodexPromptInput, CodexRunOptions, CodexSession, CodexSessionContextUsage, CodexSessionStatus, CodexSessionSummary, CodexTurnInput, StartSessionInput } from "../../src/codex/types.js";
 import type { TranscriptSink } from "../../src/logging/transcript.js";
 import type { ChannelAttachment, ChannelCapabilities, ChannelMedia, ChannelMessage, ChannelTarget, SendResult } from "../../src/protocol/channel.js";
 import type { ChannelDeliveryPolicy } from "../../src/protocol/delivery-policy.js";
@@ -513,6 +513,24 @@ class CancellableCodexAdapter implements CodexAdapter {
   }
 }
 
+class BlockingCompactCodexAdapter extends MockCodexAdapter {
+  compactStarted = false;
+  private releaseCompact?: () => void;
+
+  override async compactSession(sessionId: string): Promise<CodexCompactResult> {
+    this.compactStarted = true;
+    this.compactedSessions.push(sessionId);
+    await new Promise<void>((resolve) => {
+      this.releaseCompact = resolve;
+    });
+    return { sessionId };
+  }
+
+  release(): void {
+    this.releaseCompact?.();
+  }
+}
+
 test("Bridge handles new session, prompt, status, and approval over mock channel", async () => {
   const channel = new MockChannelAdapter();
   const codex = new MockCodexAdapter();
@@ -554,6 +572,71 @@ test("Bridge handles new session, prompt, status, and approval over mock channel
   assert.equal(codex.resolvedApprovals.length, 1);
   assert.match(codex.resolvedApprovals[0].approvalKey, /^a[0-9a-z]+$/);
   assert.equal(codex.resolvedApprovals[0].decision, "approve");
+});
+
+test("Bridge handles compact confirmation and success over mock channel", async () => {
+  const channel = new MockChannelAdapter({ typing: true });
+  const codex = new ContextUsageCodexAdapter();
+  const bridge = new Bridge({ channel, codex, cwd: process.cwd() });
+
+  await bridge.start();
+  await channel.emitText("/new");
+  await channel.emitText("/help");
+  await channel.emitText("/compact");
+  await channel.emitText("/status");
+  await channel.emitText("/cancel");
+  await channel.emitText("/compact");
+  await channel.emitText("/compact confirm");
+  await channel.emitText("/status");
+  await bridge.stop();
+
+  const help = channel.sentMessages.find((message) => message.text.startsWith("**可用命令**"))?.text ?? "";
+  const confirmation = channel.sentMessages.find((message) => message.text.includes("即将压缩当前 Codex session"))?.text ?? "";
+  const completed = channel.sentMessages.find((message) => message.text.includes("上下文压缩完成"))?.text ?? "";
+  assert.ok(help.includes("```text\n/compact\n```"));
+  assert.ok(confirmation.includes("压缩前上下文: `164,171 / 258,400 token`"));
+  assert.ok(channel.sentMessages.some((message) => message.text.includes("上下文压缩: 等待确认")));
+  assert.ok(channel.sentMessages.some((message) => message.text.includes("已取消本次上下文压缩确认")));
+  assert.ok(channel.sentMessages.some((message) => message.text.includes("已开始压缩当前 Codex session 上下文")));
+  assert.ok(completed.includes("压缩后上下文: `164,171 / 258,400 token`"));
+  assert.deepEqual(codex.compactedSessions, ["mock-codex-1"]);
+  assert.deepEqual(channel.sentTyping.map((event) => event.typing), [true, false]);
+});
+
+test("Bridge blocks current route operations while compact runs but allows other routes", async () => {
+  const channel = new MockChannelAdapter();
+  const codex = new BlockingCompactCodexAdapter();
+  const bridge = new Bridge({ channel, codex, cwd: process.cwd() });
+
+  await bridge.start();
+  await channel.emitText("/new", { conversationId: "main" });
+  await channel.emitText("/new", { conversationId: "other" });
+  await channel.emitText("/compact", { conversationId: "main" });
+  const compactPromise = channel.emitText("/compact confirm", { conversationId: "main" });
+  await waitFor(() => codex.compactStarted);
+  await waitFor(() => channel.sentMessages.some((message) => message.text.includes("已开始压缩当前 Codex session 上下文")));
+
+  await channel.emitText("/status", { conversationId: "main" });
+  await channel.emitText("/stop", { conversationId: "main" });
+  await channel.emitText("压缩中普通消息", { conversationId: "main" });
+  await channel.emitText("其他 route 正常执行", { conversationId: "other" });
+  await waitFor(() => channel.sentMessages.some((message) => message.text.includes("Mock Codex 回复: 其他 route 正常执行")));
+
+  codex.release();
+  await compactPromise;
+  await bridge.waitForIdle();
+  await bridge.stop();
+
+  const mainStatus = channel.sentMessages
+    .filter((message) => message.target.conversation.id === "main" && message.text.includes("**Codex 状态**"))
+    .at(-1)?.text ?? "";
+  assert.ok(mainStatus.includes("上下文压缩: 进行中"));
+  assert.ok(mainStatus.includes("当前不支持中途取消 /compact"));
+  assert.ok(channel.sentMessages.some((message) => message.text === "当前正在压缩上下文，请等待完成后再操作。"));
+  assert.ok(channel.sentMessages.some((message) => message.text === "当前正在压缩上下文，请等待完成后再发送消息。"));
+  assert.equal(codex.runs.some((run) => run.prompt === "压缩中普通消息"), false);
+  assert.ok(codex.runs.some((run) => run.prompt === "其他 route 正常执行"));
+  assert.deepEqual(codex.compactedSessions, ["mock-codex-1"]);
 });
 
 test("Bridge can switch sessions by entering a numbered selection mode", async () => {

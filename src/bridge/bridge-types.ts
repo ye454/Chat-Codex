@@ -71,6 +71,11 @@ export interface SessionSelectionState {
   createdAt: number;
 }
 
+export type CompactState =
+  | { type: "none" }
+  | { type: "confirming"; sessionId: string; requestedAt: string }
+  | { type: "running"; sessionId: string; startedAt: string };
+
 export type BindSessionResult =
   | { ok: true }
   | { ok: false; reason: "owner_conflict" | "resume_failed"; message: string };
@@ -92,3 +97,5 @@ export const ROUTE_BUSY_MUTATION_REJECT_TEXT = [
   "当前对话的 Codex 正在执行，不能修改会话、权限、模型、协作模式或 Goal。",
   "请等待完成，或发送 /stop 后再修改。",
 ].join("\n");
+export const COMPACT_RUNNING_REJECT_TEXT = "当前正在压缩上下文，请等待完成后再操作。";
+export const COMPACT_RUNNING_MESSAGE_REJECT_TEXT = "当前正在压缩上下文，请等待完成后再发送消息。";

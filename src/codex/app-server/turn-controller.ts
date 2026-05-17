@@ -298,6 +298,8 @@ export class AppServerTurnController {
       this.pushProgressEvent(turn, turn.sessionId, turn.turnId, "正在分析...", "reasoning");
     } else if (itemType === "plan") {
       this.pushProgressEvent(turn, turn.sessionId, turn.turnId, "正在规划...", "todo");
+    } else if (itemType === "contextCompaction" || itemType === "context_compaction") {
+      this.pushProgressEvent(turn, turn.sessionId, turn.turnId, "正在压缩上下文...", "other");
     } else if (itemType === "agentMessage") {
       const itemId = stringValue(item.id);
       const phase = messagePhaseValue(item.phase);

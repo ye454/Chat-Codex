@@ -9,6 +9,12 @@ test("parseCommand parses slash commands", () => {
     args: ["a001"],
     raw: "/approve a001",
   });
+  assert.deepEqual(parseCommand("/compact confirm"), {
+    isCommand: true,
+    name: "compact",
+    args: ["confirm"],
+    raw: "/compact confirm",
+  });
 });
 
 test("parseCommand ignores normal text", () => {

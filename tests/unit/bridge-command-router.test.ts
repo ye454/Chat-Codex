@@ -33,6 +33,19 @@ test("BridgeCommandRouter rejects semantic mutations while route is busy", async
   assert.equal(fixture.calls.model, 0);
 });
 
+test("BridgeCommandRouter routes compact command", async () => {
+  const fixture = routerFixture();
+  await fixture.router.handle(message(), target(), "compact", [], "/compact");
+  assert.equal(fixture.calls.compact, 1);
+});
+
+test("BridgeCommandRouter rejects compact while route is busy", async () => {
+  const fixture = routerFixture({ busy: true });
+  await fixture.router.handle(message(), target(), "compact", [], "/compact");
+  assert.match(fixture.sent.at(-1) ?? "", /当前对话的 Codex 正在执行/);
+  assert.equal(fixture.calls.compact, 0);
+});
+
 test("BridgeCommandRouter lets non-mutating progress commands dispatch", async () => {
   const fixture = routerFixture();
   await fixture.router.handle(message(), target(), "progress", ["silent"], "/progress silent");
@@ -61,6 +74,7 @@ function routerFixture(options: {
   const calls = {
     model: 0,
     progressMode: 0,
+    compact: 0,
   };
   const delivery = new BridgeDelivery({
     channels: {
@@ -94,6 +108,9 @@ function routerFixture(options: {
     permission: async () => undefined,
     approval: async () => undefined,
     stop: async () => undefined,
+    compact: async () => {
+      calls.compact += 1;
+    },
   };
   return {
     sent,

@@ -170,6 +170,16 @@ rl.on("line", (line) => {
     send({ id: message.id, result: { cleared } });
     return;
   }
+  if (message.method === "thread/compact/start") {
+    const compactTurnId = "compact-turn-" + Date.now();
+    send({ id: message.id, result: {} });
+    send({ method: "turn/started", params: { threadId: message.params.threadId, turnId: compactTurnId, turn: { id: compactTurnId } } });
+    send({ method: "item/started", params: { threadId: message.params.threadId, turnId: compactTurnId, item: { type: "contextCompaction", id: "compact-item-1" } } });
+    send({ method: "item/completed", params: { threadId: message.params.threadId, turnId: compactTurnId, completedAtMs: Date.now(), item: { type: "contextCompaction", id: "compact-item-1" } } });
+    send({ method: "thread/compacted", params: { threadId: message.params.threadId, turnId: compactTurnId } });
+    send({ method: "turn/completed", params: { threadId: message.params.threadId, turn: { id: compactTurnId, items: [], itemsView: "complete", status: "completed", error: null, startedAt: 1778716800, completedAt: 1778716801, durationMs: 1000 } } });
+    return;
+  }
   if (message.method === "turn/start") {
     turnId = "turn-app-server-" + Date.now();
     send({ id: message.id, result: { turn: { id: turnId, items: [], itemsView: "complete", status: "inProgress", error: null, startedAt: 1778716800, completedAt: null, durationMs: null } } });
@@ -745,6 +755,33 @@ test("AppServerCodexAdapter manages experimental thread goals", async () => {
   assert.equal(current?.objective, "完成微信 Goal 适配并保持测试通过");
   assert.equal(cleared, true);
   assert.equal(empty, null);
+});
+
+test("AppServerCodexAdapter starts and waits for thread compaction", async () => {
+  const root = tempDir();
+  const adapter = new AppServerCodexAdapter({ codexBin: fakeCodexBin(root) });
+  const events: CodexEvent[] = [];
+  const unsubscribe = adapter.onBackgroundEvent((event) => {
+    events.push(event);
+  });
+  const session = await adapter.startSession({
+    routeKey: "route-1",
+    cwd: root,
+    title: "test",
+  });
+
+  const result = await adapter.compactSession(session.id);
+  await waitForUnit(() => events.some((event) => event.type === "turn.completed"));
+  const status = await adapter.getStatus(session.id);
+  unsubscribe();
+  await adapter.stop();
+
+  assert.deepEqual(result, { sessionId: session.id });
+  assert.equal(status.type, "idle");
+  assert.ok(events.some((event) => event.type === "turn.started"));
+  assert.ok(events.some((event) => event.type === "assistant.progress" && event.text.includes("正在压缩上下文")));
+  assert.ok(events.some((event) => event.type === "assistant.progress" && event.text.includes("上下文压缩完成")));
+  assert.ok(events.some((event) => event.type === "turn.completed"));
 });
 
 test("AppServerCodexAdapter emits goal auto-continuation as background events", async () => {

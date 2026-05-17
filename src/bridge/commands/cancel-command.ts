@@ -8,6 +8,7 @@ export interface CancelCommandOptions {
   sessionFlow: BridgeSessionFlow;
   pendingMedia: PendingMediaManager;
   delivery: BridgeDelivery;
+  cancelCompactConfirmation?(routeKey: string): boolean;
 }
 
 export async function handleCancelCommand(
@@ -15,6 +16,10 @@ export async function handleCancelCommand(
   message: ChannelMessage,
   target: ChannelTarget,
 ): Promise<void> {
+  if (options.cancelCompactConfirmation?.(message.routeKey)) {
+    await options.delivery.sendText(target, "已取消本次上下文压缩确认。");
+    return;
+  }
   if (options.sessionFlow.cancelSessionSelection(message.routeKey)) {
     await options.delivery.sendText(target, "已退出切换会话。");
     return;

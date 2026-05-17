@@ -2,6 +2,7 @@ import type { ApprovalDecision } from "../approvals/types.js";
 import type {
   CodexAdapter,
   CodexCollaborationMode,
+  CodexCompactResult,
   CodexEvent,
   CodexGoal,
   CodexGoalStatus,
@@ -33,6 +34,9 @@ export class MockCodexAdapter implements CodexAdapter {
   private readonly sessions = new Map<string, { session: CodexSession; routeKey: string; status: CodexSessionStatus }>();
   readonly resolvedApprovals: Array<{ approvalKey: string; decision: ApprovalDecision }> = [];
   readonly runs: Array<{ sessionId: string; prompt: string; collaborationMode?: CodexCollaborationMode }> = [];
+  readonly compactedSessions: string[] = [];
+  compactDelayMs = 0;
+  compactError: Error | undefined;
 
   async startSession(input: StartSessionInput): Promise<CodexSession> {
     this.sequence += 1;
@@ -209,6 +213,28 @@ export class MockCodexAdapter implements CodexAdapter {
 
   async clearGoal(sessionId: string): Promise<boolean> {
     return this.sessionGoals.delete(sessionId);
+  }
+
+  async compactSession(sessionId: string): Promise<CodexCompactResult> {
+    this.ensureKnownSession(sessionId);
+    const stored = this.sessions.get(sessionId);
+    this.compactedSessions.push(sessionId);
+    if (stored) {
+      stored.status = this.withModelInfo({ type: "running", task: "上下文压缩" }, this.modelPolicyForSession(sessionId));
+    }
+    if (this.compactDelayMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, this.compactDelayMs));
+    }
+    if (this.compactError) {
+      if (stored) {
+        stored.status = this.withModelInfo({ type: "failed", error: this.compactError.message }, this.modelPolicyForSession(sessionId));
+      }
+      throw this.compactError;
+    }
+    if (stored) {
+      stored.status = this.withModelInfo({ type: "idle" }, this.modelPolicyForSession(sessionId));
+    }
+    return { sessionId };
   }
 
   private runPolicyForSession(sessionId?: string): CodexRunPolicy {

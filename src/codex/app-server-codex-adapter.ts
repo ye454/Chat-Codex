@@ -3,6 +3,7 @@ import type {
   CodexAdapter,
   CodexBackgroundEventHandler,
   CodexCollaborationMode,
+  CodexCompactResult,
   CodexEvent,
   CodexGoal,
   CodexGoalStatus,
@@ -22,6 +23,7 @@ import { codexInputText } from "./input.js";
 import { approvalFromServerRequest, responseForApprovalDecision } from "./app-server/approval-handler.js";
 import { goalFromResponse, goalFromSetResponse } from "./app-server/goal-api.js";
 import { appServerUserInput } from "./app-server/input-mapper.js";
+import { appServerErrorMessage, isTransientAppServerError } from "./app-server/notification-mapper.js";
 import {
   cloneModelPolicy,
   modelInfoFromResponse,
@@ -40,7 +42,7 @@ import { AppServerRpcClient } from "./app-server/rpc-client.js";
 import { AppServerSessionStore } from "./app-server/session-store.js";
 import { collaborationModePayload, truncatePrompt, withContext, withModelPolicy } from "./app-server/session-status.js";
 import { AppServerTurnController } from "./app-server/turn-controller.js";
-import type { JsonRpcRequest, PendingServerApproval } from "./app-server/types.js";
+import type { JsonRpcNotification, JsonRpcRequest, PendingServerApproval } from "./app-server/types.js";
 import { AsyncEventQueue } from "./app-server/turn-store.js";
 import { isoFromSeconds, numberValue, objectValue, objectValueOrNull, stringValue } from "./app-server/value-parsers.js";
 
@@ -50,6 +52,15 @@ export interface AppServerCodexAdapterOptions {
   codexHome?: string;
   requestTimeoutMs?: number;
   interruptTimeoutMs?: number;
+  compactTimeoutMs?: number;
+}
+
+interface CompactWaiter {
+  sessionId: string;
+  turnId?: string;
+  timer?: ReturnType<typeof setTimeout>;
+  resolve(result: CodexCompactResult): void;
+  reject(error: Error): void;
 }
 
 export class AppServerCodexAdapter implements CodexAdapter {
@@ -63,9 +74,11 @@ export class AppServerCodexAdapter implements CodexAdapter {
   private readonly codexHome?: string;
   private readonly requestTimeoutMs: number;
   private readonly interruptTimeoutMs: number;
+  private readonly compactTimeoutMs: number;
   private readonly rpc: AppServerRpcClient;
   private readonly sessionStore = new AppServerSessionStore();
   private readonly pendingApprovals = new Map<string, PendingServerApproval>();
+  private readonly compactWaiters = new Map<string, CompactWaiter>();
   private readonly turns = new AppServerTurnController({
     sessions: this.sessionStore.records,
     threadToSession: this.sessionStore.threadToSession,
@@ -77,11 +90,12 @@ export class AppServerCodexAdapter implements CodexAdapter {
     this.codexHome = options.codexHome;
     this.requestTimeoutMs = options.requestTimeoutMs ?? 30_000;
     this.interruptTimeoutMs = options.interruptTimeoutMs ?? 1500;
+    this.compactTimeoutMs = options.compactTimeoutMs ?? 10 * 60_000;
     this.rpc = new AppServerRpcClient({
       codexBin: this.codexBin,
       requestTimeoutMs: this.requestTimeoutMs,
       onServerRequest: (request) => this.handleServerRequest(request),
-      onNotification: (notification) => this.turns.handleNotification(notification),
+      onNotification: (notification) => this.handleNotification(notification),
       onFatalError: (error) => this.handleFatalAppServerError(error),
     });
   }
@@ -93,6 +107,11 @@ export class AppServerCodexAdapter implements CodexAdapter {
   async stop(): Promise<void> {
     this.turns.closeAll();
     this.pendingApprovals.clear();
+    for (const waiter of this.compactWaiters.values()) {
+      if (waiter.timer) clearTimeout(waiter.timer);
+      waiter.reject(new Error("codex app-server stopped"));
+    }
+    this.compactWaiters.clear();
     this.rpc.stop();
   }
 
@@ -387,6 +406,40 @@ export class AppServerCodexAdapter implements CodexAdapter {
     return Boolean(response.cleared);
   }
 
+  async compactSession(sessionId: string): Promise<CodexCompactResult> {
+    await this.ensureStarted();
+    const stored = this.sessionStore.get(sessionId);
+    if (!stored) throw new Error(`app-server session not found locally: ${sessionId}`);
+    if (this.compactWaiters.has(sessionId)) throw new Error("当前 session 正在压缩上下文。");
+    const promise = new Promise<CodexCompactResult>((resolve, reject) => {
+      const waiter: CompactWaiter = {
+        sessionId,
+        resolve,
+        reject,
+      };
+      if (this.compactTimeoutMs > 0) {
+        waiter.timer = setTimeout(() => {
+          this.rejectCompactWaiter(sessionId, new Error("上下文压缩超时。"));
+        }, this.compactTimeoutMs);
+        waiter.timer.unref?.();
+      }
+      this.compactWaiters.set(sessionId, waiter);
+    });
+    stored.status = withContext(stored, { type: "running", task: "上下文压缩" });
+    stored.updatedAt = new Date().toISOString();
+    try {
+      await this.request<Record<string, unknown>>("thread/compact/start", {
+        threadId: sessionId,
+      });
+    } catch (error) {
+      const requestError = error instanceof Error ? error : new Error(String(error));
+      this.rejectCompactWaiter(sessionId, requestError);
+      await promise.catch(() => undefined);
+      throw requestError;
+    }
+    return await promise;
+  }
+
   private runPolicyForSession(sessionId?: string): CodexRunPolicy {
     return (sessionId ? this.sessionRunPolicies.get(sessionId) : undefined) ?? this.defaultRunPolicy;
   }
@@ -409,6 +462,84 @@ export class AppServerCodexAdapter implements CodexAdapter {
     options: { timeoutMs?: number; onResult?: (value: unknown) => void } = {},
   ): Promise<T> {
     return this.rpc.request(method, params, options);
+  }
+
+  private handleNotification(notification: JsonRpcNotification): void {
+    this.handleCompactNotification(notification);
+    this.turns.handleNotification(notification);
+  }
+
+  private handleCompactNotification(notification: JsonRpcNotification): void {
+    const params = objectValue(notification.params);
+    const threadId = stringValue(params.threadId);
+    if (!threadId) return;
+    const sessionId = this.sessionStore.resolveThreadSession(threadId);
+    const waiter = this.compactWaiters.get(sessionId);
+    if (!waiter) return;
+    const turnId = stringValue(params.turnId) ?? stringValue(objectValue(params.turn).id);
+    if (notification.method === "turn/started" && turnId && !waiter.turnId) {
+      waiter.turnId = turnId;
+      return;
+    }
+    if (notification.method === "item/started" || notification.method === "item/completed") {
+      const item = objectValue(params.item);
+      const itemType = stringValue(item.type);
+      if ((itemType === "contextCompaction" || itemType === "context_compaction") && turnId) {
+        waiter.turnId = turnId;
+      }
+      return;
+    }
+    if (notification.method === "thread/compacted") {
+      if (turnId) waiter.turnId = turnId;
+      this.resolveCompactWaiter(sessionId);
+      return;
+    }
+    if (notification.method === "error") {
+      const error = appServerErrorMessage(params);
+      if (isTransientAppServerError(error)) return;
+      if (!turnId || !waiter.turnId || waiter.turnId === turnId) {
+        this.rejectCompactWaiter(sessionId, new Error(error));
+      }
+      return;
+    }
+    if (notification.method === "turn/completed" && turnId && waiter.turnId === turnId) {
+      const turn = objectValue(params.turn);
+      const status = stringValue(turn.status);
+      if (status === "failed") {
+        const error = stringValue(objectValue(turn.error).message) ?? "上下文压缩失败";
+        this.rejectCompactWaiter(sessionId, new Error(error));
+        return;
+      }
+      this.resolveCompactWaiter(sessionId);
+    }
+  }
+
+  private resolveCompactWaiter(sessionId: string): void {
+    const waiter = this.compactWaiters.get(sessionId);
+    if (!waiter) return;
+    if (waiter.timer) clearTimeout(waiter.timer);
+    this.compactWaiters.delete(sessionId);
+    const stored = this.sessionStore.get(sessionId);
+    if (stored) {
+      stored.status = withContext(stored, { type: "idle" });
+      stored.currentTurnId = undefined;
+      stored.updatedAt = new Date().toISOString();
+    }
+    waiter.resolve({ sessionId });
+  }
+
+  private rejectCompactWaiter(sessionId: string, error: Error): void {
+    const waiter = this.compactWaiters.get(sessionId);
+    if (!waiter) return;
+    if (waiter.timer) clearTimeout(waiter.timer);
+    this.compactWaiters.delete(sessionId);
+    const stored = this.sessionStore.get(sessionId);
+    if (stored) {
+      stored.status = withContext(stored, { type: "failed", error: error.message });
+      stored.currentTurnId = undefined;
+      stored.updatedAt = new Date().toISOString();
+    }
+    waiter.reject(error);
   }
 
   private async handleServerRequest(request: JsonRpcRequest): Promise<void> {
@@ -450,6 +581,11 @@ export class AppServerCodexAdapter implements CodexAdapter {
   }
 
   private handleFatalAppServerError(error: Error): void {
+    for (const waiter of this.compactWaiters.values()) {
+      if (waiter.timer) clearTimeout(waiter.timer);
+      waiter.reject(error);
+    }
+    this.compactWaiters.clear();
     this.turns.failAll(error);
   }
 

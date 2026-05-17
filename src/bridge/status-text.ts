@@ -15,7 +15,7 @@ import type { ChannelMessage } from "../protocol/channel.js";
 import type { ChannelDeliveryPolicy } from "../protocol/delivery-policy.js";
 import type { MemoryStateStore } from "../state/memory-state-store.js";
 import { formatLocalDateTime } from "../time/display-time.js";
-import type { InitialRouteBinding, ProgressDeliveryMode } from "./bridge-types.js";
+import type { CompactState, InitialRouteBinding, ProgressDeliveryMode } from "./bridge-types.js";
 import {
   formatApprovalSupport,
   formatChannelStateForStatus,
@@ -50,6 +50,7 @@ export interface BridgeStatusTextOptions {
   isRouteBusy(routeKey: string): boolean;
   routeSteerPendingCount(routeKey: string): number;
   pendingMediaCount(routeKey: string): number;
+  compactStateForRoute(routeKey: string): CompactState;
   collaborationModeForRoute(routeKey: string, sessionId?: string): CodexCollaborationMode;
   progressModeFor(routeKey: string): ProgressDeliveryMode;
   runPolicyStatus(sessionId?: string): CodexRunPolicyStatus | undefined;
@@ -67,6 +68,7 @@ export class BridgeStatusText {
   private readonly isRouteBusy: BridgeStatusTextOptions["isRouteBusy"];
   private readonly routeSteerPendingCount: BridgeStatusTextOptions["routeSteerPendingCount"];
   private readonly pendingMediaCount: BridgeStatusTextOptions["pendingMediaCount"];
+  private readonly compactStateForRoute: BridgeStatusTextOptions["compactStateForRoute"];
   private readonly collaborationModeForRoute: BridgeStatusTextOptions["collaborationModeForRoute"];
   private readonly progressModeFor: BridgeStatusTextOptions["progressModeFor"];
   private readonly runPolicyStatus: BridgeStatusTextOptions["runPolicyStatus"];
@@ -83,6 +85,7 @@ export class BridgeStatusText {
     this.isRouteBusy = options.isRouteBusy;
     this.routeSteerPendingCount = options.routeSteerPendingCount;
     this.pendingMediaCount = options.pendingMediaCount;
+    this.compactStateForRoute = options.compactStateForRoute;
     this.collaborationModeForRoute = options.collaborationModeForRoute;
     this.progressModeFor = options.progressModeFor;
     this.runPolicyStatus = options.runPolicyStatus;
@@ -104,7 +107,9 @@ export class BridgeStatusText {
       ? localSession.status
       : adapterStatus;
     const approvals = this.approvals.list(routeKey);
-    const workerRunning = this.isRouteBusy(routeKey);
+    const compactState = this.compactStateForRoute(routeKey);
+    const compactRunning = compactState.type === "running";
+    const workerRunning = this.isRouteBusy(routeKey) || compactRunning;
     const policyStatus = this.runPolicyStatus(binding?.sessionId);
     const policy = policyStatus?.policy ?? this.codex.getRunPolicy?.(binding?.sessionId);
     const modelPolicy = this.codex.getModelPolicy?.(binding?.sessionId);
@@ -127,6 +132,7 @@ export class BridgeStatusText {
       `- 排队消息: \`${this.routeQueueLength(routeKey)}\``,
       `- 待投递补充消息: \`${this.routeSteerPendingCount(routeKey)}\``,
       `- 待处理图片: \`${this.pendingMediaCount(routeKey)}\``,
+      ...formatCompactStatusLines(compactState),
       `- 协作模式: ${formatCollaborationModeForStatus(this.collaborationModeForRoute(routeKey, binding?.sessionId))}`,
       ...formatGoalStatusLines(goal),
       `- 待审批: \`${approvals.length}\``,
@@ -135,7 +141,8 @@ export class BridgeStatusText {
       modelPolicy ? `- 模型覆盖: ${formatModelPolicyForStatus(modelPolicy)}` : undefined,
       policy ? `- 权限模式: ${formatRunPolicyForStatus(policy)}` : undefined,
       policyStatus && !policyStatus.interactiveApprovals ? `- 审批入口: ${formatApprovalSupport(policyStatus)}` : undefined,
-      workerRunning && binding ? "- 可用操作: 发送 `/stop` 终止当前任务" : undefined,
+      compactRunning ? "- 可用操作: 等待上下文压缩完成；当前不支持中途取消 /compact" : undefined,
+      workerRunning && binding && !compactRunning ? "- 可用操作: 发送 `/stop` 终止当前任务" : undefined,
       "",
       "**渠道**",
       `- 渠道: \`${channelStatus.channelId}\``,
@@ -208,6 +215,7 @@ export class BridgeStatusText {
       ["/goal clear", "清除 Goal：退出当前会话的 Goal 追踪"],
       ["/progress [brief|detailed|silent]", "查看或设置当前上下文进度投递模式"],
       ["/sendfile <任务内容>", "让 Codex 本轮按内部协议声明最终要发送的文件"],
+      ["/compact", "压缩当前 Codex session 的历史上下文；需要 /compact confirm 确认"],
       ["/model [模型|编号] [effort]", "查看可用模型，或切换当前 Codex session 后续任务的模型和思考程度"],
       ["/permission [approval|full confirm]", "查看或切换当前绑定 Codex session 的权限模式"],
       ["/OK", "批准当前审批"],
@@ -306,4 +314,19 @@ export class BridgeStatusText {
     if (cwd) parts.push(`cwd=${cwd}`);
     return parts.join(" ");
   }
+}
+
+function formatCompactStatusLines(state: CompactState): string[] {
+  if (state.type === "none") return ["- 上下文压缩: 无"];
+  if (state.type === "confirming") {
+    return [
+      "- 上下文压缩: 等待确认",
+      `- 压缩会话: \`${state.sessionId}\``,
+      "- 可用操作: 发送 `/compact confirm` 开始，或发送 `/cancel` 取消",
+    ];
+  }
+  return [
+    "- 上下文压缩: 进行中",
+    `- 压缩会话: \`${state.sessionId}\``,
+  ];
 }

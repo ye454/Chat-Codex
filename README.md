@@ -218,6 +218,7 @@ Codex CLI / Codex app-server
 | `/model effort <effort>` | 只切换 reasoning effort |
 | `/model default` | 清除当前 session 的模型覆盖 |
 | `/sendfile <任务>` | 允许 Codex 本轮声明并发送文件 |
+| `/compact` | 压缩当前 session 的历史上下文，需 `/compact confirm` 确认 |
 | `/progress [brief\|detailed\|silent]` | 非微信渠道的进度投递模式 |
 | `/fff` | 微信专用静默刷新 |
 

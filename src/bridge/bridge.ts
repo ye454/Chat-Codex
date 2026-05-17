@@ -33,6 +33,7 @@ import { BridgeStatusText } from "./status-text.js";
 import { handleApprovalCommand } from "./commands/approval-command.js";
 import { handleCancelCommand } from "./commands/cancel-command.js";
 import { handleCollaborationModeCommand } from "./commands/collaboration-command.js";
+import { handleCompactCommand } from "./commands/compact-command.js";
 import { handleGoalCommand } from "./commands/goal-command.js";
 import { handleModelCommand } from "./commands/model-command.js";
 import { handlePermissionCommand } from "./commands/permission-command.js";
@@ -41,10 +42,13 @@ import { handleSendFileCommand } from "./commands/sendfile-command.js";
 import { handleStopCommand } from "./commands/stop-command.js";
 import type {
   BridgeOptions,
+  CompactState,
   ProgressDeliveryMode,
 } from "./bridge-types.js";
 import {
   APPROVAL_SEND_RETRY_DELAY_MS,
+  COMPACT_RUNNING_MESSAGE_REJECT_TEXT,
+  COMPACT_RUNNING_REJECT_TEXT,
   STEER_BATCH_MAX_CHARS,
   STEER_BATCH_MAX_MESSAGES,
   STEER_DEBOUNCE_MS,
@@ -76,6 +80,7 @@ export class Bridge {
   private readonly defaultProgressMode: ProgressDeliveryMode;
   private readonly routeProgressModes = new Map<string, ProgressDeliveryMode>();
   private readonly routeCollaborationModes = new Map<string, CodexCollaborationMode>();
+  private readonly routeCompactStates = new Map<string, CompactState>();
   private readonly routeMessages = new Map<string, ChannelMessage>();
   private readonly routeTargets = new Map<string, ChannelTarget>();
   private readonly pendingMedia = new PendingMediaManager();
@@ -168,6 +173,7 @@ export class Bridge {
       isRouteBusy: (routeKey) => this.routeQueue.isRouteBusy(routeKey),
       routeSteerPendingCount: (routeKey) => this.routeSteering.pendingCount(routeKey),
       pendingMediaCount: (routeKey) => this.pendingMedia.count(routeKey),
+      compactStateForRoute: (routeKey) => this.compactStateForRoute(routeKey),
       collaborationModeForRoute: (routeKey, sessionId) => this.collaborationModeForRoute(routeKey, sessionId),
       progressModeFor: (routeKey) => this.progressModeFor(routeKey),
       runPolicyStatus: (sessionId) => this.runPolicyStatus(sessionId),
@@ -187,6 +193,7 @@ export class Bridge {
           sessionFlow: this.sessionFlow,
           pendingMedia: this.pendingMedia,
           delivery: this.delivery,
+          cancelCompactConfirmation: (routeKey) => this.cancelCompactConfirmation(routeKey),
         }, message, target),
         whoami: (message) => this.statusTextRenderer.whoamiText(message),
         debug: (message) => this.statusTextRenderer.debugText(message),
@@ -240,6 +247,16 @@ export class Bridge {
           routeQueue: this.routeQueue,
           routeSteering: this.routeSteering,
         }, message, target),
+        compact: (message, target, args) => handleCompactCommand({
+          codex: this.codex,
+          state: this.state,
+          delivery: this.delivery,
+          logger: this.logger,
+          compactStateForRoute: (routeKey) => this.compactStateForRoute(routeKey),
+          setCompactState: (routeKey, state) => this.setCompactState(routeKey, state),
+          clearCompactState: (routeKey) => this.clearCompactState(routeKey),
+          isRouteExecutionBusy: (routeKey) => this.isRouteExecutionBusyWithoutCompact(routeKey),
+        }, message, target, args),
       },
     });
     this.defaultProgressMode = options.progressMode ?? "brief";
@@ -274,10 +291,19 @@ export class Bridge {
     this.state.recordRouteMessage(message);
     this.sessionFlow.claimPendingInitialRouteBindingRoute(message);
     const command = text ? parseCommand(text) : undefined;
+    if (this.isCompactRunning(message.routeKey)) {
+      if (command?.isCommand && isCommandAllowedDuringCompact(command.name ?? "")) {
+        await this.commandRouter.handle(message, target, command.name ?? "", command.args, text);
+        return;
+      }
+      await this.delivery.sendText(target, command?.isCommand ? COMPACT_RUNNING_REJECT_TEXT : COMPACT_RUNNING_MESSAGE_REJECT_TEXT);
+      return;
+    }
     if (command?.isCommand) {
       await this.commandRouter.handle(message, target, command.name ?? "", command.args, text);
       return;
     }
+    this.clearCompactConfirmation(message.routeKey);
     if (attachments.failed.length > 0) {
       await this.delivery.sendText(target, inboundMediaSaveFailedText());
       if (attachments.usable.length === 0) return;
@@ -332,6 +358,11 @@ export class Bridge {
   }
 
   private async isRouteExecutionBusy(routeKey: string): Promise<boolean> {
+    if (this.isCompactRunning(routeKey)) return true;
+    return this.isRouteExecutionBusyWithoutCompact(routeKey);
+  }
+
+  private async isRouteExecutionBusyWithoutCompact(routeKey: string): Promise<boolean> {
     if (this.routeQueue.hasWorker(routeKey) || this.backgroundTurns.hasForRoute(routeKey)) return true;
     if (this.routeQueue.queueLength(routeKey) > 0) return true;
     if (this.routeSteering.hasPendingWorkForRoute(routeKey)) return true;
@@ -344,6 +375,38 @@ export class Bridge {
     } catch {
       return false;
     }
+  }
+
+  private compactStateForRoute(routeKey: string): CompactState {
+    return this.routeCompactStates.get(routeKey) ?? { type: "none" };
+  }
+
+  private setCompactState(routeKey: string, state: CompactState): void {
+    if (state.type === "none") {
+      this.routeCompactStates.delete(routeKey);
+      return;
+    }
+    this.routeCompactStates.set(routeKey, state);
+  }
+
+  private clearCompactState(routeKey: string): void {
+    this.routeCompactStates.delete(routeKey);
+  }
+
+  private clearCompactConfirmation(routeKey: string): void {
+    if (this.compactStateForRoute(routeKey).type === "confirming") {
+      this.routeCompactStates.delete(routeKey);
+    }
+  }
+
+  private cancelCompactConfirmation(routeKey: string): boolean {
+    if (this.compactStateForRoute(routeKey).type !== "confirming") return false;
+    this.routeCompactStates.delete(routeKey);
+    return true;
+  }
+
+  private isCompactRunning(routeKey: string): boolean {
+    return this.compactStateForRoute(routeKey).type === "running";
   }
 
   private progressModeFor(routeKey: string): ProgressDeliveryMode {
@@ -397,4 +460,8 @@ export class Bridge {
     const policy = this.state.getSessionRunPolicy(sessionId);
     if (policy) this.codex.setRunPolicy?.(policy, sessionId);
   }
+}
+
+function isCommandAllowedDuringCompact(name: string): boolean {
+  return name === "status" || name === "help" || name === "whoami" || name === "debug";
 }

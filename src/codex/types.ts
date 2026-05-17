@@ -142,6 +142,13 @@ export interface CodexSessionSummary {
   updatedAt: string;
 }
 
+export interface CodexCompactResult {
+  sessionId: string;
+  message?: string;
+  beforeTokens?: number;
+  afterTokens?: number;
+}
+
 export interface CodexAdapter {
   stop?(): Promise<void>;
   onBackgroundEvent?(handler: CodexBackgroundEventHandler): () => void;
@@ -165,4 +172,5 @@ export interface CodexAdapter {
   setGoal?(sessionId: string, objective: string): Promise<CodexGoal>;
   setGoalStatus?(sessionId: string, status: CodexGoalStatus): Promise<CodexGoal>;
   clearGoal?(sessionId: string): Promise<boolean>;
+  compactSession?(sessionId: string): Promise<CodexCompactResult>;
 }

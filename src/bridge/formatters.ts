@@ -104,6 +104,7 @@ export function isRouteBusyMutationCommand(name: string, args: string[], rawText
     case "plan":
     case "code":
     case "default":
+    case "compact":
       return true;
     case "permission":
     case "permissions":

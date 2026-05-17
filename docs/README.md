@@ -52,6 +52,9 @@
 - `local-timezone-display-design.zh-CN.md`
   本机时区时间展示统一设计。说明内部时间继续用 UTC ISO 存储，用户可见时间统一按当前运行机器时区自动展示，不提供手动时区覆盖。
 
+- `compact-command-design.zh-CN.md`
+  `/compact` 上下文压缩命令设计。说明微信/飞书聊天侧如何确认并触发当前 route/session 的 Codex 上下文压缩、执行中状态和命令阻断规则。
+
 - `bridge-modularization-design.zh-CN.md`
   Bridge 模块化拆分设计。说明如何在保留现有全部功能的前提下，把当前单体 `bridge.ts` 拆成 command router、session flow、route queue、steering、delivery、status 文案和格式化工具等模块，并要求拆分前保留旧文件对照备份。
 
@@ -123,13 +126,14 @@ secrets/feishu.local.md
 9. 做 TUI 核心功能补齐时读 `tui-core-functionality-followups.zh-CN.md`，确认渠道删除、备注、添加时间、session 活跃时间和运行日志全文展示语义。
 10. 做启动/运行期相关开发时读 `runtime-single-instance-lock.zh-CN.md`，确认重复启动检测、运行锁、心跳和残留锁清理语义。
 11. 做用户可见时间展示相关开发时读 `local-timezone-display-design.zh-CN.md`，确认 UTC 存储、本机时区展示和不提供手动覆盖的边界。
-12. 做 Bridge 核心拆分时读 `bridge-modularization-design.zh-CN.md`，确认备份旧文件、模块边界、分阶段迁移和行为不变验收标准。
-13. 做 app-server adapter 或 serve 入口拆分时读 `large-core-file-modularization-design.zh-CN.md`，确认原文件改名备份、薄入口、新模块边界和逐模块测试要求。
-14. 读 `cli-interaction-redesign.zh-CN.md`，了解上一轮普通 CLI 重构背景和历史设计。
-15. 读 `development-and-test.zh-CN.md`，确认开发和测试报告要求。
-16. 读 `git-management.zh-CN.md`，确认提交边界和忽略规则。
-17. Agent 继续读 `agent-guide.zh-CN.md`，确认执行规范。
-18. 需要 Codex 协议或微信插件源码细节时，先读 `../references/README.md`，按里面的说明拉取本地参考源码。
+12. 做 `/compact` 聊天命令时读 `compact-command-design.zh-CN.md`，确认确认流程、当前 route/session 作用域、执行中通知和命令阻断规则。
+13. 做 Bridge 核心拆分时读 `bridge-modularization-design.zh-CN.md`，确认备份旧文件、模块边界、分阶段迁移和行为不变验收标准。
+14. 做 app-server adapter 或 serve 入口拆分时读 `large-core-file-modularization-design.zh-CN.md`，确认原文件改名备份、薄入口、新模块边界和逐模块测试要求。
+15. 读 `cli-interaction-redesign.zh-CN.md`，了解上一轮普通 CLI 重构背景和历史设计。
+16. 读 `development-and-test.zh-CN.md`，确认开发和测试报告要求。
+17. 读 `git-management.zh-CN.md`，确认提交边界和忽略规则。
+18. Agent 继续读 `agent-guide.zh-CN.md`，确认执行规范。
+19. 需要 Codex 协议或微信插件源码细节时，先读 `../references/README.md`，按里面的说明拉取本地参考源码。
 
 ## 分阶段工作顺序
 

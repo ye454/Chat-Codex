@@ -39,6 +39,8 @@ test("bridge formatters keep route mutation guard semantics", () => {
   assert.equal(isRouteBusyMutationCommand("goal", [], "/goal"), false);
   assert.equal(isRouteBusyMutationCommand("goal", ["ship"], "/goal ship"), true);
   assert.equal(isRouteBusyMutationCommand("progress", ["silent"], "/progress silent"), false);
+  assert.equal(isRouteBusyMutationCommand("compact", [], "/compact"), true);
+  assert.equal(isRouteBusyMutationCommand("compact", ["confirm"], "/compact confirm"), true);
 });
 
 test("bridge formatters preserve status labels and local goal time", () => {

@@ -31,6 +31,7 @@ export interface BridgeCommandHandlers {
   permission(message: ChannelMessage, target: ChannelTarget, args: string[]): Promise<void>;
   approval(message: ChannelMessage, target: ChannelTarget, args: string[], decision: ApprovalDecision): Promise<void>;
   stop(message: ChannelMessage, target: ChannelTarget): Promise<void>;
+  compact(message: ChannelMessage, target: ChannelTarget, args: string[]): Promise<void>;
 }
 
 export interface BridgeCommandRouterOptions {
@@ -161,6 +162,9 @@ export class BridgeCommandRouter {
         return;
       case "stop":
         await this.handlers.stop(message, target);
+        return;
+      case "compact":
+        await this.handlers.compact(message, target, args);
         return;
       default:
         await this.delivery.sendText(target, `未知命令: /${name}\n发送 /help 查看可用命令。`);
