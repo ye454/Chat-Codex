@@ -65,6 +65,18 @@ npm install -g chat-codex
 chat-codex
 ```
 
+首次启动前，需要先准备本机 Codex CLI。Chat-Codex 通过本机 `codex` CLI 启动 `codex app-server` 或 `codex exec` 子进程来接入 Codex；只安装 Codex 桌面 App 不等于已满足这个前置要求。
+
+Codex CLI 官方安装指引：<https://developers.openai.com/codex/quickstart>
+
+```bash
+npm install -g @openai/codex
+# 或
+brew install codex
+
+codex
+```
+
 首次启动后按 TUI 引导完成 Codex 检查、渠道管理、聊天绑定和启动服务。
 
 ## 运行数据与环境变量

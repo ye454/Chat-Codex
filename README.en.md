@@ -64,6 +64,18 @@ npm install -g chat-codex
 chat-codex
 ```
 
+Before first launch, set up the local Codex CLI. Chat-Codex talks to Codex by launching the local `codex` CLI as a child process, using either `codex app-server` or `codex exec`. Installing only the Codex desktop app does not necessarily make the `codex` command available.
+
+Official Codex CLI setup guide: <https://developers.openai.com/codex/quickstart>
+
+```bash
+npm install -g @openai/codex
+# or
+brew install codex
+
+codex
+```
+
 On first launch, follow the TUI to check Codex, manage channels, bind chats, and start the service.
 
 ## Tech Stack
