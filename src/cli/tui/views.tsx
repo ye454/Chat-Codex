@@ -41,9 +41,19 @@ export function HomeView({ dashboard, selected }: { dashboard: LauncherDashboard
     ];
     return (
       <Frame title={chatCodexTitle()} subtitle="首次配置">
-        <Text>还没有配置任何渠道。请先添加微信账号或飞书机器人。</Text>
+        <Section title="欢迎使用 Chat Codex">
+          <Text>还没有配置任何渠道。请先添加微信账号或飞书机器人。</Text>
+        </Section>
+        <Section title="默认配置">
+          <CodexCliStatusBlock status={dashboard.startup.codexStatus} />
+          <KeyValue label="新 session 工作目录" value={dashboard.startup.cwd} />
+          <KeyValue label="新 session 权限" value={formatPermission(dashboard.startup.policy)} />
+        </Section>
         <Section title="操作">
           {actions.map(([label, value], index) => <ListRow key={label} active={selected === index} left={label} right={value} />)}
+        </Section>
+        <Section title="快捷键">
+          <Text>↑↓ 选择  Enter 执行  1/w 微信  2/f 飞书  3/p 权限  4/d 工作目录  q 退出</Text>
         </Section>
       </Frame>
     );
@@ -56,13 +66,17 @@ export function HomeView({ dashboard, selected }: { dashboard: LauncherDashboard
     ["5. 状态详情", "查看渠道和绑定明细"],
     ["6. 启动服务", dashboard.canStart.ok ? "启动并进入运行日志" : "需处理配置"],
   ];
-  const codexStatusLine = formatCodexStatusLine(dashboard.startup.codexStatus);
   return (
     <Frame title={chatCodexTitle()} subtitle={`状态: ${dashboard.canStart.ok ? "可启动" : "需配置"}  权限: ${dashboard.startup.policy.permissionMode === "full" ? "完全" : "审批"}`} borderColor={dashboard.canStart.ok ? THEME.success : THEME.warning}>
-      <Text color={dashboard.canStart.ok ? THEME.success : THEME.warning} bold>
-        {dashboard.canStart.ok ? "▶ 已准备好。按 Enter 启动 Bridge，并进入运行日志面板。" : `⚠ ${dashboard.canStart.message}`}
-      </Text>
-      <Text color={THEME.muted}>{codexStatusLine}</Text>
+      <Section title="启动服务">
+        <Text color={dashboard.canStart.ok ? THEME.success : THEME.warning} bold>
+          {dashboard.canStart.ok ? "▶ 已准备好。按 Enter 启动 Bridge，并进入运行日志面板。" : `⚠ ${dashboard.canStart.message}`}
+        </Text>
+        <KeyValue label="启动后" value="显示运行中状态、已启动渠道、工作目录和 Ctrl+C 停止方式" />
+      </Section>
+      <Section title="Codex CLI">
+        <CodexCliStatusBlock status={dashboard.startup.codexStatus} />
+      </Section>
       <Section title="操作">
         {rows.map(([label, value], index) => (
           <ListRow
@@ -73,6 +87,24 @@ export function HomeView({ dashboard, selected }: { dashboard: LauncherDashboard
             tone={index === 5 ? (dashboard.canStart.ok ? "success" : "warning") : undefined}
           />
         ))}
+      </Section>
+      <Section title="渠道">
+        {dashboard.channels.length === 0
+          ? <Muted text="暂无渠道。按 w 添加微信账号，或按 f 添加飞书机器人。" />
+          : dashboard.channels.map((channel) => (
+            <Text key={channel.record.id}>
+              {formatManagedChannelLabel(channel)}    {channel.record.enabled ? "已启用" : "已停用"}    <Text color={statusColor(channel.status.state)}>{channelStatus(channel.status.state)}</Text>    添加 {formatShortDateTime(channel.record.createdAt)}
+            </Text>
+          ))}
+      </Section>
+      <Section title="聊天绑定">
+        <Text>已发现 {dashboard.routes.known} 个聊天，已绑定 {dashboard.routes.bound} 个 session，待生效 {dashboard.routes.pending ?? 0} 个。</Text>
+      </Section>
+      <Section title="工作目录">
+        <KeyValue label="新 session" value={dashboard.startup.cwd} />
+      </Section>
+      <Section title="提示">
+        <Text>{dashboard.canStart.message}</Text>
       </Section>
     </Frame>
   );
@@ -395,13 +427,6 @@ export function StatusView({ dashboard }: { dashboard: LauncherDashboard }): Rea
       </Section>
     </Frame>
   );
-}
-
-function formatCodexStatusLine(status?: CodexCliStatus): string {
-  if (!status) return "Codex CLI: 尚未检测";
-  if (!status.available) return `Codex CLI: 不可用 — ${status.error ?? "未知错误"}`;
-  const parts = [formatCodexPlatform(status), status.version ?? "版本未知", status.codexBin];
-  return `Codex CLI: ${parts.join(" | ")}`;
 }
 
 function CodexCliStatusBlock({ status }: { status?: CodexCliStatus }): React.JSX.Element {
