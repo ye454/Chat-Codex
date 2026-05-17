@@ -1,6 +1,5 @@
 import type { ApprovalManager } from "../approvals/approval-manager.js";
 import type { CodexRunPolicyStatus } from "../codex/codex-cli.js";
-import { truncateDisplayText } from "../codex/codex-cli.js";
 import type {
   CodexAdapter,
   CodexCollaborationMode,
@@ -14,8 +13,8 @@ import type { ChannelRegistry } from "../channels/registry.js";
 import type { ChannelMessage } from "../protocol/channel.js";
 import type { ChannelDeliveryPolicy } from "../protocol/delivery-policy.js";
 import type { MemoryStateStore } from "../state/memory-state-store.js";
-import { formatElapsedDurationSince, formatLocalDateTime } from "../time/display-time.js";
-import type { CompactState, InitialRouteBinding, ProgressDeliveryMode } from "./bridge-types.js";
+import { formatElapsedDurationSince } from "../time/display-time.js";
+import type { CompactState, InitialRouteBinding, ProgressDeliveryMode, SessionListScope, SessionListState } from "./bridge-types.js";
 import {
   formatApprovalSupport,
   formatChannelStateForStatus,
@@ -37,6 +36,14 @@ import {
   formatRunPolicyForStatus,
   formatUnboundSessionForStatus,
 } from "./formatters.js";
+import {
+  buildSessionList,
+  formatSessionListPage,
+  pageNumberFromText,
+  paginateSessionList,
+  sessionListStateExpired,
+  sessionPageAction,
+} from "./session-list.js";
 
 export interface BridgeStatusTextOptions {
   channels: ChannelRegistry;
@@ -72,6 +79,7 @@ export class BridgeStatusText {
   private readonly collaborationModeForRoute: BridgeStatusTextOptions["collaborationModeForRoute"];
   private readonly progressModeFor: BridgeStatusTextOptions["progressModeFor"];
   private readonly runPolicyStatus: BridgeStatusTextOptions["runPolicyStatus"];
+  private readonly sessionListStates = new Map<string, SessionListState>();
 
   constructor(options: BridgeStatusTextOptions) {
     this.channels = options.channels;
@@ -157,23 +165,41 @@ export class BridgeStatusText {
     ].join("\n");
   }
 
-  async sessionsText(routeKey?: string): Promise<string> {
-    const localSessions = this.state.listSessions(routeKey);
-    const codexSessions = await this.codex.listSessions(routeKey);
-    const seen = new Set<string>();
-    const lines = [routeKey ? "当前上下文 Codex 会话:" : "全部可发现 Codex 会话:"];
-    for (const stored of localSessions) {
-      seen.add(stored.session.id);
-      lines.push(this.formatSessionLine(stored.session.id, stored.status.type, stored.updatedAt, stored.session.cwd, stored.session.title));
-    }
-    for (const session of codexSessions) {
-      if (seen.has(session.id)) continue;
-      lines.push(this.formatSessionLine(session.id, session.status.type, session.updatedAt, session.cwd, session.title));
-    }
-    if (lines.length === 1) {
-      lines.push("无。发送 /new 创建新会话，或 /resume 进入会话选择。");
-    }
-    return lines.join("\n");
+  async sessionsText(message: ChannelMessage, args: string[] = [], commandName = "sessions"): Promise<string> {
+    const request = parseSessionListRequest(commandName, args);
+    const stateKey = sessionListStateKey(message.routeKey, request.scope);
+    const existing = this.sessionListStates.get(stateKey);
+    const reusableState = request.action && existing?.scope === request.scope && !sessionListStateExpired(existing.createdAt)
+      ? existing
+      : undefined;
+    const items = reusableState
+      ? reusableState.items
+      : await buildSessionList({
+        state: this.state,
+        codex: this.codex,
+        routeKey: message.routeKey,
+        scope: request.scope,
+      });
+    const basePage = reusableState?.page ?? 1;
+    const requestedPage = request.action
+      ? basePage + (request.action === "next" ? 1 : -1)
+      : request.page ?? 1;
+    const page = paginateSessionList(items, request.scope, requestedPage);
+    this.sessionListStates.set(stateKey, {
+      scope: request.scope,
+      page: page.page,
+      pageSize: page.pageSize,
+      createdAt: Date.now(),
+      items,
+    });
+    return formatSessionListPage(page, {
+      title: "Codex 会话",
+      scopeLabel: request.scope === "all" ? "全部可发现" : "当前聊天",
+      emptyText: request.scope === "all"
+        ? "未发现 Codex 历史会话。发送 `/new` 创建新会话。"
+        : "当前聊天暂无 Codex 会话。发送 `/new` 创建新会话，或发送 `/resume` 进入会话选择。",
+      pageCommand: request.scope === "all" ? "/sessions all" : "/sessions",
+    });
   }
 
   whoamiText(message: ChannelMessage): string {
@@ -207,8 +233,8 @@ export class BridgeStatusText {
       { command: "/help", description: "查看命令。" },
       { command: "/new", description: "创建新 Codex 会话。" },
       { command: "/status", description: "查看状态、运行耗时、队列、审批和上下文 token 用量。" },
-      { command: "/sessions", description: "列出当前上下文会话。" },
-      { command: "/sessions all", description: "列出全部可发现 Codex 会话。" },
+      { command: "/sessions", description: "列出当前聊天上下文拥有、绑定过或本地记录相关的 Codex 会话。" },
+      { command: "/sessions all", description: "列出本机全部可发现的 Codex 历史会话。" },
       { command: "/resume [session|编号]", description: "恢复并绑定已有会话；不带参数时进入编号选择。" },
       { command: "/use [session|编号]", description: "切换到已有会话；不带参数时进入编号选择。" },
       { command: "/whoami", description: "查看当前通道身份。" },
@@ -326,14 +352,6 @@ export class BridgeStatusText {
     const suffix = policy.progress === "aggregate" ? "（渠道聚合）" : "";
     return `- 进度投递: ${formatProgressModeForStatus(this.progressModeFor(routeKey))}${suffix}`;
   }
-
-  private formatSessionLine(id: string, status: string, updatedAt: string, cwd?: string, title?: string): string {
-    const parts = [`- ${id}`, status];
-    if (updatedAt) parts.push(formatLocalDateTime(updatedAt));
-    if (title) parts.push(truncateDisplayText(title));
-    if (cwd) parts.push(`cwd=${cwd}`);
-    return parts.join(" ");
-  }
 }
 
 interface HelpCommand {
@@ -360,6 +378,31 @@ function formatStatusSection(title: string, lines: Array<string | undefined>): s
 function formatStatusChildLine(line: string): string {
   if (line.includes("\n")) return line;
   return line.startsWith("- ") ? `  ${line}` : `  - ${line}`;
+}
+
+interface SessionListRequest {
+  scope: Exclude<SessionListScope, "selectable">;
+  page?: number;
+  action?: "next" | "prev";
+}
+
+function parseSessionListRequest(commandName: string, args: string[]): SessionListRequest {
+  let scope: SessionListRequest["scope"] = commandName === "all-sessions" ? "all" : "route";
+  let tokens = args;
+  if (commandName !== "all-sessions" && args[0]?.toLowerCase() === "all") {
+    scope = "all";
+    tokens = args.slice(1);
+  }
+  const token = tokens[0] ?? "";
+  return {
+    scope,
+    page: pageNumberFromText(token),
+    action: sessionPageAction(token),
+  };
+}
+
+function sessionListStateKey(routeKey: string, scope: SessionListRequest["scope"]): string {
+  return `${routeKey}:${scope}`;
 }
 
 function formatCurrentTurnDurationLine(status: CodexSessionStatus): string | undefined {

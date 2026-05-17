@@ -560,7 +560,7 @@ test("Bridge handles new session, prompt, status, and approval over mock channel
   await bridge.stop();
 
   assert.ok(channel.sentMessages.some((message) => message.text.includes("已创建新 Codex 会话")));
-  assert.ok(channel.sentMessages.some((message) => message.text.includes("当前上下文 Codex 会话")));
+  assert.ok(channel.sentMessages.some((message) => message.text.includes("**Codex 会话**") && message.text.includes("范围: 当前聊天")));
   assert.ok(channel.sentMessages.some((message) => message.text.includes("当前通道身份")));
   assert.ok(channel.sentMessages.some((message) => message.text.includes("Capabilities")));
   assert.ok(channel.sentMessages.some((message) => message.text.includes("已绑定 Codex 会话")));
@@ -652,8 +652,8 @@ test("Bridge can switch sessions by entering a numbered selection mode", async (
   await channel.emitText("/use");
   const selection = channel.sentMessages.at(-1)?.text ?? "";
   assert.ok(selection.includes("**切换 Codex 会话**"));
-  assert.ok(selection.includes("1. `mock-codex-2`（当前）"));
-  assert.ok(selection.includes("2. `mock-codex-1`"));
+  assert.ok(selection.includes("1. Session: `mock-codex-2`（当前）"));
+  assert.ok(selection.includes("2. Session: `mock-codex-1`"));
 
   await channel.emitText("2");
   await channel.emitText("/status");
@@ -681,6 +681,33 @@ test("Bridge turns an unknown session id into a recoverable selection prompt", a
   assert.ok(channel.sentMessages.at(-1)?.text.includes("已退出切换会话"));
 });
 
+test("Bridge paginates numbered session selection by current page", async () => {
+  const channel = new MockChannelAdapter();
+  const codex = new MockCodexAdapter();
+  for (let index = 0; index < 12; index += 1) {
+    await codex.startSession({
+      routeKey: `seed-${index}`,
+      cwd: process.cwd(),
+      title: `seed session ${index + 1}`,
+    });
+  }
+  const bridge = new Bridge({ channel, codex, cwd: process.cwd() });
+
+  await bridge.start();
+  await channel.emitText("/use");
+  await channel.emitText("n");
+  const page2 = channel.sentMessages.at(-1)?.text ?? "";
+  const selectedId = page2.match(/2\. Session: `([^`]+)`/)?.[1];
+  assert.ok(selectedId);
+  await channel.emitText("2");
+  await channel.emitText("/status");
+  await bridge.stop();
+
+  assert.ok(page2.includes("页码: `2 / 2`"));
+  assert.ok(channel.sentMessages.some((message) => message.text.includes("已绑定 Codex 会话")));
+  assert.ok(channel.sentMessages.at(-1)?.text.includes(`当前会话: \`${selectedId}\``));
+});
+
 test("Bridge exposes all sessions command for channel users", async () => {
   const channel = new MockChannelAdapter();
   const codex = new MockCodexAdapter();
@@ -694,8 +721,9 @@ test("Bridge exposes all sessions command for channel users", async () => {
   await channel.emitText("/all-sessions", { conversationId: "main" });
   await bridge.stop();
 
-  assert.ok(channel.sentMessages.some((message) => message.text.includes("- `/sessions all`: 列出全部可发现 Codex 会话。")));
+  assert.ok(channel.sentMessages.some((message) => message.text.includes("- `/sessions all`: 列出本机全部可发现的 Codex 历史会话。")));
   const help = channel.sentMessages.find((message) => message.text.startsWith("**可用命令**"))?.text ?? "";
+  assert.ok(help.includes("- `/sessions`: 列出当前聊天上下文拥有、绑定过或本地记录相关的 Codex 会话。"));
   assert.ok(help.includes("- `/OK`: 批准当前审批。"));
   assert.ok(help.includes("批准当前审批"));
   assert.ok(help.includes("- `/P`: 按当前会话批准审批，后续同类操作尽量不再询问。"));
@@ -705,10 +733,36 @@ test("Bridge exposes all sessions command for channel users", async () => {
   assert.ok(help.includes("- `/permission [approval|full confirm]`: 查看或切换当前绑定 Codex session 的权限模式。"));
   assert.equal(help.includes("/approve [id]"), false);
   assert.ok(help.includes("`/cancel`: 取消等待中的压缩确认。"));
-  const allSessionsMessages = channel.sentMessages.filter((message) => message.text.startsWith("全部可发现 Codex 会话"));
+  const allSessionsMessages = channel.sentMessages.filter((message) => message.text.startsWith("**Codex 会话**") && message.text.includes("范围: 全部可发现"));
   assert.equal(allSessionsMessages.length, 2);
   assert.ok(allSessionsMessages.every((message) => message.text.includes("mock-codex-1")));
   assert.ok(allSessionsMessages.every((message) => message.text.includes("mock-codex-2")));
+});
+
+test("Bridge supports /session alias and paginates session list commands", async () => {
+  const channel = new MockChannelAdapter();
+  const codex = new MockCodexAdapter();
+  const bridge = new Bridge({ channel, codex, cwd: process.cwd() });
+
+  await bridge.start();
+  await channel.emitText("/new", { conversationId: "main" });
+  for (let index = 0; index < 11; index += 1) {
+    await channel.emitText("/new", { conversationId: `other-${index}` });
+  }
+  await channel.emitText("/session", { conversationId: "main" });
+  await channel.emitText("/sessions all", { conversationId: "main" });
+  await channel.emitText("/sessions all next", { conversationId: "main" });
+  await channel.emitText("/session all prev", { conversationId: "main" });
+  await bridge.stop();
+
+  const routeList = channel.sentMessages.find((message) => message.text.startsWith("**Codex 会话**") && message.text.includes("范围: 当前聊天"))?.text ?? "";
+  const allListPage1 = channel.sentMessages.find((message) => message.text.startsWith("**Codex 会话**") && message.text.includes("范围: 全部可发现") && message.text.includes("页码: `1 / 2`"))?.text ?? "";
+  const allListPage2 = channel.sentMessages.find((message) => message.text.startsWith("**Codex 会话**") && message.text.includes("页码: `2 / 2`"))?.text ?? "";
+
+  assert.ok(routeList.includes("Session: `mock-codex-1`（当前）"));
+  assert.ok(allListPage1.includes("数量: `12`"));
+  assert.ok(allListPage2.includes("数量: `12`"));
+  assert.ok(channel.sentMessages.at(-1)?.text.includes("页码: `1 / 2`"));
 });
 
 test("Bridge truncates long session titles in all sessions output", async () => {

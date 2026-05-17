@@ -12,7 +12,7 @@ export interface BridgeCommandHandlers {
   help(message: ChannelMessage): string;
   createNewSession(message: ChannelMessage, target: ChannelTarget): Promise<unknown>;
   status(message: ChannelMessage): Promise<string>;
-  sessions(routeKey?: string): Promise<string>;
+  sessions(message: ChannelMessage, args: string[], commandName: string): Promise<string>;
   resumeOrUseSession(message: ChannelMessage, target: ChannelTarget, sessionRef: string | undefined): Promise<void>;
   cancel(message: ChannelMessage, target: ChannelTarget): Promise<void>;
   whoami(message: ChannelMessage): string;
@@ -91,11 +91,12 @@ export class BridgeCommandRouter {
       case "status":
         await this.delivery.sendText(target, await this.handlers.status(message));
         return;
+      case "session":
       case "sessions":
-        await this.delivery.sendText(target, await this.handlers.sessions(args[0]?.toLowerCase() === "all" ? undefined : message.routeKey));
+        await this.delivery.sendText(target, await this.handlers.sessions(message, args, name));
         return;
       case "all-sessions":
-        await this.delivery.sendText(target, await this.handlers.sessions(undefined));
+        await this.delivery.sendText(target, await this.handlers.sessions(message, args, name));
         return;
       case "use":
       case "resume":

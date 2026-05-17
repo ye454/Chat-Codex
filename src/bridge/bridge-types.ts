@@ -69,9 +69,35 @@ export interface SessionChoice {
   current: boolean;
 }
 
-export interface SessionSelectionState {
-  choices: SessionChoice[];
+export type SessionListScope = "route" | "all" | "selectable";
+
+export interface SessionListItem {
+  id: string;
+  title?: string;
+  cwd?: string;
+  status: CodexSessionStatus;
+  updatedAt: string;
+  current: boolean;
+  selectable: boolean;
+  ownerRouteKey?: string;
+  unavailableReason?: string;
+  source: "state" | "codex" | "merged";
+}
+
+export interface SessionListState {
+  scope: SessionListScope;
+  page: number;
+  pageSize: number;
   createdAt: number;
+  items: SessionListItem[];
+}
+
+export interface SessionSelectionState {
+  items: SessionListItem[];
+  page: number;
+  pageSize: number;
+  createdAt: number;
+  hiddenUnavailableCount?: number;
 }
 
 export type CompactState =

@@ -206,7 +206,7 @@ export class Bridge {
         help: (message) => this.statusTextRenderer.helpText(message),
         createNewSession: (message, target) => this.sessionFlow.createNewSession(message, target),
         status: (message) => this.statusTextRenderer.statusText(message),
-        sessions: (routeKey) => this.statusTextRenderer.sessionsText(routeKey),
+        sessions: (message, args, commandName) => this.statusTextRenderer.sessionsText(message, args, commandName),
         resumeOrUseSession: (message, target, sessionRef) => this.sessionFlow.resumeOrUseSession(message, target, sessionRef),
         cancel: (message, target) => handleCancelCommand({
           sessionFlow: this.sessionFlow,

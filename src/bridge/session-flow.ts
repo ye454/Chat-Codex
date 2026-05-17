@@ -5,21 +5,27 @@ import type { MemoryStateStore } from "../state/memory-state-store.js";
 import type {
   BindSessionResult,
   InitialRouteBinding,
-  SessionChoice,
+  SessionListItem,
   SessionSelectionState,
   UnboundRoutePolicy,
 } from "./bridge-types.js";
 import { ROUTE_BUSY_MUTATION_REJECT_TEXT } from "./bridge-types.js";
 import {
   formatCollaborationModeForStatus,
-  formatSessionChoiceLine,
   isCancelSessionSelectionText,
   ownerConflictError,
   ownerConflictText,
-  parseSessionChoiceIndex,
-  timestampValue,
 } from "./formatters.js";
 import type { BridgeDelivery } from "./delivery.js";
+import {
+  SESSION_LIST_PAGE_SIZE,
+  buildSessionList,
+  formatSessionListPage,
+  pageNumberFromText,
+  paginateSessionList,
+  sessionListStateExpired,
+  sessionPageAction,
+} from "./session-list.js";
 
 export interface BridgeSessionFlowOptions {
   codex: CodexAdapter;
@@ -136,9 +142,9 @@ export class BridgeSessionFlow {
       await this.beginSessionSelection(message, target);
       return;
     }
-    const choiceIndex = parseSessionChoiceIndex(sessionRef);
+    const choiceIndex = pageNumberFromText(sessionRef);
     if (choiceIndex !== undefined) {
-      const choices = await this.sessionChoicesForRoute(message.routeKey);
+      const choices = await this.selectableSessionItemsForRoute(message.routeKey);
       const choice = choices[choiceIndex - 1];
       if (!choice) {
         await this.beginSessionSelection(message, target, `没有第 ${choiceIndex} 项，请重新选择。`);
@@ -170,11 +176,23 @@ export class BridgeSessionFlow {
       await this.delivery.sendText(target, "已退出切换会话。");
       return;
     }
-    const choiceIndex = parseSessionChoiceIndex(text);
+    if (sessionListStateExpired(selection.createdAt)) {
+      this.selections.delete(message.routeKey);
+      await this.delivery.sendText(target, "会话选择已过期，请重新发送 `/resume` 或 `/use`。");
+      return;
+    }
+    const action = sessionPageAction(text);
+    if (action) {
+      selection.page += action === "next" ? 1 : -1;
+      selection.createdAt = Date.now();
+      await this.delivery.sendText(target, this.sessionSelectionText(selection));
+      return;
+    }
+    const choiceIndex = pageNumberFromText(text);
     if (choiceIndex === undefined) {
       await this.delivery.sendText(target, [
         "正在切换 Codex 会话。",
-        "请直接回复列表编号，例如 1；回复“取消”退出。",
+        "请直接回复当前页列表编号，例如 1；回复 `n` 下一页，`p` 上一页；回复“取消”退出。",
       ].join("\n"));
       return;
     }
@@ -182,9 +200,10 @@ export class BridgeSessionFlow {
       await this.delivery.sendText(target, ROUTE_BUSY_MUTATION_REJECT_TEXT);
       return;
     }
-    const choice = selection.choices[choiceIndex - 1];
+    const page = paginateSessionList(selection.items, "selectable", selection.page, selection.pageSize);
+    const choice = page.items[choiceIndex - 1];
     if (!choice) {
-      await this.delivery.sendText(target, this.sessionSelectionText(selection.choices, `没有第 ${choiceIndex} 项，请重新选择。`));
+      await this.delivery.sendText(target, this.sessionSelectionText(selection, `没有第 ${choiceIndex} 项，请重新选择。`));
       return;
     }
     const result = await this.bindSessionById(message, target, choice.id);
@@ -313,14 +332,21 @@ export class BridgeSessionFlow {
     target: ChannelTarget,
     intro?: string,
   ): Promise<void> {
-    let choices: SessionChoice[];
+    let items: SessionListItem[];
     try {
-      choices = await this.sessionChoicesForRoute(message.routeKey);
+      items = await buildSessionList({
+        state: this.state,
+        codex: this.codex,
+        routeKey: message.routeKey,
+        scope: "selectable",
+      });
     } catch (error) {
       await this.delivery.sendText(target, `读取 Codex 会话列表失败: ${error instanceof Error ? error.message : String(error)}`);
       return;
     }
-    if (choices.length === 0) {
+    const hiddenUnavailableCount = items.filter((item) => !item.selectable).length;
+    const selectableItems = items.filter((item) => item.selectable);
+    if (selectableItems.length === 0) {
       this.selections.delete(message.routeKey);
       await this.delivery.sendText(target, [
         intro,
@@ -329,63 +355,37 @@ export class BridgeSessionFlow {
       ].filter(Boolean).join("\n"));
       return;
     }
-    this.selections.set(message.routeKey, {
-      choices,
+    const selection: SessionSelectionState = {
+      items: selectableItems,
+      page: 1,
+      pageSize: SESSION_LIST_PAGE_SIZE,
       createdAt: Date.now(),
-    });
-    await this.delivery.sendText(target, this.sessionSelectionText(choices, intro));
-  }
-
-  private async sessionChoicesForRoute(routeKey: string): Promise<SessionChoice[]> {
-    const currentSessionId = this.state.getBinding(routeKey)?.sessionId;
-    const choicesById = new Map<string, SessionChoice>();
-    const addChoice = (choice: Omit<SessionChoice, "current">): void => {
-      const owner = this.state.getSessionOwner(choice.id);
-      if (owner && owner.ownerRouteKey !== routeKey) return;
-      const existing = choicesById.get(choice.id);
-      choicesById.set(choice.id, {
-        id: choice.id,
-        title: choice.title ?? existing?.title,
-        cwd: choice.cwd ?? existing?.cwd,
-        status: choice.status ?? existing?.status ?? { type: "unknown" },
-        updatedAt: choice.updatedAt || existing?.updatedAt || "",
-        current: choice.id === currentSessionId,
-      });
+      hiddenUnavailableCount,
     };
-
-    for (const stored of this.state.listSessions()) {
-      addChoice({
-        id: stored.session.id,
-        title: stored.session.title,
-        cwd: stored.session.cwd,
-        status: stored.status,
-        updatedAt: stored.updatedAt,
-      });
-    }
-    for (const session of await this.codex.listSessions(undefined)) {
-      addChoice({
-        id: session.id,
-        title: session.title,
-        cwd: session.cwd,
-        status: session.status,
-        updatedAt: session.updatedAt,
-      });
-    }
-
-    return [...choicesById.values()].sort((left, right) => {
-      if (left.current !== right.current) return left.current ? -1 : 1;
-      return timestampValue(right.updatedAt) - timestampValue(left.updatedAt);
-    });
+    this.selections.set(message.routeKey, selection);
+    await this.delivery.sendText(target, this.sessionSelectionText(selection, intro));
   }
 
-  private sessionSelectionText(choices: SessionChoice[], intro?: string): string {
-    return [
-      "**切换 Codex 会话**",
+  private async selectableSessionItemsForRoute(routeKey: string): Promise<SessionListItem[]> {
+    const items = await buildSessionList({
+      state: this.state,
+      codex: this.codex,
+      routeKey,
+      scope: "selectable",
+    });
+    return items.filter((item) => item.selectable);
+  }
+
+  private sessionSelectionText(selection: SessionSelectionState, intro?: string): string {
+    const page = paginateSessionList(selection.items, "selectable", selection.page, selection.pageSize);
+    selection.page = page.page;
+    return formatSessionListPage(page, {
+      title: "切换 Codex 会话",
+      scopeLabel: "可切换会话",
+      emptyText: "没有可切换的 Codex 会话。",
+      selectionMode: true,
+      hiddenUnavailableCount: selection.hiddenUnavailableCount,
       intro,
-      "",
-      ...choices.map((choice, index) => formatSessionChoiceLine(choice, index)),
-      "",
-      "直接回复编号完成切换；回复“取消”退出。",
-    ].filter((line) => line !== undefined).join("\n");
+    });
   }
 }
