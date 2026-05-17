@@ -29,6 +29,7 @@ import { BridgeDelivery } from "./delivery.js";
 import { BridgeProgressDelivery } from "./progress-delivery.js";
 import { BridgeRouteQueue } from "./route-queue.js";
 import { BridgeRouteSteering } from "./route-steering.js";
+import { RouteTrustGate } from "./route-trust-gate.js";
 import { BridgeSessionFlow } from "./session-flow.js";
 import { BridgeStatusText } from "./status-text.js";
 import { handleApprovalCommand } from "./commands/approval-command.js";
@@ -72,6 +73,7 @@ export class Bridge {
   private readonly transcript?: TranscriptSink;
   private readonly delivery: BridgeDelivery;
   private readonly progressDelivery: BridgeProgressDelivery;
+  private readonly routeTrustGate: RouteTrustGate;
   private readonly backgroundTurns: BridgeBackgroundTurns;
   private readonly routeQueue: BridgeRouteQueue;
   private readonly routeSteering: BridgeRouteSteering;
@@ -109,6 +111,14 @@ export class Bridge {
       logger: this.logger,
       transcript: this.transcript,
       approvalSendRetryDelayMs: options.approvalSendRetryDelayMs ?? APPROVAL_SEND_RETRY_DELAY_MS,
+    });
+    this.routeTrustGate = new RouteTrustGate({
+      state: this.state,
+      delivery: this.delivery,
+      logger: this.logger,
+      transcript: this.transcript,
+      mode: options.routeTrustMode,
+      pairingCodes: options.pairingCodeManager,
     });
     this.progressDelivery = new BridgeProgressDelivery({
       delivery: this.delivery,
@@ -299,6 +309,8 @@ export class Bridge {
     this.routeMessages.set(message.routeKey, message);
     this.routeTargets.set(message.routeKey, target);
     this.state.recordRouteMessage(message);
+    const trust = await this.routeTrustGate.handle(message, target);
+    if (trust.action === "handled") return;
     this.sessionFlow.claimPendingInitialRouteBindingRoute(message);
     const command = text ? parseCommand(text) : undefined;
     if (this.isCompactRunning(message.routeKey)) {

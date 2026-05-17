@@ -8,7 +8,7 @@
 
 当前落地状态：
 
-- `FileStateStore` 已实现 `routes.json`、`session-owners.json`、`session-policies.json` 和 `pending-bindings.json` 的读写。
+- `FileStateStore` 已实现 `routes.json`、`session-owners.json`、`session-policies.json`、`pending-bindings.json` 和 `trusted-routes.json` 的读写。
 - 真实微信/飞书启动路径已接入文件状态存储。
 - `ChannelConfigStore` 已实现 `config.json`、`instance.json` 和账号 `account.json` 的目录骨架写入。
 - CLI 已提供渠道管理页和聊天绑定页；schema 迁移和损坏恢复仍在后续阶段。
@@ -27,6 +27,7 @@
 - 重启后自动恢复渠道实例配置。
 - 重启后自动恢复已发现 route 和 active session。
 - 重启后保留 `session_id -> owner_route_key`，继续阻止跨渠道重复绑定。
+- 重启后保留已完成配对的可信 route，未信任 route 不进入 Codex。
 - CLI 可以查看、切换、解绑、释放 route/session 绑定。
 - 微信、飞书等渠道的登录态、token、缓存和平台细节互相隔离。
 - 真实 secret 不写入 Git 跟踪文件，也不写入通用 Bridge 配置。
@@ -54,7 +55,9 @@
     config.json
     routes.json
     session-owners.json
+    session-policies.json
     pending-bindings.json
+    trusted-routes.json
   channels/
     weixin/
       weixin-main/
@@ -272,6 +275,41 @@
 2. 创建新 session，或把 pending owner 转移为真实 route owner。
 3. 写入 `routes.json` 和 `session-owners.json`。
 4. 删除对应 pending binding。
+
+### trusted-routes.json
+
+保存已经通过本机配对码验证的聊天 route。信任粒度与 session 绑定一致，都是 `routeKey`；飞书同一个机器人下的不同私聊 `chat_id` 必须分别配对，微信同一账号下不同私聊联系人也必须分别配对。
+
+```json
+{
+  "schemaVersion": 1,
+  "updatedAt": "2026-05-17T00:00:00.000Z",
+  "trustedRoutes": [
+    {
+      "routeKey": "feishu-main:default:direct:oc_xxx",
+      "channelId": "feishu-main",
+      "accountId": "default",
+      "conversationKind": "direct",
+      "conversationId": "oc_xxx",
+      "displayName": "飞书私聊",
+      "trustedAt": "2026-05-17T00:00:00.000Z",
+      "trustedBySenderId": "ou_xxx",
+      "trustedBySenderDisplayName": "张三",
+      "trustMethod": "pairing_code",
+      "lastSeenAt": "2026-05-17T00:00:00.000Z",
+      "createdAt": "2026-05-17T00:00:00.000Z",
+      "updatedAt": "2026-05-17T00:00:00.000Z"
+    }
+  ]
+}
+```
+
+约束：
+
+- 配对码本身不持久化，只保存在运行时内存里。
+- 旧版本已有 `routes.json` 和 session 绑定不会自动视为可信，升级后需要完成一次配对。
+- route 被删除或渠道状态被删除时，对应信任记录也要删除。
+- `lastSeenAt` 随可信 route 的新消息更新，便于后续 TUI 展示最近活跃时间。
 
 ## 渠道自有状态
 

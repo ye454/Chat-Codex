@@ -58,6 +58,9 @@
 - `progress-noise-control-design.zh-CN.md`
   Codex 进度噪声控制设计。说明如何识别命令长输出、等待转圈、低信息增量，并通过 app-server adapter 摘要化和 Bridge delivery 限流，避免微信、飞书和 TUI 日志被进度刷屏。
 
+- `route-pairing-trust-design.zh-CN.md`
+  渠道会话配对信任设计。说明微信/飞书新聊天 route 如何通过本机 TUI/终端配对码完成信任，未配对前不创建 session、不执行命令、不回复普通消息，并按 routeKey 持久化已信任聊天。
+
 - `windows-compatibility.zh-CN.md`
   Windows Codex 接入兼容性设计。说明 Windows 下 Codex CLI 子进程解析、npm shim、`spawn codex ENOENT` 已知问题、`CHAT_CODEX_BIN` 覆盖入口，以及传给 Codex 的本地路径边界。
 
@@ -137,14 +140,15 @@ secrets/feishu.local.md
 11. 做用户可见时间展示相关开发时读 `local-timezone-display-design.zh-CN.md`，确认 UTC 存储、本机时区展示和不提供手动覆盖的边界。
 12. 做 `/compact` 聊天命令时读 `compact-command-design.zh-CN.md`，确认确认流程、当前 route/session 作用域、执行中通知和命令阻断规则。
 13. 做 Codex 进度投递、命令输出摘要或 TUI 运行日志刷屏治理时读 `progress-noise-control-design.zh-CN.md`。
-14. 做 Windows 下 Codex CLI 解析、Codex 子进程启动或传给 Codex 的本地路径适配时读 `windows-compatibility.zh-CN.md`。
-15. 做 Bridge 核心拆分时读 `bridge-modularization-design.zh-CN.md`，确认备份旧文件、模块边界、分阶段迁移和行为不变验收标准。
-16. 做 app-server adapter 或 serve 入口拆分时读 `large-core-file-modularization-design.zh-CN.md`，确认原文件改名备份、薄入口、新模块边界和逐模块测试要求。
-17. 读 `cli-interaction-redesign.zh-CN.md`，了解上一轮普通 CLI 重构背景和历史设计。
-18. 读 `development-and-test.zh-CN.md`，确认开发和测试报告要求。
-19. 读 `git-management.zh-CN.md`，确认提交边界和忽略规则。
-20. Agent 继续读 `agent-guide.zh-CN.md`，确认执行规范。
-21. 需要 Codex 协议或微信插件源码细节时，先读 `../references/README.md`，按里面的说明拉取本地参考源码。
+14. 做微信/飞书新聊天配对、route 信任、未授权聊天拦截或信任持久化时读 `route-pairing-trust-design.zh-CN.md`。
+15. 做 Windows 下 Codex CLI 解析、Codex 子进程启动或传给 Codex 的本地路径适配时读 `windows-compatibility.zh-CN.md`。
+16. 做 Bridge 核心拆分时读 `bridge-modularization-design.zh-CN.md`，确认备份旧文件、模块边界、分阶段迁移和行为不变验收标准。
+17. 做 app-server adapter 或 serve 入口拆分时读 `large-core-file-modularization-design.zh-CN.md`，确认原文件改名备份、薄入口、新模块边界和逐模块测试要求。
+18. 读 `cli-interaction-redesign.zh-CN.md`，了解上一轮普通 CLI 重构背景和历史设计。
+19. 读 `development-and-test.zh-CN.md`，确认开发和测试报告要求。
+20. 读 `git-management.zh-CN.md`，确认提交边界和忽略规则。
+21. Agent 继续读 `agent-guide.zh-CN.md`，确认执行规范。
+22. 需要 Codex 协议或微信插件源码细节时，先读 `../references/README.md`，按里面的说明拉取本地参考源码。
 
 ## 分阶段工作顺序
 

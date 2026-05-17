@@ -7,6 +7,7 @@ import type { ChannelAdapter, ChannelMessage, ChannelTarget } from "../protocol/
 import type { MemoryStateStore } from "../state/memory-state-store.js";
 import type { SessionBindings } from "../state/session-bindings.js";
 import type { TurnScheduler } from "./turn-scheduler.js";
+import type { PairingCodeManager } from "./pairing-code-manager.js";
 
 export interface BridgeOptions {
   channel?: ChannelAdapter;
@@ -27,6 +28,8 @@ export interface BridgeOptions {
   steerDebounceMs?: number;
   steerBatchMaxMessages?: number;
   steerBatchMaxChars?: number;
+  routeTrustMode?: RouteTrustMode;
+  pairingCodeManager?: PairingCodeManager;
 }
 
 export interface QueuedPrompt {
@@ -85,6 +88,7 @@ export type InitialRouteBinding =
   | { type: "new" };
 
 export type ProgressDeliveryMode = "brief" | "detailed" | "silent";
+export type RouteTrustMode = "disabled" | "pairing_required" | "real_channels";
 export type UnboundRoutePolicy = "auto_new" | "ask";
 
 export const PROGRESS_SEND_FAILURE_COOLDOWN_MS = 60_000;

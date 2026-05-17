@@ -40,6 +40,7 @@ export async function startServeBridge(
     initialRouteBinding: plan.initialRouteBinding,
     unboundRoutePolicy: plan.unboundRoutePolicy,
     progressMode: startup.progressMode,
+    routeTrustMode: "real_channels",
     turnScheduler: startup.maxConcurrentTurns ? new LimitedTurnScheduler(startup.maxConcurrentTurns) : undefined,
   });
 

@@ -17,6 +17,8 @@ import {
   type SessionOwnersDocument,
   type SessionPolicyRecord,
   type SessionPoliciesDocument,
+  type TrustedRouteRecord,
+  type TrustedRoutesDocument,
 } from "./persistent-state-types.js";
 
 export interface FileStateStoreOptions {
@@ -38,6 +40,7 @@ interface LoadedFileState {
   bindings: SessionBindings;
   sessionPolicies: Map<string, SessionPolicyRecord>;
   pendingBindings: Map<string, PendingBindingRecord>;
+  trustedRoutes: Map<string, TrustedRouteRecord>;
 }
 
 export class FileStateStore extends MemoryStateStore {
@@ -45,22 +48,26 @@ export class FileStateStore extends MemoryStateStore {
   private routes = new Map<string, RouteRecord>();
   private sessionPolicies = new Map<string, SessionPolicyRecord>();
   private persistedPendingBindings = new Map<string, PendingBindingRecord>();
+  private persistedTrustedRoutes = new Map<string, TrustedRouteRecord>();
   private readonly routesPath: string;
   private readonly sessionOwnersPath: string;
   private readonly sessionPoliciesPath: string;
   private readonly pendingBindingsPath: string;
+  private readonly trustedRoutesPath: string;
 
   constructor(options: FileStateStoreOptions = {}) {
     const loaded = loadFileState(options);
-    super(loaded.bindings, [...loaded.sessionPolicies.values()], [...loaded.pendingBindings.values()]);
+    super(loaded.bindings, [...loaded.sessionPolicies.values()], [...loaded.pendingBindings.values()], [...loaded.trustedRoutes.values()]);
     this.rootDir = loaded.rootDir;
     this.routes = loaded.routes;
     this.sessionPolicies = loaded.sessionPolicies;
     this.persistedPendingBindings = loaded.pendingBindings;
+    this.persistedTrustedRoutes = loaded.trustedRoutes;
     this.routesPath = path.join(this.rootDir, "routes.json");
     this.sessionOwnersPath = path.join(this.rootDir, "session-owners.json");
     this.sessionPoliciesPath = path.join(this.rootDir, "session-policies.json");
     this.pendingBindingsPath = path.join(this.rootDir, "pending-bindings.json");
+    this.trustedRoutesPath = path.join(this.rootDir, "trusted-routes.json");
   }
 
   override bindSession(routeKey: string, session: CodexSession): SessionBinding {
@@ -187,7 +194,30 @@ export class FileStateStore extends MemoryStateStore {
       updatedAt: now,
     };
     this.routes.set(message.routeKey, record);
+    this.updateTrustedRouteLastSeen(message);
     this.persistRoutes();
+  }
+
+  override trustRoute(record: TrustedRouteRecord): TrustedRouteRecord {
+    const trusted = super.trustRoute(record);
+    this.persistedTrustedRoutes.set(trusted.routeKey, trusted);
+    this.persistTrustedRoutes();
+    return trusted;
+  }
+
+  override revokeRouteTrust(routeKey: string): TrustedRouteRecord | undefined {
+    const removed = super.revokeRouteTrust(routeKey);
+    if (removed) {
+      this.persistedTrustedRoutes.delete(routeKey);
+      this.persistTrustedRoutes();
+    }
+    return removed;
+  }
+
+  override listTrustedRoutes(): TrustedRouteRecord[] {
+    return [...this.persistedTrustedRoutes.values()]
+      .map((route) => ({ ...route }))
+      .sort((left, right) => left.routeKey.localeCompare(right.routeKey));
   }
 
   listRoutes(): RouteRecord[] {
@@ -210,6 +240,8 @@ export class FileStateStore extends MemoryStateStore {
         this.sessionBindings.unbindActiveSession(route.routeKey);
       }
       this.routes.delete(route.routeKey);
+      super.revokeRouteTrust(route.routeKey);
+      this.persistedTrustedRoutes.delete(route.routeKey);
     }
 
     for (const record of pending) {
@@ -253,6 +285,7 @@ export class FileStateStore extends MemoryStateStore {
     this.persistSessionOwners();
     this.persistSessionPolicies();
     this.persistPendingBindings();
+    this.persistTrustedRoutes();
   }
 
   private persistRoutes(): void {
@@ -294,6 +327,29 @@ export class FileStateStore extends MemoryStateStore {
       pending: this.listPendingBindings(),
     } satisfies PendingBindingsDocument);
   }
+
+  private persistTrustedRoutes(): void {
+    writeJsonFileAtomic(this.trustedRoutesPath, {
+      schemaVersion: LOCAL_STATE_SCHEMA_VERSION,
+      updatedAt: new Date().toISOString(),
+      trustedRoutes: this.listTrustedRoutes(),
+    } satisfies TrustedRoutesDocument);
+  }
+
+  private updateTrustedRouteLastSeen(message: ChannelMessage): void {
+    const existing = this.persistedTrustedRoutes.get(message.routeKey);
+    if (!existing) return;
+    const now = message.timestamp || new Date().toISOString();
+    const next: TrustedRouteRecord = {
+      ...existing,
+      displayName: message.conversation.displayName ?? existing.displayName,
+      lastSeenAt: now,
+      updatedAt: now,
+    };
+    this.persistedTrustedRoutes.set(message.routeKey, next);
+    super.trustRoute(next);
+    this.persistTrustedRoutes();
+  }
 }
 
 function loadFileState(options: FileStateStoreOptions): LoadedFileState {
@@ -302,6 +358,7 @@ function loadFileState(options: FileStateStoreOptions): LoadedFileState {
   const owners = loadOwners(path.join(rootDir, "session-owners.json"));
   const sessionPolicies = loadSessionPolicies(path.join(rootDir, "session-policies.json"));
   const pendingBindings = loadPendingBindings(path.join(rootDir, "pending-bindings.json"));
+  const trustedRoutes = loadTrustedRoutes(path.join(rootDir, "trusted-routes.json"));
   const active = [...routes.values()]
     .filter((route): route is RouteRecord & { activeSessionId: string } => Boolean(route.activeSessionId))
     .map((route) => ({
@@ -320,6 +377,7 @@ function loadFileState(options: FileStateStoreOptions): LoadedFileState {
     bindings: new SessionBindings(snapshot),
     sessionPolicies,
     pendingBindings,
+    trustedRoutes,
   };
 }
 
@@ -373,6 +431,31 @@ function loadPendingBindings(filePath: string): Map<string, PendingBindingRecord
     });
   }
   return pending;
+}
+
+function loadTrustedRoutes(filePath: string): Map<string, TrustedRouteRecord> {
+  const doc = readJsonFile<TrustedRoutesDocument>(filePath, emptyTrustedRoutesDocument());
+  const trustedRoutes = new Map<string, TrustedRouteRecord>();
+  for (const record of Array.isArray(doc.trustedRoutes) ? doc.trustedRoutes : []) {
+    if (!record.routeKey || !record.channelId || !record.accountId || !isConversationKind(record.conversationKind) || !record.conversationId) continue;
+    if (!record.trustedAt || !record.trustedBySenderId) continue;
+    trustedRoutes.set(record.routeKey, {
+      routeKey: record.routeKey,
+      channelId: record.channelId,
+      accountId: record.accountId,
+      conversationKind: record.conversationKind,
+      conversationId: record.conversationId,
+      displayName: record.displayName,
+      trustedAt: record.trustedAt,
+      trustedBySenderId: record.trustedBySenderId,
+      trustedBySenderDisplayName: record.trustedBySenderDisplayName,
+      trustMethod: record.trustMethod === "manual" ? "manual" : "pairing_code",
+      lastSeenAt: record.lastSeenAt,
+      createdAt: record.createdAt ?? record.trustedAt,
+      updatedAt: record.updatedAt ?? record.trustedAt,
+    });
+  }
+  return trustedRoutes;
 }
 
 function mergeOwnersWithActiveRoutes(
@@ -506,5 +589,13 @@ function emptyPendingBindingsDocument(): PendingBindingsDocument {
     schemaVersion: LOCAL_STATE_SCHEMA_VERSION,
     updatedAt: new Date(0).toISOString(),
     pending: [],
+  };
+}
+
+function emptyTrustedRoutesDocument(): TrustedRoutesDocument {
+  return {
+    schemaVersion: LOCAL_STATE_SCHEMA_VERSION,
+    updatedAt: new Date(0).toISOString(),
+    trustedRoutes: [],
   };
 }

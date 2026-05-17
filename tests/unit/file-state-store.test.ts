@@ -8,7 +8,7 @@ import { ChannelConfigStore } from "../../src/state/channel-config-store.js";
 import { CHAT_CODEX_STATE_DIR_ENV, defaultBridgeStateDir, resolveChatCodexStateRoot } from "../../src/state/state-files.js";
 import type { ChannelMessage } from "../../src/protocol/channel.js";
 import type { CodexSession } from "../../src/codex/types.js";
-import type { BridgeConfigDocument, ChannelAccountCredentialsDocument, ChannelAccountDocument, PendingBindingsDocument, RoutesDocument, SessionOwnersDocument, SessionPoliciesDocument } from "../../src/state/persistent-state-types.js";
+import type { BridgeConfigDocument, ChannelAccountCredentialsDocument, ChannelAccountDocument, PendingBindingsDocument, RoutesDocument, SessionOwnersDocument, SessionPoliciesDocument, TrustedRouteRecord, TrustedRoutesDocument } from "../../src/state/persistent-state-types.js";
 import { pendingBindingOwnerRouteKey } from "../../src/state/memory-state-store.js";
 
 test("default state root uses fixed user directory", () => {
@@ -132,6 +132,32 @@ test("FileStateStore persists pending bindings and reserves existing sessions", 
   assert.equal(pending.pending[0].label, "微信 / wx-account / 主聊天");
 });
 
+test("FileStateStore persists trusted routes and refreshes last seen metadata", () => {
+  const rootDir = tempStateDir();
+  const routeKey = "feishu-main:default:direct:oc_user";
+  const store = new FileStateStore({ rootDir });
+  const trusted = trustedRoute(routeKey);
+
+  store.trustRoute(trusted);
+  store.recordRouteMessage({
+    ...feishuMessage(routeKey),
+    timestamp: "2026-05-17T01:02:03.000Z",
+    conversation: { id: "oc_user", kind: "direct", displayName: "新的飞书私聊名" },
+  });
+
+  const reloaded = new FileStateStore({ rootDir });
+  assert.equal(reloaded.isRouteTrusted(routeKey), true);
+  assert.equal(reloaded.listTrustedRoutes()[0]?.lastSeenAt, "2026-05-17T01:02:03.000Z");
+  assert.equal(reloaded.listTrustedRoutes()[0]?.displayName, "新的飞书私聊名");
+
+  const doc = readJson<TrustedRoutesDocument>(path.join(rootDir, "trusted-routes.json"));
+  assert.equal(doc.trustedRoutes[0]?.routeKey, routeKey);
+
+  const revoked = reloaded.revokeRouteTrust(routeKey);
+  assert.equal(revoked?.routeKey, routeKey);
+  assert.equal(new FileStateStore({ rootDir }).isRouteTrusted(routeKey), false);
+});
+
 test("ChannelConfigStore writes channel account metadata separately from local credentials", () => {
   const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-channel-config-"));
   const rootDir = path.join(baseDir, "state", "bridge");
@@ -230,6 +256,14 @@ test("FileStateStore removes channel routes and releases active and pending owne
     sender: { id: "wx_user", displayName: "微信用户" },
     conversation: { id: "wx_user", kind: "direct", displayName: "微信私聊" },
   });
+  store.trustRoute(trustedRoute(feishuRoute));
+  store.trustRoute(trustedRoute(weixinRoute, {
+    channelId: "weixin-main",
+    accountId: "wx",
+    conversationId: "wx_user",
+    displayName: "微信私聊",
+    trustedBySenderId: "wx_user",
+  }));
   store.setPendingBinding({
     id: "weixin-primary-feishu-main-default",
     channelId: "feishu-main",
@@ -257,6 +291,8 @@ test("FileStateStore removes channel routes and releases active and pending owne
   });
   assert.equal(store.listRoutes().some((route) => route.channelId === "feishu-main"), false);
   assert.equal(store.listRoutes().some((route) => route.channelId === "weixin-main"), true);
+  assert.equal(store.isRouteTrusted(feishuRoute), false);
+  assert.equal(store.isRouteTrusted(weixinRoute), true);
   assert.equal(store.getSessionOwner("session_feishu"), undefined);
   assert.equal(store.getSessionOwner("session_pending_feishu"), undefined);
   assert.equal(store.getSessionOwner("session_pending_weixin")?.ownerRouteKey, pendingBindingOwnerRouteKey("weixin-primary-weixin-main-wx"));
@@ -265,6 +301,7 @@ test("FileStateStore removes channel routes and releases active and pending owne
   assert.equal(reloaded.listRoutes().some((route) => route.channelId === "feishu-main"), false);
   assert.equal(reloaded.getSessionOwner("session_feishu"), undefined);
   assert.equal(reloaded.listPendingBindings().map((pending) => pending.id).join(","), "weixin-primary-weixin-main-wx");
+  assert.deepEqual(reloaded.listTrustedRoutes().map((route) => route.routeKey), [weixinRoute]);
 });
 
 function tempStateDir(): string {
@@ -306,6 +343,25 @@ function feishuMessage(routeKey: string): ChannelMessage {
         chat_id: "oc_user",
       },
     },
+  };
+}
+
+function trustedRoute(routeKey: string, overrides: Partial<TrustedRouteRecord> = {}): TrustedRouteRecord {
+  return {
+    routeKey,
+    channelId: "feishu-main",
+    accountId: "default",
+    conversationKind: "direct",
+    conversationId: "oc_user",
+    displayName: "飞书私聊",
+    trustedAt: "2026-05-17T00:00:00.000Z",
+    trustedBySenderId: "ou_user",
+    trustedBySenderDisplayName: "飞书用户",
+    trustMethod: "pairing_code",
+    lastSeenAt: "2026-05-17T00:00:00.000Z",
+    createdAt: "2026-05-17T00:00:00.000Z",
+    updatedAt: "2026-05-17T00:00:00.000Z",
+    ...overrides,
   };
 }
 

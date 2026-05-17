@@ -2,7 +2,7 @@ import type { CodexSession, CodexSessionStatus } from "../codex/types.js";
 import type { CodexRunPolicy } from "../codex/codex-cli.js";
 import type { ChannelMessage } from "../protocol/channel.js";
 import { SessionBindings, type ActivateSessionResult, type ClaimSessionResult, type SessionBinding, type SessionOwner, type TransferSessionOwnerResult, type UnbindSessionResult } from "./session-bindings.js";
-import type { PendingBindingRecord, PendingSessionBinding, SessionPolicyRecord } from "./persistent-state-types.js";
+import type { PendingBindingRecord, PendingSessionBinding, SessionPolicyRecord, TrustedRouteRecord } from "./persistent-state-types.js";
 
 export interface StoredSession {
   session: CodexSession;
@@ -22,17 +22,22 @@ export class MemoryStateStore {
   private readonly sessions = new Map<string, StoredSession>();
   private readonly sessionRunPolicies = new Map<string, CodexRunPolicy>();
   private readonly pendingBindings = new Map<string, PendingBindingRecord>();
+  private readonly trustedRoutes = new Map<string, TrustedRouteRecord>();
 
   constructor(
     readonly sessionBindings = new SessionBindings(),
     sessionPolicies: SessionPolicyRecord[] = [],
     pendingBindings: PendingBindingRecord[] = [],
+    trustedRoutes: TrustedRouteRecord[] = [],
   ) {
     for (const policy of sessionPolicies) {
       this.sessionRunPolicies.set(policy.sessionId, { ...policy.runPolicy });
     }
     for (const pending of pendingBindings) {
       this.pendingBindings.set(pending.id, clonePendingBinding(pending));
+    }
+    for (const route of trustedRoutes) {
+      this.trustedRoutes.set(route.routeKey, cloneTrustedRoute(route));
     }
   }
 
@@ -52,6 +57,35 @@ export class MemoryStateStore {
 
   recordRouteMessage(_message: ChannelMessage): void {
     // MemoryStateStore only keeps active in-process binding state.
+  }
+
+  isRouteTrusted(routeKey: string): boolean {
+    return this.trustedRoutes.has(routeKey);
+  }
+
+  trustRoute(record: TrustedRouteRecord): TrustedRouteRecord {
+    const existing = this.trustedRoutes.get(record.routeKey);
+    const now = new Date().toISOString();
+    const next: TrustedRouteRecord = {
+      ...record,
+      createdAt: existing?.createdAt ?? record.createdAt ?? now,
+      updatedAt: record.updatedAt ?? now,
+    };
+    this.trustedRoutes.set(next.routeKey, cloneTrustedRoute(next));
+    return cloneTrustedRoute(next);
+  }
+
+  revokeRouteTrust(routeKey: string): TrustedRouteRecord | undefined {
+    const existing = this.trustedRoutes.get(routeKey);
+    if (!existing) return undefined;
+    this.trustedRoutes.delete(routeKey);
+    return cloneTrustedRoute(existing);
+  }
+
+  listTrustedRoutes(): TrustedRouteRecord[] {
+    return [...this.trustedRoutes.values()]
+      .map(cloneTrustedRoute)
+      .sort((left, right) => left.routeKey.localeCompare(right.routeKey));
   }
 
   claimSessionOwner(routeKey: string, sessionId: string): ClaimSessionResult {
@@ -240,6 +274,10 @@ function clonePendingBinding(record: PendingBindingRecord): PendingBindingRecord
     ...record,
     binding: { ...record.binding },
   };
+}
+
+function cloneTrustedRoute(record: TrustedRouteRecord): TrustedRouteRecord {
+  return { ...record };
 }
 
 function isSamePendingOwnerBinding(left: PendingSessionBinding, right: PendingSessionBinding): boolean {

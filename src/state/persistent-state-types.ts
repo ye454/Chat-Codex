@@ -87,6 +87,28 @@ export interface PendingBindingsDocument {
   pending: PendingBindingRecord[];
 }
 
+export interface TrustedRouteRecord {
+  routeKey: string;
+  channelId: string;
+  accountId: string;
+  conversationKind: ConversationKind;
+  conversationId: string;
+  displayName?: string;
+  trustedAt: string;
+  trustedBySenderId: string;
+  trustedBySenderDisplayName?: string;
+  trustMethod: "pairing_code" | "manual";
+  lastSeenAt?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TrustedRoutesDocument {
+  schemaVersion: number;
+  updatedAt: string;
+  trustedRoutes: TrustedRouteRecord[];
+}
+
 export interface ChannelInstanceRecord {
   id: string;
   type: string;
