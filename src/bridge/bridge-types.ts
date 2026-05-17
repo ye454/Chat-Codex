@@ -1,0 +1,94 @@
+import type { ApprovalManager } from "../approvals/approval-manager.js";
+import type { CodexAdapter, CodexCollaborationMode, CodexPromptInput, CodexSessionStatus } from "../codex/types.js";
+import type { Logger } from "../logging/logger.js";
+import type { TranscriptSink } from "../logging/transcript.js";
+import type { ChannelRegistry } from "../channels/registry.js";
+import type { ChannelAdapter, ChannelMessage, ChannelTarget } from "../protocol/channel.js";
+import type { MemoryStateStore } from "../state/memory-state-store.js";
+import type { SessionBindings } from "../state/session-bindings.js";
+import type { TurnScheduler } from "./turn-scheduler.js";
+
+export interface BridgeOptions {
+  channel?: ChannelAdapter;
+  channels?: ChannelRegistry;
+  codex: CodexAdapter;
+  state?: MemoryStateStore;
+  sessionBindings?: SessionBindings;
+  approvals?: ApprovalManager;
+  turnScheduler?: TurnScheduler;
+  logger?: Logger;
+  transcript?: TranscriptSink;
+  cwd?: string;
+  initialSessionId?: string;
+  initialRouteBinding?: InitialRouteBinding;
+  unboundRoutePolicy?: UnboundRoutePolicy;
+  progressMode?: ProgressDeliveryMode;
+  approvalSendRetryDelayMs?: number;
+  steerDebounceMs?: number;
+  steerBatchMaxMessages?: number;
+  steerBatchMaxChars?: number;
+}
+
+export interface QueuedPrompt {
+  message: ChannelMessage;
+  target: ChannelTarget;
+  input: CodexPromptInput;
+  collaborationMode?: CodexCollaborationMode;
+  sendFile: boolean;
+}
+
+export interface QueuedSteer {
+  message: ChannelMessage;
+  target: ChannelTarget;
+  input: CodexPromptInput;
+}
+
+export interface RouteSteerState {
+  queue: QueuedSteer[];
+  draining: boolean;
+  timer?: ReturnType<typeof setTimeout>;
+}
+
+export interface BackgroundTurnState {
+  routeKey: string;
+  message: ChannelMessage;
+  target: ChannelTarget;
+  finalText: string;
+  finalPlanText: string;
+}
+
+export interface SessionChoice {
+  id: string;
+  title?: string;
+  cwd?: string;
+  status: CodexSessionStatus;
+  updatedAt: string;
+  current: boolean;
+}
+
+export interface SessionSelectionState {
+  choices: SessionChoice[];
+  createdAt: number;
+}
+
+export type BindSessionResult =
+  | { ok: true }
+  | { ok: false; reason: "owner_conflict" | "resume_failed"; message: string };
+
+export type InitialRouteBinding =
+  | { type: "existing"; sessionId: string }
+  | { type: "new" };
+
+export type ProgressDeliveryMode = "brief" | "detailed" | "silent";
+export type UnboundRoutePolicy = "auto_new" | "ask";
+
+export const PROGRESS_SEND_FAILURE_COOLDOWN_MS = 60_000;
+export const APPROVAL_SEND_RETRY_DELAY_MS = 10_000;
+export const SEND_FILE_MAX_FILES = 3;
+export const STEER_DEBOUNCE_MS = 1000;
+export const STEER_BATCH_MAX_MESSAGES = 5;
+export const STEER_BATCH_MAX_CHARS = 4000;
+export const ROUTE_BUSY_MUTATION_REJECT_TEXT = [
+  "当前对话的 Codex 正在执行，不能修改会话、权限、模型、协作模式或 Goal。",
+  "请等待完成，或发送 /stop 后再修改。",
+].join("\n");
