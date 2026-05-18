@@ -60,6 +60,20 @@ export class FileWeixinAccountStore implements WeixinAccountStore {
     this.addToIndex(account.accountId);
   }
 
+  removeAccount(accountId: string): boolean {
+    const normalizedAccountId = normalizeWeixinAccountId(accountId);
+    const ids = this.listAccountIds();
+    const removedIds = ids.filter((id) => id === accountId || normalizeWeixinAccountId(id) === normalizedAccountId);
+    if (removedIds.length === 0) return false;
+    for (const id of removedIds) {
+      fs.rmSync(this.accountPath(id), { force: true });
+    }
+    const remainingIds = ids.filter((id) => !removedIds.includes(id));
+    fs.mkdirSync(this.rootDir, { recursive: true });
+    fs.writeFileSync(this.indexPath(), JSON.stringify(remainingIds, null, 2), "utf-8");
+    return true;
+  }
+
   getDefaultAccount(): StoredWeixinAccount | undefined {
     const ids = this.listAccountIds();
     for (let i = ids.length - 1; i >= 0; i -= 1) {

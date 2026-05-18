@@ -6,7 +6,7 @@ import path from "node:path";
 import { ChannelActions, feishuChannelId, formatManagedChannelList, weixinChannelId } from "../../src/cli/actions/channel-actions.js";
 import { ChannelConfigStore } from "../../src/state/channel-config-store.js";
 import { FileStateStore } from "../../src/state/file-state-store.js";
-import type { StoredWeixinAccount } from "../../src/channels/weixin/weixin-account-store.js";
+import { FileWeixinAccountStore, type StoredWeixinAccount } from "../../src/channels/weixin/weixin-account-store.js";
 import type { ChannelMessage } from "../../src/protocol/channel.js";
 import type { CodexSession } from "../../src/codex/types.js";
 
@@ -141,6 +141,37 @@ test("ChannelActions renames and removes channels without touching other channel
   assert.equal(reloaded.getSessionOwner("session_pending_remove"), undefined);
   assert.equal(fs.existsSync(configStore.resolveStateDir(feishu.stateDir)), false);
   assert.equal(fs.existsSync(configStore.resolveStateDir(weixin.stateDir)), true);
+});
+
+test("ChannelActions removing Weixin clears legacy login state to prevent re-registration", () => {
+  const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-channel-actions-"));
+  const bridgeDir = path.join(baseDir, "state", "bridge");
+  const legacyStore = new FileWeixinAccountStore(path.join(baseDir, "state", "weixin"));
+  legacyStore.saveAccount(weixinAccount("wx.deleted"));
+  const actions = new ChannelActions({
+    configStore: new ChannelConfigStore({ bridgeDir }),
+    legacyWeixinStore: legacyStore,
+    env: {},
+  });
+
+  const registered = actions.ensureLegacyWeixinAccountRegistered({
+    channelId: "weixin",
+    state: "connected",
+    account: "wx.deleted",
+  });
+  assert.ok(registered);
+
+  const removed = actions.removeChannel(registered.id);
+
+  assert.equal(removed.ok, true);
+  assert.equal(legacyStore.loadAccount("wx.deleted"), undefined);
+  assert.equal(legacyStore.loadAccount("wx-deleted"), undefined);
+  assert.deepEqual(actions.listChannelInstances(), []);
+  assert.equal(actions.ensureLegacyWeixinAccountRegistered({
+    channelId: "weixin",
+    state: "connected",
+    account: "wx.deleted",
+  }), undefined);
 });
 
 function weixinAccount(accountId: string): StoredWeixinAccount {

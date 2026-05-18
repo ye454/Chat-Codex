@@ -19,6 +19,7 @@ import { formatLocalDateTime, formatLocalShortDateTime } from "../../time/displa
 export interface ChannelActionsOptions {
   cwd?: string;
   configStore?: ChannelConfigStore;
+  legacyWeixinStore?: FileWeixinAccountStore;
   env?: NodeJS.ProcessEnv;
 }
 
@@ -40,11 +41,13 @@ export type RemoveChannelResult =
 export class ChannelActions {
   readonly configStore: ChannelConfigStore;
   private readonly env: NodeJS.ProcessEnv;
+  private readonly legacyWeixinStore: FileWeixinAccountStore;
   private readonly feishuRuntimeCredentials = new Map<string, FeishuCredentials>();
 
   constructor(options: ChannelActionsOptions = {}) {
     this.env = options.env ?? process.env;
     this.configStore = options.configStore ?? new ChannelConfigStore({ cwd: options.cwd, env: this.env });
+    this.legacyWeixinStore = options.legacyWeixinStore ?? new FileWeixinAccountStore();
   }
 
   async listChannelSummaries(): Promise<ManagedChannelSummary[]> {
@@ -85,6 +88,9 @@ export class ChannelActions {
     }
     const state = new FileStateStore({ rootDir: this.configStore.bridgeDir });
     const stateResult = state.removeChannelState(id);
+    if (existing.type === "weixin" && existing.defaultAccountId) {
+      this.legacyWeixinStore.removeAccount(existing.defaultAccountId);
+    }
     const configResult = this.configStore.removeChannelInstance(id, { removeStateDir: true });
     const channel = configResult.channel ?? existing;
     const label = formatChannelRecordLabel(channel);
@@ -147,8 +153,7 @@ export class ChannelActions {
 
   ensureLegacyWeixinAccountRegistered(status: ChannelStatus): ChannelInstanceRecord | undefined {
     if (!status.account || status.state !== "connected") return undefined;
-    const legacyStore = new FileWeixinAccountStore();
-    const account = legacyStore.loadAccount(status.account);
+    const account = this.legacyWeixinStore.loadAccount(status.account);
     if (!account) return undefined;
     return this.registerWeixinAccount(account);
   }
