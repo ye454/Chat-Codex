@@ -186,6 +186,7 @@ export class ChannelActions {
         id: record.id,
         accountId: record.defaultAccountId ?? credentials.accountId ?? DEFAULT_FEISHU_ACCOUNT_ID,
         groupEnabled: isChannelGroupReceiveEnabled(record),
+        stateDir: this.configStore.resolveStateDir(record.stateDir),
       });
     }
     throw new Error(`暂不支持的渠道类型: ${record.type}`);
@@ -209,6 +210,7 @@ export class ChannelActions {
         connectOnStart: false,
         probeOnStart: false,
         groupEnabled: isChannelGroupReceiveEnabled(record),
+        stateDir: this.configStore.resolveStateDir(record.stateDir),
       });
     }
     throw new Error(`暂不支持的渠道类型: ${record.type}`);

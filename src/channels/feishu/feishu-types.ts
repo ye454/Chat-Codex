@@ -21,6 +21,7 @@ export interface FeishuAdapterOptions extends FeishuCredentials {
   transportFactory?: FeishuTransportFactory;
   now?: () => number;
   inboundMediaRootDir?: string;
+  stateDir?: string;
 }
 
 export interface FeishuBotIdentity {
@@ -136,6 +137,29 @@ export interface FeishuSdkClient {
           reaction_id: string;
         };
       }): Promise<FeishuApiResponse>;
+    };
+  };
+  contact?: {
+    user?: {
+      get(payload: {
+        path: {
+          user_id: string;
+        };
+        params: {
+          user_id_type: "open_id" | "user_id" | "union_id";
+        };
+      }): Promise<FeishuApiResponse<{
+        user?: {
+          name?: string;
+          display_name?: string;
+          nickname?: string;
+          en_name?: string;
+        };
+        name?: string;
+        display_name?: string;
+        nickname?: string;
+        en_name?: string;
+      }>>;
     };
   };
   request?<T = FeishuApiResponse>(payload: {

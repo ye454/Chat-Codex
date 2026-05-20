@@ -55,6 +55,7 @@ test("FileStateStore persists active route binding and session owner", () => {
   assert.equal(routes.routes[0].conversationId, "oc_user");
   assert.equal(routes.routes[0].activeSessionId, "session_one");
   assert.equal(routes.routes[0].identity?.openId, "ou_user");
+  assert.equal(routes.routes[0].identity?.lastSenderDisplayName, "飞书用户");
   assert.equal(routes.routes[0].identity?.tenantKey, "tenant_a");
 
   const owners = readJson<SessionOwnersDocument>(path.join(rootDir, "session-owners.json"));
@@ -156,6 +157,19 @@ test("FileStateStore persists trusted routes and refreshes last seen metadata", 
   const revoked = reloaded.revokeRouteTrust(routeKey);
   assert.equal(revoked?.routeKey, routeKey);
   assert.equal(new FileStateStore({ rootDir }).isRouteTrusted(routeKey), false);
+});
+
+test("FileStateStore exposes cloned route records for route history enrichment", () => {
+  const rootDir = tempStateDir();
+  const routeKey = "feishu-main:default:direct:oc_user";
+  const store = new FileStateStore({ rootDir });
+  store.recordRouteMessage(feishuMessage(routeKey));
+
+  const record = store.getRouteRecord(routeKey);
+
+  assert.equal(record?.identity?.lastSenderDisplayName, "飞书用户");
+  if (record?.identity) record.identity.lastSenderDisplayName = "被外部修改";
+  assert.equal(store.getRouteRecord(routeKey)?.identity?.lastSenderDisplayName, "飞书用户");
 });
 
 test("ChannelConfigStore writes channel account metadata separately from local credentials", () => {

@@ -73,6 +73,7 @@
           default/
             account.json
             cache.json
+            user-names.json
 ```
 
 说明：
@@ -155,6 +156,7 @@
       "displayName": "飞书私聊",
       "identity": {
         "lastSenderId": "ou_xxx",
+        "lastSenderDisplayName": "小黄",
         "openId": "ou_xxx",
         "userId": "user_xxx",
         "unionId": "on_xxx",
@@ -176,6 +178,7 @@
 
 - `conversationId` 使用 `message.chat_id`。
 - `identity.openId/userId/unionId/tenantKey` 保存用户身份元数据。
+- `identity.lastSenderDisplayName` 只作为最近一次消息的展示兜底，长期名称缓存放在飞书账号目录的 `user-names.json`。
 - route 绑定 session 的主键仍是 `routeKey`，不是用户 ID。
 
 微信私聊里：
@@ -346,6 +349,7 @@
     default/
       account.json
       cache.json
+      user-names.json
 ```
 
 建议内容：
@@ -353,6 +357,7 @@
 - `account.json`：appId 掩码、bot open_id、botName、domain、credentialSource。
 - `credentials.local.json`：交互添加时保存真实 `appId`、`appSecret`、`domain`、`verificationToken`、`encryptKey` 等本机凭证；该文件位于 `~/.chat-codex/state/` 下，权限应为 `0600`。
 - `cache.json`：最近 connection 状态、message 去重窗口、reaction typing 缓存等非敏感缓存。
+- `user-names.json`：按 `channelId + accountId + open_id` 作用域缓存飞书用户显示名，用于旧 route 兼容、运行日志、TUI 列表和群聊发言人前缀。详见 [飞书用户名称解析与缓存设计](feishu-user-name-cache-design.zh-CN.md)。
 
 安全要求：
 

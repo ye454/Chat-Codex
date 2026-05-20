@@ -11,6 +11,7 @@ import type {
   ChannelCapabilities,
   ChannelLoginResult,
   ChannelMedia,
+  ChannelMessage,
   ChannelMessageHandler,
   ChannelStatus,
   ChannelTarget,
@@ -38,6 +39,7 @@ import {
   feishuUploadKey,
   materializeFeishuChannelMedia,
 } from "./feishu-media.js";
+import { FeishuUserNameCache } from "./feishu-user-name-cache.js";
 import type {
   FeishuAdapterOptions,
   FeishuApiResponse,
@@ -80,6 +82,7 @@ export class FeishuAdapter implements ChannelAdapter {
   private readonly transportFactory: FeishuTransportFactory;
   private readonly now: () => number;
   private readonly inboundMediaRootDir?: string;
+  private readonly userNameCache: FeishuUserNameCache;
   private handler?: ChannelMessageHandler;
   private status: ChannelStatus;
   private client?: FeishuSdkClient;
@@ -87,6 +90,7 @@ export class FeishuAdapter implements ChannelAdapter {
   private wsClient?: FeishuWsClient;
   private botOpenId?: string;
   private botName?: string;
+  private lastUserNameResolveError?: string;
   private readonly seenMessages = new Map<string, number>();
   private readonly typingReactions = new Map<string, string>();
 
@@ -102,6 +106,12 @@ export class FeishuAdapter implements ChannelAdapter {
     this.transportFactory = options.transportFactory ?? new DefaultFeishuTransportFactory();
     this.now = options.now ?? Date.now;
     this.inboundMediaRootDir = options.inboundMediaRootDir;
+    this.userNameCache = new FeishuUserNameCache({
+      channelId: this.id,
+      accountId: this.credentials.accountId ?? DEFAULT_FEISHU_ACCOUNT_ID,
+      stateDir: options.stateDir,
+      now: this.now,
+    });
     this.status = {
       channelId: this.id,
       state: missingFeishuCredentials(this.credentials).length > 0 ? "login_required" : "stopped",
@@ -361,7 +371,8 @@ export class FeishuAdapter implements ChannelAdapter {
       };
       return;
     }
-    if (!this.recordMessageId(mapped.message.id)) {
+    let message = mapped.message;
+    if (!this.recordMessageId(message.id)) {
       this.status = {
         ...this.status,
         details: {
@@ -371,18 +382,19 @@ export class FeishuAdapter implements ChannelAdapter {
       };
       return;
     }
+    message = await this.enrichSenderDisplayName(message);
     await downloadFeishuInboundAttachments({
       client: this.ensureClient(),
-      message: mapped.message,
+      message,
       rootDir: this.inboundMediaRootDir,
     });
     this.status = {
       ...this.status,
-      lastInboundAt: mapped.message.timestamp,
+      lastInboundAt: message.timestamp,
       details: this.statusDetails("message-received"),
     };
     try {
-      await this.handler?.(mapped.message);
+      await this.handler?.(message);
     } catch (error) {
       this.status = {
         ...this.status,
@@ -434,6 +446,28 @@ export class FeishuAdapter implements ChannelAdapter {
         error: error instanceof Error ? error.message : String(error),
       };
     }
+  }
+
+  private async enrichSenderDisplayName(message: ChannelMessage): Promise<ChannelMessage> {
+    if (message.sender.displayName) {
+      this.userNameCache.seedUserName(message.sender.id, message.sender.displayName, "event");
+      this.lastUserNameResolveError = undefined;
+      return message;
+    }
+    const resolved = await this.userNameCache.resolveUserName(message.sender.id, this.ensureClient());
+    if (resolved.error) {
+      this.lastUserNameResolveError = resolved.error;
+    } else if (resolved.displayName) {
+      this.lastUserNameResolveError = undefined;
+    }
+    if (!resolved.displayName) return message;
+    return {
+      ...message,
+      sender: {
+        ...message.sender,
+        displayName: resolved.displayName,
+      },
+    };
   }
 
   private wsCallbacks(): FeishuWsCallbacks {
@@ -596,6 +630,7 @@ export class FeishuAdapter implements ChannelAdapter {
       botOpenId: this.botOpenId,
       botName: this.botName,
       groupEnabled: this.groupEnabled,
+      lastUserNameError: this.lastUserNameResolveError,
       connectionState: connection?.state,
       reconnectAttempts: connection?.reconnectAttempts,
       dedupSize: this.seenMessages.size,

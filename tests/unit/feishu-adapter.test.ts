@@ -212,6 +212,138 @@ test("FeishuAdapter emits ChannelMessage for p2p text events and deduplicates me
   assert.equal(status.details?.lastSkipReason, "duplicate_message");
 });
 
+test("FeishuAdapter resolves missing sender display names through Feishu user API and persists cache", async () => {
+  const factory = new FakeFeishuTransportFactory();
+  factory.client.userGetResponse = {
+    code: 0,
+    data: { user: { name: "小黄" } },
+  };
+  const stateDir = tempDir("codex-feishu-state-");
+  const adapter = new FeishuAdapter({ ...credentials, transportFactory: factory, stateDir });
+  let senderDisplayName = "";
+  adapter.onMessage(async (message) => {
+    senderDisplayName = message.sender.displayName ?? "";
+  });
+
+  await adapter.start();
+  await factory.dispatcher.emitReceive(sampleFeishuTextEvent({
+    app_id: credentials.appId,
+    message: {
+      message_id: "om_resolve_name",
+      chat_id: "oc_user",
+      content: JSON.stringify({ text: "hello" }),
+    },
+  }));
+
+  assert.equal(senderDisplayName, "小黄");
+  assert.deepEqual(factory.client.userGetPayloads, [{
+    path: { user_id: "ou_user" },
+    params: { user_id_type: "open_id" },
+  }]);
+  const cache = readJson<{ users: Array<{ openId: string; displayName: string; source: string }> }>(
+    path.join(stateDir, "accounts", credentials.accountId, "user-names.json"),
+  );
+  assert.deepEqual(cache.users.map((user) => [user.openId, user.displayName, user.source]), [["ou_user", "小黄", "api"]]);
+});
+
+test("FeishuAdapter uses persisted sender display-name cache without requiring rebind", async () => {
+  const stateDir = tempDir("codex-feishu-state-");
+  const firstFactory = new FakeFeishuTransportFactory();
+  firstFactory.client.userGetResponse = {
+    code: 0,
+    data: { user: { display_name: "张三" } },
+  };
+  const firstAdapter = new FeishuAdapter({ ...credentials, transportFactory: firstFactory, stateDir });
+  firstAdapter.onMessage(async () => undefined);
+
+  await firstAdapter.start();
+  await firstFactory.dispatcher.emitReceive(sampleFeishuTextEvent({
+    app_id: credentials.appId,
+    message: {
+      message_id: "om_seed_name",
+      chat_id: "oc_user",
+      content: JSON.stringify({ text: "seed" }),
+    },
+  }));
+
+  const secondFactory = new FakeFeishuTransportFactory();
+  secondFactory.client.userGetError = new Error("contact permission denied");
+  const secondAdapter = new FeishuAdapter({ ...credentials, transportFactory: secondFactory, stateDir });
+  let senderDisplayName = "";
+  secondAdapter.onMessage(async (message) => {
+    senderDisplayName = message.sender.displayName ?? "";
+  });
+
+  await secondAdapter.start();
+  await secondFactory.dispatcher.emitReceive(sampleFeishuTextEvent({
+    app_id: credentials.appId,
+    message: {
+      message_id: "om_cached_name",
+      chat_id: "oc_user",
+      content: JSON.stringify({ text: "cached" }),
+    },
+  }));
+
+  assert.equal(senderDisplayName, "张三");
+  assert.equal(secondFactory.client.userGetPayloads.length, 0);
+});
+
+test("FeishuAdapter seeds sender display-name cache from event fields before API lookup", async () => {
+  const factory = new FakeFeishuTransportFactory();
+  factory.client.userGetError = new Error("should not query");
+  const stateDir = tempDir("codex-feishu-state-");
+  const adapter = new FeishuAdapter({ ...credentials, transportFactory: factory, stateDir });
+  let senderDisplayName = "";
+  adapter.onMessage(async (message) => {
+    senderDisplayName = message.sender.displayName ?? "";
+  });
+
+  await adapter.start();
+  await factory.dispatcher.emitReceive(sampleFeishuTextEvent({
+    app_id: credentials.appId,
+    sender: { sender_name: "李四" },
+    message: {
+      message_id: "om_event_name",
+      chat_id: "oc_user",
+      content: JSON.stringify({ text: "event name" }),
+    },
+  }));
+
+  assert.equal(senderDisplayName, "李四");
+  assert.equal(factory.client.userGetPayloads.length, 0);
+  const cache = readJson<{ users: Array<{ openId: string; displayName: string; source: string }> }>(
+    path.join(stateDir, "accounts", credentials.accountId, "user-names.json"),
+  );
+  assert.deepEqual(cache.users.map((user) => [user.openId, user.displayName, user.source]), [["ou_user", "李四", "event"]]);
+});
+
+test("FeishuAdapter keeps receiving messages when user-name API lookup fails", async () => {
+  const factory = new FakeFeishuTransportFactory();
+  factory.client.userGetError = new Error("contact permission denied");
+  const adapter = new FeishuAdapter({ ...credentials, transportFactory: factory });
+  let senderId = "";
+  let senderDisplayName: string | undefined;
+  adapter.onMessage(async (message) => {
+    senderId = message.sender.id;
+    senderDisplayName = message.sender.displayName;
+  });
+
+  await adapter.start();
+  await factory.dispatcher.emitReceive(sampleFeishuTextEvent({
+    app_id: credentials.appId,
+    message: {
+      message_id: "om_name_error",
+      chat_id: "oc_user",
+      content: JSON.stringify({ text: "still works" }),
+    },
+  }));
+
+  assert.equal(senderId, "ou_user");
+  assert.equal(senderDisplayName, undefined);
+  const status = await adapter.getStatus();
+  assert.match(String(status.details?.lastUserNameError), /contact permission denied/);
+});
+
 test("FeishuAdapter maps group receive events to group ChannelMessage internally", async () => {
   const factory = new FakeFeishuTransportFactory();
   const adapter = new FeishuAdapter({ ...credentials, transportFactory: factory, groupEnabled: true });
@@ -355,6 +487,10 @@ test("FeishuAdapter sendText replies to source message first", async () => {
 
 function tempDir(prefix: string): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+}
+
+function readJson<T>(filePath: string): T {
+  return JSON.parse(fs.readFileSync(filePath, "utf-8")) as T;
 }
 
 test("FeishuAdapter sendText falls back to chat_id create when reply fails", async () => {

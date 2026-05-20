@@ -308,6 +308,11 @@ export class FileStateStore extends MemoryStateStore {
     return [...this.routes.values()].sort((left, right) => left.routeKey.localeCompare(right.routeKey));
   }
 
+  override getRouteRecord(routeKey: string): RouteRecord | undefined {
+    const record = this.routes.get(routeKey);
+    return record ? cloneRouteRecord(record) : undefined;
+  }
+
   removeChannelState(channelId: string): RemoveChannelStateResult {
     const routes = [...this.routes.values()].filter((route) => route.channelId === channelId);
     const pending = [...this.persistedPendingBindings.values()].filter((record) => record.channelId === channelId);
@@ -473,6 +478,19 @@ function loadFileState(options: FileStateStoreOptions): LoadedFileState {
     sessionContextSnapshots,
     pendingBindings,
     trustedRoutes,
+  };
+}
+
+function cloneRouteRecord(record: RouteRecord): RouteRecord {
+  return {
+    ...record,
+    identity: record.identity ? { ...record.identity } : undefined,
+    policy: record.policy
+      ? {
+        ...record.policy,
+        contextRefresh: cloneContextRefreshPolicy(record.policy.contextRefresh),
+      }
+      : undefined,
   };
 }
 

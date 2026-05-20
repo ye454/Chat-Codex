@@ -93,10 +93,22 @@ test("ConsoleTranscriptSink shows Feishu conversation type and sender in inbound
     timestamp: "2026-05-14T00:09:10.000Z",
   }, "群聊消息");
 
+  sink.inbound({
+    id: "m4",
+    routeKey: "feishu-default:default:direct:oc_unknown",
+    channelId: "feishu-default",
+    accountId: "default",
+    sender: { id: "ou_direct_unknown" },
+    conversation: { id: "oc_unknown", kind: "direct", displayName: "飞书私聊" },
+    text: "私聊消息",
+    timestamp: "2026-05-14T00:09:10.000Z",
+  }, "私聊消息");
+
   const text = output.text();
   assert.match(text, /\[08:09:10] 飞书 <= 私聊:小黄 \| 小黄/);
   assert.match(text, /\[08:09:10] 飞书 <= 群聊:研发群 \| 张三/);
   assert.match(text, /\[08:09:10] 飞书 <= 群聊:oc_group_unknown \| ou_unknown/);
+  assert.match(text, /\[08:09:10] 飞书 <= 私聊:oc_unknown \| ou_direct_unknown/);
 });
 
 test("ConsoleTranscriptSink can color terminal transcript records", () => {

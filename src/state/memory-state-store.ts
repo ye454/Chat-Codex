@@ -5,6 +5,7 @@ import { SessionBindings, type ActivateSessionResult, type ClaimSessionResult, t
 import {
   type PendingBindingRecord,
   type PendingSessionBinding,
+  type RouteRecord,
   type SessionContextSnapshotObservedBy,
   type SessionContextSnapshotRecord,
   type SessionPolicyRecord,
@@ -76,6 +77,10 @@ export class MemoryStateStore {
 
   recordRouteMessage(_message: ChannelMessage): void {
     // MemoryStateStore only keeps active in-process binding state.
+  }
+
+  getRouteRecord(_routeKey: string): RouteRecord | undefined {
+    return undefined;
   }
 
   isRouteTrusted(routeKey: string): boolean {

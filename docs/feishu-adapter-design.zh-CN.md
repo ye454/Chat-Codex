@@ -330,7 +330,7 @@ event.message.create_time
   }),
   sender: {
     id: sender.sender_id.open_id,
-    displayName: undefined
+    displayName: sender.sender_name ?? sender.name ?? sender.user_name ?? undefined
   },
   conversation: {
     id: message.chat_id,
@@ -349,7 +349,11 @@ event.message.create_time
 - 出站发消息可以直接使用 `chat_id`。
 - route 绑定应按“这个飞书私聊会话”隔离，而不是按用户 open_id 猜测。
 
-如果需要在 `/whoami` 里更友好显示用户，可以后续缓存 open_id -> displayName。
+当前名称补齐不应只服务 `/whoami`。运行日志、TUI 聊天绑定列表和群聊发言人前缀都应该共用同一套飞书用户名称解析流程，详见 [飞书用户名称解析与缓存设计](feishu-user-name-cache-design.zh-CN.md)。核心原则：
+
+- 事件自带名称时立即使用并写入缓存。
+- 旧绑定、旧 route 不要求重新配对；下一条入站消息按 `open_id` 懒补齐名称。
+- API 或权限失败不阻断消息，日志至少展示 `私聊:<chat_id> | <open_id>`，不能退化成只显示 `ou_xxx`。
 
 ## 出站文本
 

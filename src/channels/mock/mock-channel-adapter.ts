@@ -2,6 +2,7 @@ import type {
   ChannelAdapter,
   ChannelAttachment,
   ChannelCapabilities,
+  ConversationKind,
   ChannelLoginResult,
   ChannelMedia,
   ChannelMessage,
@@ -126,11 +127,25 @@ export class MockChannelAdapter implements ChannelAdapter {
     this.sentTyping.push({ target, typing, options });
   }
 
-  async emitText(text: string, options: { senderId?: string; conversationId?: string; attachments?: ChannelAttachment[] } = {}): Promise<void> {
+  async emitText(text: string, options: {
+    senderId?: string;
+    senderDisplayName?: string;
+    conversationId?: string;
+    conversationKind?: ConversationKind;
+    conversationDisplayName?: string;
+    attachments?: ChannelAttachment[];
+  } = {}): Promise<void> {
     await this.emitMessage({ text, ...options });
   }
 
-  async emitAttachment(attachments: ChannelAttachment[], options: { text?: string; senderId?: string; conversationId?: string } = {}): Promise<void> {
+  async emitAttachment(attachments: ChannelAttachment[], options: {
+    text?: string;
+    senderId?: string;
+    senderDisplayName?: string;
+    conversationId?: string;
+    conversationKind?: ConversationKind;
+    conversationDisplayName?: string;
+  } = {}): Promise<void> {
     await this.emitMessage({ ...options, attachments });
   }
 
@@ -138,16 +153,20 @@ export class MockChannelAdapter implements ChannelAdapter {
     text?: string;
     attachments?: ChannelAttachment[];
     senderId?: string;
+    senderDisplayName?: string;
     conversationId?: string;
+    conversationKind?: ConversationKind;
+    conversationDisplayName?: string;
   }): Promise<void> {
     if (!this.handler) throw new Error("mock channel handler is not registered");
     const senderId = options.senderId ?? "mock-user";
     const conversationId = options.conversationId ?? senderId;
+    const conversationKind = options.conversationKind ?? "direct";
     const accountId = this.options.accountId ?? "mock-account";
     const routeKey = buildRouteKey({
       channelId: this.id,
       accountId,
-      conversationKind: "direct",
+      conversationKind,
       conversationId,
     });
     const message: ChannelMessage = {
@@ -155,8 +174,8 @@ export class MockChannelAdapter implements ChannelAdapter {
       routeKey,
       channelId: this.id,
       accountId,
-      sender: { id: senderId, displayName: "Mock User" },
-      conversation: { id: conversationId, kind: "direct", displayName: "Mock Direct" },
+      sender: { id: senderId, displayName: options.senderDisplayName ?? "Mock User" },
+      conversation: { id: conversationId, kind: conversationKind, displayName: options.conversationDisplayName ?? (conversationKind === "group" ? "Mock Group" : "Mock Direct") },
       text: options.text,
       attachments: options.attachments,
       timestamp: new Date().toISOString(),

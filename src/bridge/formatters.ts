@@ -7,6 +7,7 @@ import type {
   CodexGoalStatus,
   CodexModelOption,
   CodexModelPolicy,
+  CodexPromptInput,
   CodexReasoningEffort,
   CodexSessionContextUsage,
   CodexSessionModelInfo,
@@ -14,7 +15,8 @@ import type {
   CodexTurnInput,
 } from "../codex/types.js";
 import { CODEX_REASONING_EFFORTS } from "../codex/types.js";
-import { normalizeCodexInput } from "../codex/input.js";
+import { codexInputText, normalizeCodexInput, withCodexInputText } from "../codex/input.js";
+import type { ChannelMessage } from "../protocol/channel.js";
 import { formatLocalDateTimeWithZone, type DisplayTimeOptions } from "../time/display-time.js";
 import { BRIDGE_SEND_FILE_PREFIX } from "./media-extractor.js";
 import type { InitialRouteBinding, ProgressDeliveryMode, QueuedSteer, SessionChoice } from "./bridge-types.js";
@@ -32,12 +34,14 @@ export function isSteerableStatus(status: CodexSessionStatus["type"]): boolean {
 
 export function composeSteerBatchInput(batch: QueuedSteer[]): CodexTurnInput {
   if (batch.length === 1) return normalizeCodexInput(batch[0].input);
+  const groupBatch = batch.every((item) => item.message.conversation.kind === "group");
   const items: CodexTurnInput["items"] = [];
   const textParts: string[] = [];
   batch.forEach((item, index) => {
     const input = normalizeCodexInput(item.input);
     const label = `用户补充消息 ${index + 1}:`;
-    const text = input.text ? `${label}\n${input.text}` : label;
+    const text = groupBatch ? input.text : input.text ? `${label}\n${input.text}` : label;
+    if (!text) return;
     textParts.push(text);
     items.push({ type: "text", text });
     for (const inputItem of input.items) {
@@ -48,6 +52,32 @@ export function composeSteerBatchInput(batch: QueuedSteer[]): CodexTurnInput {
     text: textParts.join("\n\n"),
     items,
   };
+}
+
+export type GroupPromptPrefixMode = "say" | "supplement";
+
+export function withGroupConversationPromptPrefix(
+  message: ChannelMessage,
+  input: CodexPromptInput,
+  mode: GroupPromptPrefixMode,
+): CodexPromptInput {
+  if (message.conversation.kind !== "group") return input;
+  const text = codexInputText(input).trim();
+  if (!text) return input;
+  const verb = mode === "supplement" ? "补充" : "说";
+  const nextText = `${formatGroupSpeakerForPrompt(message)}${verb}：${text}`;
+  return typeof input === "string" ? nextText : withCodexInputText(input, nextText);
+}
+
+function formatGroupSpeakerForPrompt(message: ChannelMessage): string {
+  return normalizeGroupSpeakerLabel(message.sender.displayName)
+    ?? normalizeGroupSpeakerLabel(message.sender.id)
+    ?? "群成员";
+}
+
+function normalizeGroupSpeakerLabel(value: string | undefined): string | undefined {
+  const normalized = value?.replace(/\s+/g, " ").trim();
+  return normalized || undefined;
 }
 
 export function steerAcceptedText(count: number): string {

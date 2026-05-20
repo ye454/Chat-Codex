@@ -318,6 +318,7 @@ export function feishuStatusDetails(input: {
   botOpenId?: string;
   botName?: string;
   groupEnabled?: boolean;
+  lastUserNameError?: string;
   connectionState?: string;
   reconnectAttempts?: number;
   dedupSize?: number;
@@ -334,6 +335,7 @@ export function feishuStatusDetails(input: {
     botOpenId: input.botOpenId,
     botName: input.botName,
     groupEnabled: input.groupEnabled ?? false,
+    lastUserNameError: input.lastUserNameError,
     connectionState: input.connectionState,
     reconnectAttempts: input.reconnectAttempts,
     dedupSize: input.dedupSize,

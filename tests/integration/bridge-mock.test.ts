@@ -298,7 +298,7 @@ class SteerableBlockingCodexAdapter extends MockCodexAdapter {
     const turnId = `steerable-turn-${this.prompts.length}`;
     this.localStatuses.set(sessionId, { type: "running", turnId, task: promptText });
     yield { type: "turn.started", sessionId, turnId };
-    if (promptText === "第一条" || promptText === "A 长任务") {
+    if (promptText === "第一条" || promptText.endsWith("：第一条") || promptText === "A 长任务" || promptText.endsWith("：A 长任务")) {
       await new Promise<void>((resolve) => {
         this.releaseFirst = resolve;
       });
@@ -1036,6 +1036,89 @@ test("Bridge steers ordinary text into the active route turn", async () => {
   assert.equal(codex.steers[0]?.prompt, "补充信息");
   assert.ok(channel.sentMessages.some((message) => message.text.includes("已投递到当前 Codex 任务")));
   assert.equal(channel.sentMessages.some((message) => message.text.includes("已加入队列")), false);
+});
+
+test("Bridge prefixes only group ordinary prompts with speaker names", async () => {
+  const channel = new MockChannelAdapter({ id: "feishu", accountId: "work" });
+  const codex = new SteerableBlockingCodexAdapter();
+  const bridge = new Bridge({ channel, codex, cwd: process.cwd() });
+
+  await bridge.start();
+  await channel.emitText("/status", {
+    conversationKind: "group",
+    conversationId: "oc_group",
+    senderId: "ou_xh",
+    senderDisplayName: "小黄",
+  });
+  await channel.emitText("检查群聊上下文", {
+    conversationKind: "group",
+    conversationId: "oc_group",
+    senderId: "ou_xh",
+    senderDisplayName: "小黄",
+  });
+  await bridge.waitForIdle();
+  await channel.emitText("私聊原文", {
+    conversationId: "oc_direct",
+    senderId: "ou_xh",
+    senderDisplayName: "小黄",
+  });
+  await bridge.waitForIdle();
+  await bridge.stop();
+
+  assert.deepEqual(codex.prompts, ["小黄说：检查群聊上下文", "私聊原文"]);
+});
+
+test("Bridge prefixes group media prompts while preserving attachments", async () => {
+  const channel = new MockChannelAdapter({ id: "feishu", accountId: "work" });
+  const codex = new SteerableBlockingCodexAdapter();
+  const bridge = new Bridge({ channel, codex, cwd: process.cwd() });
+  const imagePath = "/tmp/chat-codex-group-direct.png";
+
+  await bridge.start();
+  await channel.emitAttachment([mockImageAttachment(imagePath)], {
+    text: "检查这个 UI",
+    conversationKind: "group",
+    conversationId: "oc_group",
+    senderId: "ou_xh",
+    senderDisplayName: "小黄",
+  });
+  await bridge.waitForIdle();
+  await bridge.stop();
+
+  assert.equal(codex.promptInputs.length, 1);
+  assert.deepEqual(codex.promptInputs[0]?.items, [
+    { type: "text", text: "小黄说：检查这个 UI" },
+    { type: "localImage", path: imagePath },
+  ]);
+});
+
+test("Bridge prefixes group mid-turn steers as speaker supplements", async () => {
+  const channel = new MockChannelAdapter({ id: "feishu", accountId: "work" });
+  const codex = new SteerableBlockingCodexAdapter();
+  const bridge = new Bridge({ channel, codex, cwd: process.cwd(), steerDebounceMs: 1 });
+
+  await bridge.start();
+  await channel.emitText("第一条", {
+    conversationKind: "group",
+    conversationId: "oc_group",
+    senderId: "ou_xh",
+    senderDisplayName: "小黄",
+  });
+  await waitFor(() => codex.prompts.length === 1);
+  await channel.emitText("补充信息", {
+    conversationKind: "group",
+    conversationId: "oc_group",
+    senderId: "ou_xr",
+    senderDisplayName: "小红",
+  });
+  await waitFor(() => codex.steers.length === 1);
+
+  codex.release();
+  await bridge.waitForIdle();
+  await bridge.stop();
+
+  assert.deepEqual(codex.prompts, ["小黄说：第一条"]);
+  assert.equal(codex.steers[0]?.prompt, "小红补充：补充信息");
 });
 
 test("Bridge batches consecutive route steers in order", async () => {

@@ -64,6 +64,7 @@ import {
 import {
   inboundAttachmentTranscriptText,
   sleep,
+  withGroupConversationPromptPrefix,
 } from "./formatters.js";
 
 export type { BridgeOptions, InitialRouteBinding, ProgressDeliveryMode, UnboundRoutePolicy } from "./bridge-types.js";
@@ -331,6 +332,7 @@ export class Bridge {
   }
 
   async handleMessage(message: ChannelMessage): Promise<void> {
+    message = this.enrichMessageFromRouteHistory(message);
     const text = message.text?.trim() ?? "";
     const attachments = classifyInboundAttachments(message.attachments);
     const hasInboundMedia = attachments.usable.length > 0 || attachments.failed.length > 0 || attachments.unsupported.length > 0;
@@ -383,11 +385,31 @@ export class Bridge {
     if (rejectedAttachments.length > 0) {
       await this.delivery.sendText(target, inboundMediaTurnOverflowText(rejectedAttachments.length));
     }
-    const input = acceptedAttachments.length > 0
+    const rawInput = acceptedAttachments.length > 0
       ? codexInputFromTextAndAttachments(text, acceptedAttachments)
       : text;
+    const groupPrefixMode = message.conversation.kind === "group" && await this.isRouteExecutionBusyWithoutCompact(message.routeKey)
+      ? "supplement"
+      : "say";
+    const input = withGroupConversationPromptPrefix(message, rawInput, groupPrefixMode);
     if (await this.routeSteering.tryEnqueue(message, target, input)) return;
     await this.routeQueue.enqueuePrompt(message, target, input);
+  }
+
+  private enrichMessageFromRouteHistory(message: ChannelMessage): ChannelMessage {
+    if (message.sender.displayName) return message;
+    const route = this.state.getRouteRecord(message.routeKey);
+    const displayName = route?.identity?.lastSenderDisplayName?.trim();
+    if (!displayName) return message;
+    const lastSenderId = route?.identity?.lastSenderId ?? route?.identity?.openId;
+    if (lastSenderId && lastSenderId !== message.sender.id) return message;
+    return {
+      ...message,
+      sender: {
+        ...message.sender,
+        displayName,
+      },
+    };
   }
 
   async waitForIdle(): Promise<void> {

@@ -16,6 +16,7 @@ import {
   parseReasoningEffort,
   resolveModelReference,
   unsupportedReasoningEffortText,
+  withGroupConversationPromptPrefix,
 } from "../../src/bridge/formatters.js";
 
 test("bridge formatters parse progress and model command values", () => {
@@ -97,6 +98,44 @@ test("bridge formatters compose steer batches with structured items", () => {
   assert.deepEqual(input.items.at(-1), { type: "localImage", path: "/tmp/image.png" });
 });
 
+test("bridge formatters keep group steer batches speaker-prefixed without generic labels", () => {
+  const batch: QueuedSteer[] = [
+    {
+      message: message("m1", { kind: "group", senderDisplayName: "小黄" }),
+      target: target({ kind: "group" }),
+      input: "小黄补充：补充 A",
+    },
+    {
+      message: message("m2", { kind: "group", senderDisplayName: "小红" }),
+      target: target({ kind: "group" }),
+      input: {
+        text: "小红补充：补充 B",
+        items: [
+          { type: "text", text: "小红补充：补充 B" },
+          { type: "localImage", path: "/tmp/group-image.png" },
+        ],
+      },
+    },
+  ];
+
+  const input = composeSteerBatchInput(batch);
+  assert.match(input.text, /小黄补充：补充 A/);
+  assert.match(input.text, /小红补充：补充 B/);
+  assert.doesNotMatch(input.text, /用户补充消息/);
+  assert.deepEqual(input.items.at(-1), { type: "localImage", path: "/tmp/group-image.png" });
+});
+
+test("bridge formatters prefix only group prompts with speaker names", () => {
+  const group = withGroupConversationPromptPrefix(message("m1", { kind: "group", senderDisplayName: "小黄" }), "检查一下", "say");
+  assert.equal(group, "小黄说：检查一下");
+
+  const fallback = withGroupConversationPromptPrefix(message("m2", { kind: "group", senderDisplayName: undefined, senderId: "ou_xh" }), "继续", "supplement");
+  assert.equal(fallback, "ou_xh补充：继续");
+
+  const direct = withGroupConversationPromptPrefix(message("m3"), "私聊原文", "say");
+  assert.equal(direct, "私聊原文");
+});
+
 test("bridge formatters resolve model references and unsupported efforts", () => {
   const models: CodexModelOption[] = [
     model("gpt-a", "GPT A", ["low", "medium"], "medium"),
@@ -128,23 +167,26 @@ function model(
   };
 }
 
-function message(id: string) {
+function message(id: string, options: { kind?: "direct" | "group"; senderId?: string; senderDisplayName?: string } = {}) {
+  const kind = options.kind ?? "direct";
+  const senderId = options.senderId ?? "user";
   return {
     id,
-    routeKey: "mock:default:direct:user",
+    routeKey: `mock:default:${kind}:user`,
     channelId: "mock",
-    sender: { id: "user" },
-    conversation: { id: "user", kind: "direct" as const },
+    sender: { id: senderId, ...(options.senderDisplayName ? { displayName: options.senderDisplayName } : {}) },
+    conversation: { id: "user", kind },
     text: "",
     timestamp: new Date().toISOString(),
   };
 }
 
-function target() {
+function target(options: { kind?: "direct" | "group" } = {}) {
+  const kind = options.kind ?? "direct";
   return {
     channelId: "mock",
-    routeKey: "mock:default:direct:user",
-    conversation: { id: "user", kind: "direct" as const },
+    routeKey: `mock:default:${kind}:user`,
+    conversation: { id: "user", kind },
     recipient: { id: "user" },
   };
 }
