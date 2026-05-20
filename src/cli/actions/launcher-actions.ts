@@ -14,6 +14,7 @@ import type { CodexAdapter } from "../../codex/types.js";
 import { checkNewSessionWorkdir, resolveNewSessionWorkdir } from "../../codex/workdir.js";
 import {
   contextRefreshPolicyOrDefault,
+  formatContextRefreshDefaultPolicyForUser,
   formatContextRefreshEffectivePolicyForUser,
   formatContextRefreshModeForUser,
   type ContextRefreshEffectivePolicy,
@@ -537,7 +538,7 @@ export class LauncherActions {
       `- 新 session 默认权限: ${formatRunPolicyForUser(this.startup.policy)}`,
       "",
       "上下文刷新",
-      `- 默认策略: ${formatContextRefreshModeForUser(this.getContextRefreshDefaults().mode)}（未单独配置的聊天继承，发送前检测）`,
+      `- 默认策略: ${formatContextRefreshDefaultPolicyForUser(this.getContextRefreshDefaults())}`,
       "",
       "运行",
       `- 新 session 工作目录: ${this.startup.cwd}`,

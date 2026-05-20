@@ -49,6 +49,21 @@ export function formatContextRefreshModeForUser(mode: ContextRefreshMode): strin
   }
 }
 
+export function formatContextRefreshDefaultPolicyForUser(policy: ContextRefreshPolicy): string {
+  return `${formatContextRefreshModeForUser(policy.mode)}；${formatContextRefreshDefaultBehaviorForUser(policy.mode)}`;
+}
+
+export function formatContextRefreshDefaultBehaviorForUser(mode: ContextRefreshMode): string {
+  switch (mode) {
+    case "off":
+      return "没有单独规则的聊天会继承当前全局默认，发送前不检测当前 session";
+    case "detect":
+      return "没有单独规则的聊天会继承当前全局默认，发送前检测当前 session，有更新只提醒";
+    case "reload":
+      return "没有单独规则的聊天会继承当前全局默认，发送前检测当前 session，有更新先重新加载当前 session";
+  }
+}
+
 export function formatContextRefreshSourceForUser(source: ContextRefreshPolicySource): string {
   switch (source) {
     case "route":

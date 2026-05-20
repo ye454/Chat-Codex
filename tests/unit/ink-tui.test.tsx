@@ -34,7 +34,8 @@ test("Ink TUI renders dashboard and navigates to core pages", async () => {
   assert.match(cleanFrame(view), /配对信任/);
   assert.match(cleanFrame(view), /权限/);
   assert.match(cleanFrame(view), /默认上下文刷新/);
-  assert.match(cleanFrame(view), /未单独配置的聊天发送前不检测/);
+  assert.match(cleanFrame(view), /没有单独规则的聊天会继承当前全局默认/);
+  assert.match(cleanFrame(view), /发送前不检测当前 session/);
   assert.match(cleanFrame(view), /工作目录/);
   assert.match(cleanFrame(view), /\/repo/);
 
@@ -75,8 +76,9 @@ test("Ink TUI renders dashboard and navigates to core pages", async () => {
   view.stdin.write("x");
   await waitForInk();
   assert.match(cleanFrame(view), /默认上下文刷新/);
-  assert.match(cleanFrame(view), /未单独配置的聊天继承/);
-  assert.match(cleanFrame(view), /不会启动时刷新全部 session/);
+  assert.match(cleanFrame(view), /没有单独设置上下文刷新规则的聊天/);
+  assert.match(cleanFrame(view), /不会在启动服务时/);
+  assert.match(cleanFrame(view), /刷新全部 session/);
 
   view.stdin.write("\u001B");
   await waitForInk();
@@ -113,8 +115,10 @@ test("Ink TUI handles help, Feishu form back, and start confirmation", async () 
   startView.stdin.write("\r");
   await waitForInk();
   assert.match(cleanFrame(startView), /启动服务/);
+  assert.match(cleanFrame(startView), /信息展示/);
   assert.match(cleanFrame(startView), /确认后会启动 Bridge，并进入 Chat Codex 运行中面板/);
-  assert.match(cleanFrame(startView), /新聊天策略\s+首条消息自动创建新 session/);
+  assert.match(cleanFrame(startView), /聊天绑定 \/ 新聊天策略\s+首条消息自动创建新 session/);
+  assert.match(cleanFrame(startView), /上下文刷新 \/ 默认策略\s+关闭/);
   startView.stdin.write("\r");
   await waitForInk();
   assert.deepEqual(result, { start: true });
@@ -249,7 +253,8 @@ test("Ink TUI first run guides user to add channels with Enter and number shortc
   assert.match(cleanFrame(view), /1\. 添加微信账号/);
   assert.match(cleanFrame(view), /2\. 添加飞书机器人/);
   assert.match(cleanFrame(view), /4\. 默认上下文刷新/);
-  assert.match(cleanFrame(view), /未单独配置的聊天发送前不检测/);
+  assert.match(cleanFrame(view), /没有单独规则的聊天会继承当前全局默认/);
+  assert.match(cleanFrame(view), /发送前不检测当前 session/);
   assert.match(cleanFrame(view), /5\. 工作目录/);
   assert.match(cleanFrame(view), /↑↓ 选择/);
   assert.match(cleanFrame(view), /0\/q 退出/);
@@ -853,6 +858,9 @@ function mockActions(
       "",
       "权限",
       "- 新 session 默认权限: 审批模式（workspace-write 沙箱）",
+      "",
+      "上下文刷新",
+      "- 默认策略: 关闭；没有单独规则的聊天会继承当前全局默认，发送前不检测当前 session",
       "",
       "运行",
       "- 新 session 工作目录: /repo",

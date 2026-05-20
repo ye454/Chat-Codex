@@ -3,7 +3,7 @@ import { Box, Text } from "ink";
 import { PasswordInput, TextInput } from "@inkjs/ui";
 import type { CodexCliStatus, CodexRunPolicy } from "../../codex/codex-cli.js";
 import { formatCodexCommandSource, formatCodexPlatform } from "../../codex/codex-process.js";
-import type { ContextRefreshPolicy } from "../../context-refresh/types.js";
+import { formatContextRefreshDefaultPolicyForUser, type ContextRefreshPolicy } from "../../context-refresh/types.js";
 import type { ChannelInstanceRecord, PendingBindingRecord } from "../../state/persistent-state-types.js";
 import { chatCodexTitle } from "../../runtime/package-info.js";
 import type { BindingSummary, SessionChoices } from "../actions/binding-actions.js";
@@ -48,7 +48,7 @@ export function HomeView({ dashboard, selected }: { dashboard: LauncherDashboard
           <KeyValue label="渠道" value="暂无；请先添加微信账号或飞书机器人" />
           <KeyValue label="新 session 权限" value={formatPermission(dashboard.startup.policy)} />
           <KeyValue label="新 session 工作目录" value={dashboard.startup.cwd} />
-          <KeyValue label="上下文刷新默认" value={formatContextRefreshDefaultSummary(dashboard.contextRefreshDefault)} />
+          <KeyValue label="上下文刷新默认" value={formatContextRefreshDefaultPolicyForUser(dashboard.contextRefreshDefault)} />
           <KeyValue label="提示" value="配置好渠道后再启动服务" />
         </Section>
         <Section title="操作">
@@ -75,7 +75,7 @@ export function HomeView({ dashboard, selected }: { dashboard: LauncherDashboard
         <KeyValue label="渠道" value={`${enabledChannels}/${dashboard.channels.length} 已启用`} />
         <KeyValue label="聊天绑定" value={`${dashboard.routes.bound}/${dashboard.routes.known} 已绑定，${dashboard.routes.pending ?? 0} 个待生效`} />
         <KeyValue label="配对信任" value={`${dashboard.pairing.trusted} 个已信任，${dashboard.pairing.pending} 个待配对`} />
-        <KeyValue label="上下文刷新默认" value={formatContextRefreshDefaultSummary(dashboard.contextRefreshDefault)} />
+        <KeyValue label="上下文刷新默认" value={formatContextRefreshDefaultPolicyForUser(dashboard.contextRefreshDefault)} />
         <KeyValue label="新 session 工作目录" value={dashboard.startup.cwd} />
         <Text color={dashboard.canStart.ok ? THEME.success : THEME.warning} bold>
           {dashboard.canStart.ok ? "▶ 已准备好。按 Enter 启动 Bridge，并进入运行日志面板。" : `⚠ ${dashboard.canStart.message}`}
@@ -394,8 +394,8 @@ export function ContextRefreshView({
       <KeyValue label="当前" value={current} />
       <Section title="说明">
         <Muted text={route
-          ? "当前聊天可覆盖全局默认；跟随全局默认会清除覆盖。检测只在这个聊天发送消息前执行。"
-          : "默认策略会被未单独配置的聊天继承；不会启动时刷新全部 session，只在发送消息前检测当前绑定 session。"}
+          ? "当前聊天可以覆盖全局默认；选“跟随全局默认”会删除单独规则。检测只在这个聊天发送消息前执行。"
+          : "这是全局默认规则。没有单独设置上下文刷新规则的聊天，会在发送消息前按这里执行；不会在启动服务时刷新全部 session。"}
         />
       </Section>
       <Section title="选项">
@@ -586,7 +586,7 @@ export function StatusView({ dashboard }: { dashboard: LauncherDashboard }): Rea
         <Text>已发现聊天：{dashboard.routes.known}  已绑定：{dashboard.routes.bound}  待生效：{dashboard.routes.pending ?? 0}</Text>
       </Section>
       <Section title="上下文刷新">
-        <Text>默认策略：{formatContextRefreshDefaultSummary(dashboard.contextRefreshDefault)}</Text>
+        <Text>默认策略：{formatContextRefreshDefaultPolicyForUser(dashboard.contextRefreshDefault)}</Text>
       </Section>
       <Section title="配对信任">
         <Text>已信任：{dashboard.pairing.trusted}  待配对：{dashboard.pairing.pending}</Text>
@@ -613,21 +613,16 @@ function CodexCliStatusBlock({ status }: { status?: CodexCliStatus }): React.JSX
 }
 
 export function StartConfirmView({ validation, lines }: { validation: StartValidation; lines: string[] }): React.JSX.Element {
-  const groups = parseStartSummary(lines);
+  const rows = parseStartSummaryRows(lines);
   return (
     <Frame title="启动服务" subtitle={validation.ok ? "Enter 启动并进入运行日志  Esc 返回" : "Esc 返回"} borderColor={validation.ok ? THEME.success : THEME.warning}>
-      <Section title={validation.ok ? "确认启动" : "需要处理"}>
+      <Section title="信息展示">
         <Text color={validation.ok ? THEME.success : THEME.warning} bold>{validation.ok ? "▶ 确认后会启动 Bridge，并进入 Chat Codex 运行中面板。" : `⚠ ${lines[0]}`}</Text>
         {validation.ok ? <KeyValue label="运行中面板" value="展示已启动渠道、工作目录、默认权限、聊天日志和 Ctrl+C 停止方式" /> : null}
+        {validation.ok ? rows.map((row) => (
+          <KeyValue key={`${row.label}-${row.value}`} label={row.label} value={row.value} />
+        )) : <KeyValue label="提示" value={lines[0] ?? "当前配置还不能启动服务。"} />}
       </Section>
-      {validation.ok ? groups.map((group) => (
-        <Section key={group.title} title={group.title}>
-          {group.items.map((item) => {
-            const [label, value] = splitSummaryItem(item);
-            return value ? <KeyValue key={item} label={label} value={value} /> : <Text key={item}>- {item}</Text>;
-          })}
-        </Section>
-      )) : null}
     </Frame>
   );
 }
@@ -650,12 +645,6 @@ function formatContextRefreshMode(policy: ContextRefreshPolicy): string {
   if (policy.mode === "reload") return "检测并刷新";
   if (policy.mode === "detect") return "检测提醒";
   return "关闭";
-}
-
-function formatContextRefreshDefaultSummary(policy: ContextRefreshPolicy): string {
-  if (policy.mode === "reload") return "检测并刷新；未单独配置的聊天继承，发送前检测当前 session";
-  if (policy.mode === "detect") return "检测提醒；未单独配置的聊天继承，发送前只提醒";
-  return "关闭；未单独配置的聊天发送前不检测";
 }
 
 function sessionSectionTitle(label: string, total: number, page: number, pageCount: number): string {
@@ -694,6 +683,16 @@ function parseStartSummary(lines: string[]): Array<{ title: string; items: strin
     current.items.push(line.slice(2));
   }
   return groups;
+}
+
+function parseStartSummaryRows(lines: string[]): Array<{ label: string; value: string }> {
+  return parseStartSummary(lines).flatMap((group) => group.items.map((item) => {
+    const [itemLabel, itemValue] = splitSummaryItem(item);
+    return {
+      label: itemValue ? `${group.title} / ${itemLabel}` : group.title,
+      value: itemValue ?? item,
+    };
+  }));
 }
 
 function splitSummaryItem(item: string): [string, string | undefined] {
