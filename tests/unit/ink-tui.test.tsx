@@ -26,13 +26,15 @@ test("Ink TUI renders dashboard and navigates to core pages", async () => {
   assert.match(cleanFrame(view), new RegExp(escapeRegExp(expectedChatCodexTitle())));
   assert.match(cleanFrame(view), /启动服务/);
   assert.match(cleanFrame(view), /已准备好。按 Enter 启动 Bridge，并进入运行日志面板/);
-  assert.match(cleanFrame(view), /Codex CLI/);
+  assert.match(cleanFrame(view), /信息展示/);
   assert.match(cleanFrame(view), /codex-cli 0\.130\.0/);
   assert.match(cleanFrame(view), /darwin arm64/);
   assert.match(cleanFrame(view), /渠道/);
   assert.match(cleanFrame(view), /聊天绑定/);
-  assert.match(cleanFrame(view), /配对管理/);
+  assert.match(cleanFrame(view), /配对信任/);
   assert.match(cleanFrame(view), /权限/);
+  assert.match(cleanFrame(view), /默认上下文刷新/);
+  assert.match(cleanFrame(view), /未单独配置的聊天发送前不检测/);
   assert.match(cleanFrame(view), /工作目录/);
   assert.match(cleanFrame(view), /\/repo/);
 
@@ -67,6 +69,14 @@ test("Ink TUI renders dashboard and navigates to core pages", async () => {
   await waitForInk();
   assert.match(cleanFrame(view), /默认权限设置/);
   assert.match(cleanFrame(view), /审批模式/);
+
+  view.stdin.write("\u001B");
+  await waitForInk();
+  view.stdin.write("x");
+  await waitForInk();
+  assert.match(cleanFrame(view), /默认上下文刷新/);
+  assert.match(cleanFrame(view), /未单独配置的聊天继承/);
+  assert.match(cleanFrame(view), /不会启动时刷新全部 session/);
 
   view.stdin.write("\u001B");
   await waitForInk();
@@ -235,9 +245,11 @@ test("Ink TUI first run guides user to add channels with Enter and number shortc
   await waitForInk();
 
   assert.match(cleanFrame(view), /首次配置/);
+  assert.match(cleanFrame(view), /信息展示/);
   assert.match(cleanFrame(view), /1\. 添加微信账号/);
   assert.match(cleanFrame(view), /2\. 添加飞书机器人/);
-  assert.match(cleanFrame(view), /4\. 上下文刷新/);
+  assert.match(cleanFrame(view), /4\. 默认上下文刷新/);
+  assert.match(cleanFrame(view), /未单独配置的聊天发送前不检测/);
   assert.match(cleanFrame(view), /5\. 工作目录/);
   assert.match(cleanFrame(view), /↑↓ 选择/);
   assert.match(cleanFrame(view), /0\/q 退出/);

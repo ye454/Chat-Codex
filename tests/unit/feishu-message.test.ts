@@ -159,6 +159,49 @@ test("feishuEventToChannelMessage maps group text and normalizes mentions", () =
   ]);
 });
 
+test("feishuEventToChannelMessage maps group image and file attachments", () => {
+  const now = Date.now();
+  const imageResult = feishuEventToChannelMessage(sampleFeishuTextEvent({
+    message: {
+      message_id: "om_group_image",
+      create_time: String(now),
+      chat_id: "oc_group_media",
+      chat_type: "group",
+      message_type: "image",
+      content: JSON.stringify({ image_key: "img_group_1" }),
+    },
+  }), {
+    channelId: "feishu",
+    accountId: "work",
+    now,
+  });
+  const fileResult = feishuEventToChannelMessage(sampleFeishuTextEvent({
+    message: {
+      message_id: "om_group_file",
+      create_time: String(now),
+      chat_id: "oc_group_media",
+      chat_type: "group",
+      message_type: "file",
+      content: JSON.stringify({ file_key: "file_group_1", file_name: "group-report.pdf", file_size: 18 }),
+    },
+  }), {
+    channelId: "feishu",
+    accountId: "work",
+    now,
+  });
+
+  assert.equal(imageResult.ok, true);
+  assert.equal(fileResult.ok, true);
+  if (!imageResult.ok || !fileResult.ok) return;
+  assert.equal(imageResult.message.routeKey, "feishu:work:group:oc_group_media");
+  assert.equal(imageResult.message.attachments?.[0]?.type, "image");
+  assert.equal(imageResult.message.attachments?.[0]?.id, "img_group_1");
+  assert.equal(fileResult.message.routeKey, "feishu:work:group:oc_group_media");
+  assert.equal(fileResult.message.attachments?.[0]?.type, "file");
+  assert.equal(fileResult.message.attachments?.[0]?.name, "group-report.pdf");
+  assert.equal(fileResult.message.attachments?.[0]?.sizeBytes, 18);
+});
+
 test("feishuEventToChannelMessage keeps different Feishu groups as separate routes", () => {
   const now = Date.now();
   const groupA = feishuEventToChannelMessage(sampleFeishuTextEvent({
@@ -272,18 +315,22 @@ test("feishuEventToChannelMessage maps image and file messages to attachments", 
   }
 });
 
-test("parseFeishuMessageContent extracts post text and images", () => {
+test("parseFeishuMessageContent extracts post text, images, and files", () => {
   const parsed = parseFeishuMessageContent("post", JSON.stringify({
     content: [[
       { tag: "text", text: "看下这张图" },
       { tag: "img", image_key: "img_post_1" },
+      { tag: "file", file_key: "file_post_1", file_name: "report.pdf", file_size: 12 },
     ]],
   }));
 
   assert.equal(parsed.text, "看下这张图");
-  assert.equal(parsed.attachments.length, 1);
+  assert.equal(parsed.attachments.length, 2);
   assert.equal(parsed.attachments[0].type, "image");
   assert.equal(parsed.attachments[0].id, "img_post_1");
+  assert.equal(parsed.attachments[1].type, "file");
+  assert.equal(parsed.attachments[1].id, "file_post_1");
+  assert.equal(parsed.attachments[1].name, "report.pdf");
 });
 
 test("feishuEventToChannelMessage skips stale replayed messages", () => {

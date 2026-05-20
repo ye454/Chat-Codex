@@ -748,7 +748,7 @@ export function ChatCodexTui({ actions, onDone, copyToClipboard = writeClipboard
     const policy: ContextRefreshPolicy = { mode };
     if (target.kind === "default") {
       actions.setContextRefreshDefaults(policy);
-      setFlash({ kind: "success", message: `已设置独立模式默认上下文刷新：${actions.formatContextRefreshPolicy(policy)}` });
+      setFlash({ kind: "success", message: `已设置默认上下文刷新：${actions.formatContextRefreshPolicy(policy)}；未单独配置的聊天会继承。` });
     } else {
       const effective = actions.setRouteContextRefreshPolicy(target.routeKey, policy);
       setFlash({ kind: "success", message: `已设置当前聊天上下文刷新：${actions.formatContextRefreshEffectivePolicy(effective)}` });

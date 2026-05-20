@@ -25,7 +25,6 @@ import {
   ScrollHint,
   Section,
   SessionRow,
-  statusColor,
   THEME,
   truncate,
   useViewportRows,
@@ -38,49 +37,49 @@ export function HomeView({ dashboard, selected }: { dashboard: LauncherDashboard
       ["1. 添加微信账号", "扫码登录后配置微信主聊天绑定"],
       ["2. 添加飞书机器人", "输入 App ID / App Secret，启动后等待私聊"],
       ["3. 权限设置", formatPermission(dashboard.startup.policy)],
-      ["4. 上下文刷新", formatContextRefreshMode(dashboard.contextRefreshDefault)],
+      ["4. 默认上下文刷新", formatContextRefreshMode(dashboard.contextRefreshDefault)],
       ["5. 工作目录", dashboard.startup.cwd],
       ["0. 退出", "返回终端"],
     ];
     return (
       <Frame title={chatCodexTitle()} subtitle="首次配置">
-        <Section title="欢迎使用 Chat Codex">
-          <Text>还没有配置任何渠道。请先添加微信账号或飞书机器人。</Text>
-        </Section>
-        <Section title="默认配置">
+        <Section title="信息展示">
           <CodexCliStatusBlock status={dashboard.startup.codexStatus} />
-          <KeyValue label="新 session 工作目录" value={dashboard.startup.cwd} />
+          <KeyValue label="渠道" value="暂无；请先添加微信账号或飞书机器人" />
           <KeyValue label="新 session 权限" value={formatPermission(dashboard.startup.policy)} />
+          <KeyValue label="新 session 工作目录" value={dashboard.startup.cwd} />
+          <KeyValue label="上下文刷新默认" value={formatContextRefreshDefaultSummary(dashboard.contextRefreshDefault)} />
+          <KeyValue label="提示" value="配置好渠道后再启动服务" />
         </Section>
         <Section title="操作">
           {actions.map(([label, value], index) => <ListRow key={label} active={selected === index} left={label} right={value} />)}
         </Section>
-        <Section title="快捷键">
-          <Text>↑↓ 选择  Enter 执行  1/w 微信  2/f 飞书  3/p 权限  4/x 上下文刷新  5/d 工作目录  q 退出</Text>
-        </Section>
       </Frame>
     );
   }
+  const enabledChannels = dashboard.channels.filter((channel) => channel.record.enabled).length;
   const rows = [
     ["1. 管理渠道", `${dashboard.channels.length} 个渠道`],
     ["2. 聊天绑定", `${dashboard.routes.bound}/${dashboard.routes.known} 已绑定，${dashboard.routes.pending ?? 0} 个待生效`],
     ["3. 配对管理", `${dashboard.pairing.trusted} 个已配对，${dashboard.pairing.pending} 个待配对`],
     ["4. 权限设置", formatPermission(dashboard.startup.policy)],
-    ["5. 上下文刷新", formatContextRefreshMode(dashboard.contextRefreshDefault)],
+    ["5. 默认上下文刷新", formatContextRefreshMode(dashboard.contextRefreshDefault)],
     ["6. 工作目录", dashboard.startup.cwd],
     ["7. 状态详情", "查看渠道和绑定明细"],
     ["8. 启动服务", dashboard.canStart.ok ? "启动并进入运行日志" : "需处理配置"],
   ];
   return (
     <Frame title={chatCodexTitle()} subtitle={`状态: ${dashboard.canStart.ok ? "可启动" : "需配置"}  权限: ${dashboard.startup.policy.permissionMode === "full" ? "完全" : "审批"}`} borderColor={dashboard.canStart.ok ? THEME.success : THEME.warning}>
-      <Section title="启动服务">
+      <Section title="信息展示">
+        <CodexCliStatusBlock status={dashboard.startup.codexStatus} />
+        <KeyValue label="渠道" value={`${enabledChannels}/${dashboard.channels.length} 已启用`} />
+        <KeyValue label="聊天绑定" value={`${dashboard.routes.bound}/${dashboard.routes.known} 已绑定，${dashboard.routes.pending ?? 0} 个待生效`} />
+        <KeyValue label="配对信任" value={`${dashboard.pairing.trusted} 个已信任，${dashboard.pairing.pending} 个待配对`} />
+        <KeyValue label="上下文刷新默认" value={formatContextRefreshDefaultSummary(dashboard.contextRefreshDefault)} />
+        <KeyValue label="新 session 工作目录" value={dashboard.startup.cwd} />
         <Text color={dashboard.canStart.ok ? THEME.success : THEME.warning} bold>
           {dashboard.canStart.ok ? "▶ 已准备好。按 Enter 启动 Bridge，并进入运行日志面板。" : `⚠ ${dashboard.canStart.message}`}
         </Text>
-        <KeyValue label="启动后" value="显示运行中状态、已启动渠道、工作目录和 Ctrl+C 停止方式" />
-      </Section>
-      <Section title="Codex CLI">
-        <CodexCliStatusBlock status={dashboard.startup.codexStatus} />
       </Section>
       <Section title="操作">
         {rows.map(([label, value], index) => (
@@ -92,30 +91,6 @@ export function HomeView({ dashboard, selected }: { dashboard: LauncherDashboard
             tone={index === 7 ? (dashboard.canStart.ok ? "success" : "warning") : undefined}
           />
         ))}
-      </Section>
-      <Section title="渠道">
-        {dashboard.channels.length === 0
-          ? <Muted text="暂无渠道。按 w 添加微信账号，或按 f 添加飞书机器人。" />
-          : dashboard.channels.map((channel) => (
-            <Text key={channel.record.id}>
-              {formatManagedChannelLabel(channel)}    {channel.record.enabled ? "已启用" : "已停用"}    <Text color={statusColor(channel.status.state)}>{channelStatus(channel.status.state)}</Text>    添加 {formatShortDateTime(channel.record.createdAt)}
-            </Text>
-          ))}
-      </Section>
-      <Section title="聊天绑定">
-        <Text>已发现 {dashboard.routes.known} 个聊天，已绑定 {dashboard.routes.bound} 个 session，待生效 {dashboard.routes.pending ?? 0} 个。</Text>
-      </Section>
-      <Section title="配对信任">
-        <Text>已信任 {dashboard.pairing.trusted} 个聊天，待配对 {dashboard.pairing.pending} 个聊天。</Text>
-      </Section>
-      <Section title="上下文刷新">
-        <KeyValue label="独立模式默认" value={formatContextRefreshMode(dashboard.contextRefreshDefault)} />
-      </Section>
-      <Section title="工作目录">
-        <KeyValue label="新 session" value={dashboard.startup.cwd} />
-      </Section>
-      <Section title="提示">
-        <Text>{dashboard.canStart.message}</Text>
       </Section>
     </Frame>
   );
@@ -417,6 +392,12 @@ export function ContextRefreshView({
   return (
     <Frame title={route ? "聊天上下文刷新" : "默认上下文刷新"} subtitle="Enter 保存  Esc 返回">
       <KeyValue label="当前" value={current} />
+      <Section title="说明">
+        <Muted text={route
+          ? "当前聊天可覆盖全局默认；跟随全局默认会清除覆盖。检测只在这个聊天发送消息前执行。"
+          : "默认策略会被未单独配置的聊天继承；不会启动时刷新全部 session，只在发送消息前检测当前绑定 session。"}
+        />
+      </Section>
       <Section title="选项">
         {items.map(([label, value], index) => (
           <ListRow key={label} active={selected === index} left={label} right={value} tone={label.includes("刷新") ? "success" : undefined} />
@@ -605,7 +586,7 @@ export function StatusView({ dashboard }: { dashboard: LauncherDashboard }): Rea
         <Text>已发现聊天：{dashboard.routes.known}  已绑定：{dashboard.routes.bound}  待生效：{dashboard.routes.pending ?? 0}</Text>
       </Section>
       <Section title="上下文刷新">
-        <Text>独立模式全局默认：{formatContextRefreshMode(dashboard.contextRefreshDefault)}</Text>
+        <Text>默认策略：{formatContextRefreshDefaultSummary(dashboard.contextRefreshDefault)}</Text>
       </Section>
       <Section title="配对信任">
         <Text>已信任：{dashboard.pairing.trusted}  待配对：{dashboard.pairing.pending}</Text>
@@ -656,7 +637,7 @@ export function HelpView(): React.JSX.Element {
     <Frame title="快捷键" subtitle="Enter/Esc 返回">
       {[
         "全局: ↑↓ 选择，Enter 执行，Esc/q 返回，r 刷新，? 帮助。",
-        "首页: c 渠道，b 绑定，t 配对，p 权限，x 上下文刷新，d 工作目录，s 状态，w 添加微信，f 添加飞书。",
+        "首页: c 渠道，b 绑定，t 配对，p 权限，x 默认刷新，d 工作目录，s 状态，w 添加微信，f 添加飞书。",
         "渠道: w 添加微信，f 添加飞书，e 启停。",
         "绑定: n 新建并绑定，m 手动绑定，u 解绑，p 权限。",
         "配对: m 手动信任，r 撤销信任，u 撤销信任并解绑。",
@@ -669,6 +650,12 @@ function formatContextRefreshMode(policy: ContextRefreshPolicy): string {
   if (policy.mode === "reload") return "检测并刷新";
   if (policy.mode === "detect") return "检测提醒";
   return "关闭";
+}
+
+function formatContextRefreshDefaultSummary(policy: ContextRefreshPolicy): string {
+  if (policy.mode === "reload") return "检测并刷新；未单独配置的聊天继承，发送前检测当前 session";
+  if (policy.mode === "detect") return "检测提醒；未单独配置的聊天继承，发送前只提醒";
+  return "关闭；未单独配置的聊天发送前不检测";
 }
 
 function sessionSectionTitle(label: string, total: number, page: number, pageCount: number): string {

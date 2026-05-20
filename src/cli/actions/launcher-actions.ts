@@ -537,7 +537,7 @@ export class LauncherActions {
       `- 新 session 默认权限: ${formatRunPolicyForUser(this.startup.policy)}`,
       "",
       "上下文刷新",
-      `- 独立模式默认: ${formatContextRefreshModeForUser(this.getContextRefreshDefaults().mode)}`,
+      `- 默认策略: ${formatContextRefreshModeForUser(this.getContextRefreshDefaults().mode)}（未单独配置的聊天继承，发送前检测）`,
       "",
       "运行",
       `- 新 session 工作目录: ${this.startup.cwd}`,

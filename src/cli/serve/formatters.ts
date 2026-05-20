@@ -17,7 +17,7 @@ export function printRuntimeSummary(
   console.log(`- Codex CLI: ${formatCodexStatusForCli(startup.codexStatus)}`);
   console.log(`- 工作目录: ${startup.cwd}`);
   console.log(`- 新 session 默认权限: ${formatPolicyForCli(startup.policy)}`);
-  if (startup.contextRefresh) console.log(`- 独立模式上下文刷新: ${formatContextRefreshModeForUser(startup.contextRefresh.mode)}`);
+  if (startup.contextRefresh) console.log(`- 默认上下文刷新: ${formatContextRefreshModeForUser(startup.contextRefresh.mode)}（未单独配置的聊天继承）`);
   console.log("- 退出: Ctrl+C");
 }
 

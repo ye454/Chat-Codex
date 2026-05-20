@@ -1159,7 +1159,7 @@ test("Bridge stores image-only messages as pending media without running Codex",
   assert.deepEqual(codex.prompts, []);
   assert.ok(channel.sentMessages.some((message) => message.text.includes("【Chat-Codex中间件提醒】")));
   const status = channel.sentMessages.at(-1)?.text ?? "";
-  assert.match(status, /待处理图片: `1`/);
+  assert.match(status, /待处理附件: `1`/);
 });
 
 test("Bridge combines pending image-only media with the next ordinary text", async () => {
@@ -1181,6 +1181,25 @@ test("Bridge combines pending image-only media with the next ordinary text", asy
   ]);
 });
 
+test("Bridge combines pending file-only media with the next ordinary text", async () => {
+  const channel = new MockChannelAdapter();
+  const codex = new SteerableBlockingCodexAdapter();
+  const bridge = new Bridge({ channel, codex, cwd: process.cwd() });
+  const filePath = "/tmp/chat-codex-report.pdf";
+
+  await bridge.start();
+  await channel.emitAttachment([mockFileAttachment(filePath)]);
+  await channel.emitText("总结这个文件");
+  await bridge.waitForIdle();
+  await bridge.stop();
+
+  assert.equal(codex.promptInputs.length, 1);
+  assert.deepEqual(codex.promptInputs[0]?.items, [
+    { type: "text", text: "总结这个文件" },
+    { type: "localFile", path: filePath, name: "chat-codex-report.pdf", mimeType: "application/pdf" },
+  ]);
+});
+
 test("Bridge sends same-message text and image directly to Codex", async () => {
   const channel = new MockChannelAdapter();
   const codex = new SteerableBlockingCodexAdapter();
@@ -1197,6 +1216,55 @@ test("Bridge sends same-message text and image directly to Codex", async () => {
     { type: "text", text: "检查这个 UI" },
     { type: "localImage", path: imagePath },
   ]);
+});
+
+test("Bridge sends same-message text and file directly to Codex", async () => {
+  const channel = new MockChannelAdapter();
+  const codex = new SteerableBlockingCodexAdapter();
+  const bridge = new Bridge({ channel, codex, cwd: process.cwd() });
+  const filePath = "/tmp/chat-codex-input.txt";
+
+  await bridge.start();
+  await channel.emitAttachment([mockFileAttachment(filePath, "text/plain")], { text: "检查这个文件" });
+  await bridge.waitForIdle();
+  await bridge.stop();
+
+  assert.equal(codex.promptInputs.length, 1);
+  assert.deepEqual(codex.promptInputs[0]?.items, [
+    { type: "text", text: "检查这个文件" },
+    { type: "localFile", path: filePath, name: "chat-codex-input.txt", mimeType: "text/plain" },
+  ]);
+});
+
+test("Bridge caps same-message image and file attachments at five", async () => {
+  const channel = new MockChannelAdapter();
+  const codex = new SteerableBlockingCodexAdapter();
+  const bridge = new Bridge({ channel, codex, cwd: process.cwd() });
+  const attachments = [
+    mockImageAttachment("/tmp/chat-codex-cap-1.png"),
+    mockFileAttachment("/tmp/chat-codex-cap-2.txt", "text/plain"),
+    mockImageAttachment("/tmp/chat-codex-cap-3.png"),
+    mockFileAttachment("/tmp/chat-codex-cap-4.pdf"),
+    mockImageAttachment("/tmp/chat-codex-cap-5.png"),
+    mockFileAttachment("/tmp/chat-codex-cap-6.txt", "text/plain"),
+  ];
+
+  await bridge.start();
+  await channel.emitAttachment(attachments, { text: "处理这些附件" });
+  await bridge.waitForIdle();
+  await bridge.stop();
+
+  assert.equal(codex.promptInputs.length, 1);
+  assert.deepEqual(codex.promptInputs[0]?.items, [
+    { type: "text", text: "处理这些附件" },
+    { type: "localImage", path: "/tmp/chat-codex-cap-1.png" },
+    { type: "localFile", path: "/tmp/chat-codex-cap-2.txt", name: "chat-codex-cap-2.txt", mimeType: "text/plain" },
+    { type: "localImage", path: "/tmp/chat-codex-cap-3.png" },
+    { type: "localFile", path: "/tmp/chat-codex-cap-4.pdf", name: "chat-codex-cap-4.pdf", mimeType: "application/pdf" },
+    { type: "localImage", path: "/tmp/chat-codex-cap-5.png" },
+  ]);
+  assert.ok(channel.sentMessages.some((message) => message.text.includes("本次最多投递 5 个附件给 Codex")));
+  assert.ok(channel.sentMessages.some((message) => message.text.includes("有 1 个附件未交给 Codex")));
 });
 
 test("Bridge keeps pending media scoped to the originating route", async () => {
@@ -1219,7 +1287,30 @@ test("Bridge keeps pending media scoped to the originating route", async () => {
     { type: "text", text: "处理 B 的图" },
     { type: "localImage", path: imageB },
   ]);
-  assert.match(channel.sentMessages.at(-1)?.text ?? "", /待处理图片: `1`/);
+  assert.match(channel.sentMessages.at(-1)?.text ?? "", /待处理附件: `1`/);
+});
+
+test("Bridge caps pending mixed image and file media at five", async () => {
+  const channel = new MockChannelAdapter();
+  const codex = new SteerableBlockingCodexAdapter();
+  const bridge = new Bridge({ channel, codex, cwd: process.cwd() });
+
+  await bridge.start();
+  await channel.emitAttachment([
+    mockImageAttachment("/tmp/chat-codex-pending-cap-1.png"),
+    mockFileAttachment("/tmp/chat-codex-pending-cap-2.txt", "text/plain"),
+    mockImageAttachment("/tmp/chat-codex-pending-cap-3.png"),
+    mockFileAttachment("/tmp/chat-codex-pending-cap-4.pdf"),
+    mockImageAttachment("/tmp/chat-codex-pending-cap-5.png"),
+    mockFileAttachment("/tmp/chat-codex-pending-cap-6.txt", "text/plain"),
+  ]);
+  await channel.emitText("/status");
+  await bridge.stop();
+
+  assert.deepEqual(codex.prompts, []);
+  assert.ok(channel.sentMessages.some((message) => message.text.includes("待处理附件最多保留 5 个")));
+  assert.ok(channel.sentMessages.some((message) => message.text.includes("本次有 1 个未加入待处理附件")));
+  assert.match(channel.sentMessages.at(-1)?.text ?? "", /待处理附件: `5`/);
 });
 
 test("Bridge cancels pending media with /cancel", async () => {
@@ -1234,8 +1325,8 @@ test("Bridge cancels pending media with /cancel", async () => {
   await bridge.stop();
 
   assert.deepEqual(codex.prompts, []);
-  assert.ok(channel.sentMessages.some((message) => message.text.includes("已取消 1 张待处理图片")));
-  assert.match(channel.sentMessages.at(-1)?.text ?? "", /待处理图片: `0`/);
+  assert.ok(channel.sentMessages.some((message) => message.text.includes("已取消 1 个待处理附件")));
+  assert.match(channel.sentMessages.at(-1)?.text ?? "", /待处理附件: `0`/);
 });
 
 test("Bridge clears pending media with /stop", async () => {
@@ -1250,8 +1341,8 @@ test("Bridge clears pending media with /stop", async () => {
   await channel.emitText("/status");
   await bridge.stop();
 
-  assert.ok(channel.sentMessages.some((message) => message.text.includes("已清空 1 张待处理图片")));
-  assert.match(channel.sentMessages.at(-1)?.text ?? "", /待处理图片: `0`/);
+  assert.ok(channel.sentMessages.some((message) => message.text.includes("已清空 1 个待处理附件")));
+  assert.match(channel.sentMessages.at(-1)?.text ?? "", /待处理附件: `0`/);
 });
 
 test("Bridge steers text plus image into the active route turn", async () => {
@@ -1297,10 +1388,32 @@ test("Bridge keeps image-only media pending while the route is busy", async () =
   await bridge.stop();
 
   assert.equal(codex.steerInputs.length, 1);
-  assert.match(status, /待处理图片: `1`/);
+  assert.match(status, /待处理附件: `1`/);
   assert.deepEqual(codex.steerInputs[0]?.items, [
     { type: "text", text: "这张图用于补充当前任务" },
     { type: "localImage", path: imagePath },
+  ]);
+});
+
+test("Bridge steers text plus file into the active route turn", async () => {
+  const channel = new MockChannelAdapter();
+  const codex = new SteerableBlockingCodexAdapter();
+  const bridge = new Bridge({ channel, codex, cwd: process.cwd(), steerDebounceMs: 1 });
+  const filePath = "/tmp/chat-codex-steer.txt";
+
+  await bridge.start();
+  await channel.emitText("第一条");
+  await waitFor(() => codex.prompts.length === 1);
+  await channel.emitAttachment([mockFileAttachment(filePath, "text/plain")], { text: "补充文件" });
+  await waitFor(() => codex.steerInputs.length === 1);
+
+  codex.release();
+  await bridge.waitForIdle();
+  await bridge.stop();
+
+  assert.deepEqual(codex.steerInputs[0]?.items, [
+    { type: "text", text: "补充文件" },
+    { type: "localFile", path: filePath, name: "chat-codex-steer.txt", mimeType: "text/plain" },
   ]);
 });
 
@@ -2190,6 +2303,17 @@ function mockImageAttachment(localPath: string): ChannelAttachment {
     type: "image",
     name: path.basename(localPath),
     mimeType: "image/png",
+    localPath,
+    downloadState: "available",
+  };
+}
+
+function mockFileAttachment(localPath: string, mimeType = "application/pdf"): ChannelAttachment {
+  return {
+    id: path.basename(localPath),
+    type: "file",
+    name: path.basename(localPath),
+    mimeType,
     localPath,
     downloadState: "available",
   };

@@ -143,7 +143,7 @@ export class BridgeStatusText {
       formatCurrentTurnDurationLine(sessionStatus),
       `- 排队消息: \`${this.routeQueueLength(routeKey)}\``,
       `- 待投递补充消息: \`${this.routeSteerPendingCount(routeKey)}\``,
-      `- 待处理图片: \`${this.pendingMediaCount(routeKey)}\``,
+      `- 待处理附件: \`${this.pendingMediaCount(routeKey)}\``,
       ...formatCompactStatusLines(compactState),
       `- 协作模式: ${formatCollaborationModeForStatus(this.collaborationModeForRoute(routeKey, binding?.sessionId))}`,
       `- 上下文刷新: ${formatContextRefreshEffectivePolicyForUser(this.contextRefreshFor(routeKey))}`,

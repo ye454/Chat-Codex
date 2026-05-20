@@ -14,10 +14,12 @@ import { MemoryStateStore } from "../state/memory-state-store.js";
 import type { SessionBindings } from "../state/session-bindings.js";
 import {
   PendingMediaManager,
+  PENDING_MEDIA_MAX_ATTACHMENTS,
   classifyInboundAttachments,
   codexInputFromTextAndAttachments,
   inboundMediaSaveFailedText,
   inboundMediaUnsupportedText,
+  inboundMediaTurnOverflowText,
   pendingMediaOverflowText,
   pendingMediaPromptText,
 } from "./inbound-media.js";
@@ -375,9 +377,14 @@ export class Bridge {
       await this.routeQueue.enqueuePrompt(message, target, text);
       return;
     }
-    const pendingAttachments = this.pendingMedia.consume(message.routeKey);
-    const input = pendingAttachments.length > 0 || attachments.usable.length > 0
-      ? codexInputFromTextAndAttachments(text, [...pendingAttachments, ...attachments.usable])
+    const inputAttachments = [...this.pendingMedia.consume(message.routeKey), ...attachments.usable];
+    const acceptedAttachments = inputAttachments.slice(0, PENDING_MEDIA_MAX_ATTACHMENTS);
+    const rejectedAttachments = inputAttachments.slice(PENDING_MEDIA_MAX_ATTACHMENTS);
+    if (rejectedAttachments.length > 0) {
+      await this.delivery.sendText(target, inboundMediaTurnOverflowText(rejectedAttachments.length));
+    }
+    const input = acceptedAttachments.length > 0
+      ? codexInputFromTextAndAttachments(text, acceptedAttachments)
       : text;
     if (await this.routeSteering.tryEnqueue(message, target, input)) return;
     await this.routeQueue.enqueuePrompt(message, target, input);

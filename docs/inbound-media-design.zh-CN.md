@@ -2,7 +2,7 @@
 
 ## 背景
 
-当前中间件已经支持 Codex 最终回复通过 `/sendfile` 显式发送图片或文件到渠道，但入站方向还没有真正打通。用户在微信或飞书里发送图片时，中间件目前不能把图片作为可用上下文传给 Codex。
+中间件已经支持 Codex 最终回复通过 `/sendfile` 显式发送图片或文件到渠道；入站方向此前只打通了图片主流程，普通文件容易因为提示和测试覆盖不足被误判为“不能处理”。本设计定义图片/文件统一进入 Chat-Codex 的第一阶段能力。
 
 这份文档定义设计和实施边界。当前核心逻辑与微信/飞书 adapter 第一阶段已落地：Bridge 能处理带 `localPath` 的入站图片/文件、route 级 pending media、结构化 `CodexTurnInput`、app-server `localImage` 投递和 busy route 下结构化 steer；微信/飞书 adapter 已能把入站图片/文件下载保存到本地，飞书也已支持出站图片/文件发送。
 
@@ -73,12 +73,12 @@ Chat-Codex 的入站文件投递必须对齐 Codex 官方语义：
 
 ## 目标行为
 
-### 图片加文本
+### 附件加文本
 
-当渠道消息同时包含图片和文本时，Bridge 应直接投递给 Codex：
+当渠道消息同时包含图片/文件和文本时，Bridge 应直接投递给 Codex：
 
 ```text
-用户文本 + 本地图片输入
+用户文本 + 本地图片/文件输入
 ```
 
 示例：
@@ -86,27 +86,27 @@ Chat-Codex 的入站文件投递必须对齐 Codex 官方语义：
 - 飞书：同一条消息里有图片和文字，adapter 下载图片并填入 attachment，本条消息直接进入 Codex。
 - 微信：如果平台事件能同时提供图片和文字，也按同样规则处理。
 
-### 图片无文本
+### 附件无文本
 
-当用户只发图片，没有任何说明时，不应直接让 Codex 猜用途。Bridge 应保存图片，并回复当前 route：
+当用户只发图片或文件，没有任何说明时，不应直接让 Codex 猜用途。Bridge 应保存附件，并回复当前 route：
 
 ```text
 【Chat-Codex中间件提醒】
-已收到 1 张图片。你想让 Codex 如何处理这张图片？
-请直接回复你的要求，例如：解释这张图、提取文字、检查 UI 问题、根据截图定位代码问题。
-发送 /cancel 可取消本次图片。
+已收到 1 个附件。你想让 Codex 如何处理这个附件？
+请直接回复你的要求，例如：解释图片、提取文字、总结文件、检查 UI 问题、根据截图定位代码问题。
+发送 /cancel 可取消本次附件。
 ```
 
 这条提醒是中间件本地回复，不进入 Codex prompt，不计入 Codex 任务队列。
 
-用户下一条普通文本会和待处理图片合并后投递给 Codex。用户发送 slash command 时仍按命令处理，不消耗待处理图片，除非是专门的取消命令。
+用户下一条普通文本会和待处理附件合并后投递给 Codex。用户发送 slash command 时仍按命令处理，不消耗待处理附件，除非是专门的取消命令。
 
 ### 微信分开发图和文字
 
-微信常见形态是先发一张图片，再发文字说明。这个场景按“图片无文本”的 pending 流程处理：
+微信常见形态是先发一张图片，再发文字说明。这个场景按“附件无文本”的 pending 流程处理：
 
 1. 收到图片，保存本地。
-2. 回复 `【Chat-Codex中间件提醒】...你想让 Codex 如何处理这张图片？`
+2. 回复 `【Chat-Codex中间件提醒】...你想让 Codex 如何处理这个附件？`
 3. 用户回复文字。
 4. Bridge 把文字和图片一起投递给 Codex。
 
@@ -139,7 +139,7 @@ export interface ChannelAttachment {
 - `localPath` 是 Bridge 可读取的本地绝对路径。
 - `url` 只用于平台能提供临时可访问 URL 的场景。图片第一阶段仍建议下载到 `localPath`。
 - `downloadState=available` 表示可以投递给 Codex。
-- `downloadState=failed` 应向用户提示“图片保存失败，请重发”。
+- `downloadState=failed` 应向用户提示“附件保存失败，请重发”。
 - `downloadState=unsupported` 表示 adapter 识别到了媒体但当前不支持下载。
 
 ### 入站媒体存储
@@ -253,7 +253,7 @@ interface PendingSteerInput {
 }
 ```
 
-连续普通文本可以像现有 mid-turn steer 一样短窗口聚合；一旦批次里包含图片或文件，聚合逻辑必须保留每条消息的边界和附件顺序。可接受的策略是把同 route 的多条补充消息合并成一个结构化 `CodexTurnInput`，按顺序排列 `text`、`localImage` 和 `localFile`；也可以先 flush 之前的文本批次，再单独投递图文补充。无论选择哪种实现，都不能为了复用文本 batching 把 `localImage` 丢掉或只剩一句“用户发了图片”。
+连续普通文本可以像现有 mid-turn steer 一样短窗口聚合；一旦批次里包含图片或文件，聚合逻辑必须保留每条消息的边界和附件顺序。可接受的策略是把同 route 的多条补充消息合并成一个结构化 `CodexTurnInput`，按顺序排列 `text`、`localImage` 和 `localFile`；也可以先 flush 之前的文本批次，再单独投递附件补充。无论选择哪种实现，都不能为了复用文本 batching 把 `localImage`/`localFile` 丢掉或只剩一句“用户发了图片/文件”。
 
 ## Bridge 行为设计
 
@@ -295,10 +295,11 @@ interface PendingRouteMedia {
 
 - pending media 按 `routeKey` 隔离。
 - 默认最多保留 5 个 pending attachment。
-- 新图片到来时，如果已有 pending media，可以追加；超过上限则提示用户先描述或取消。
+- 每次实际投递给 Codex 的附件也最多 5 个，图片和文件合并计数；超出部分不投递，并明确提醒用户稍后重发。
+- 新附件到来时，如果已有 pending media，可以追加；超过上限则提示用户先描述或取消。
 - pending media 默认 10 分钟过期。
-- `/cancel` 可取消 pending media；如果当前没有会话选择流程或其他取消上下文，回复“已取消待处理图片”。
-- `/status` 可显示 `待处理图片: N`。
+- `/cancel` 可取消 pending media；如果当前没有会话选择流程或其他取消上下文，回复“已取消待处理附件”。
+- `/status` 可显示 `待处理附件: N`。
 - `/stop` 应清空未投递 pending media，避免用户以为之后还会处理。
 
 ### 与 busy route 和 steer 的关系
@@ -310,16 +311,16 @@ interface PendingRouteMedia {
 - 单独图片仍不 steer，因为没有用户意图，继续进入 pending media 并询问用户。
 - 语义修改命令继续由 busy guard 阻断，不因为 pending media 改变。
 
-### 执行中收到图片
+### 执行中收到附件
 
-Codex 执行过程中收到图片时，Bridge 仍按当前 route 处理，不做全局阻断，也不跨 route 共享状态。
+Codex 执行过程中收到图片或文件时，Bridge 仍按当前 route 处理，不做全局阻断，也不跨 route 共享状态。
 
-#### 执行中收到图片加文本
+#### 执行中收到附件加文本
 
-当同一条消息包含文本和图片，或者当前 route 已有 pending media 且用户补充了普通文本：
+当同一条消息包含文本和图片/文件，或者当前 route 已有 pending media 且用户补充了普通文本：
 
-1. Bridge 先确认图片已经保存为本地绝对路径。
-2. 构建结构化 `CodexTurnInput`，内容包含用户文本和 `localImage`。
+1. Bridge 先确认附件已经保存为本地绝对路径。
+2. 构建结构化 `CodexTurnInput`，内容包含用户文本和 `localImage`/`localFile`。
 3. 如果当前 route 有 active regular turn，且 `CodexAdapter.steer()` 支持结构化输入，进入 route 级 steer buffer。
 4. steer buffer 必须按 route 保序、串行 drain，不能并发投递，也不能和其它 route 混用。
 5. 投递成功后向当前渠道回复现有 mid-turn steer 确认文案，例如：
@@ -333,28 +334,28 @@ Codex 执行过程中收到图片时，Bridge 仍按当前 route 处理，不做
 
 这类输入不是 `/plan`、`/goal`、`/permission` 等执行语义修改命令，不应被 busy guard 直接拒绝。它和普通文本 mid-turn steer 属于同一类“用户补充上下文”。
 
-#### 执行中收到纯图片
+#### 执行中收到纯附件
 
-当消息只有图片，没有任何文本说明时：
+当消息只有图片或文件，没有任何文本说明时：
 
-1. Bridge 只保存图片到当前 route 的 pending media。
+1. Bridge 只保存附件到当前 route 的 pending media。
 2. 不调用 `turn/steer`，不启动新 turn，也不进入普通队列。
-3. 回复 `【Chat-Codex中间件提醒】`，询问用户希望 Codex 如何处理这张图片。
+3. 回复 `【Chat-Codex中间件提醒】`，询问用户希望 Codex 如何处理这个附件。
 4. 用户下一条普通文本到达时，Bridge 把该文本和 pending media 合并。
-5. 如果那时当前 route 仍在执行，则按“图片加文本”的规则尝试结构化 steer。
+5. 如果那时当前 route 仍在执行，则按“附件加文本”的规则尝试结构化 steer。
 6. 如果那时当前 route 已空闲，则按普通新 turn 流程调用 `turn/start` 或进入队列。
 
-这样做的原因是：纯图片没有明确意图，自动投递给正在执行的 Codex 容易让当前任务语义漂移，也会让用户误以为“发图本身就是一个新指令”。中间件只确认已收到图片，直到用户给出说明后才把图片交给 Codex。
+这样做的原因是：纯附件没有明确意图，自动投递给正在执行的 Codex 容易让当前任务语义漂移，也会让用户误以为“发附件本身就是一个新指令”。中间件只确认已收到附件，直到用户给出说明后才把附件交给 Codex。
 
-#### 执行中收到多张图片
+#### 执行中收到多个附件
 
-多张图片遵循同一规则：
+多个附件遵循同一规则：
 
-- 多张图片加文本：作为同一个结构化补充输入投递或排队。
-- 多张纯图片：追加到当前 route pending media，超过上限时提示用户先描述或取消。
-- 用户连续发送“图片、图片、文字”时，文字一次性消费当前 route 的 pending media，按发送顺序交给 Codex。
+- 多个附件加文本：作为同一个结构化补充输入投递或排队。
+- 多个纯附件：追加到当前 route pending media，超过上限时提示用户先描述或取消。
+- 用户连续发送“图片、文件、文字”时，文字一次性消费当前 route 的 pending media，按发送顺序交给 Codex。
 
-#### 执行中命令与图片的关系
+#### 执行中命令与附件的关系
 
 slash command 不消费 pending media，除非命令本身就是取消语义：
 
@@ -362,17 +363,17 @@ slash command 不消费 pending media，除非命令本身就是取消语义：
 - `/stop`：中断当前任务，同时清空未投递 pending media 和未投递 steer buffer。
 - `/status`：展示 pending media 数量和待投递补充消息数量。
 
-busy guard 仍然阻断会改变执行语义的命令，例如 `/plan`、`/code`、`/goal <目标>`、`/goal pause`、`/goal resume`、`/goal clear`、`/permission ...`、`/model ...`、`/new`、`/use`、`/resume` 和会话编号选择。图片 pending 不应让这些命令绕过 busy guard。
+busy guard 仍然阻断会改变执行语义的命令，例如 `/plan`、`/code`、`/goal <目标>`、`/goal pause`、`/goal resume`、`/goal clear`、`/permission ...`、`/model ...`、`/new`、`/use`、`/resume` 和会话编号选择。附件 pending 不应让这些命令绕过 busy guard。
 
 #### 微信和飞书的用户可见差异
 
 微信渠道通常禁用 progress 投递，所以用户可能只看到：
 
-- 图片-only 的中间件提醒。
-- 图文补充的投递确认或排队提示。
+- 附件-only 的中间件提醒。
+- 附件加文本补充的投递确认或排队提示。
 - Codex 最终回复、错误、审批请求和审批结果。
 
-飞书、Terminal、Mock 或未来其它渠道是否显示 progress，仍由 `ChannelDeliveryPolicy` 控制。入站图片处理不应写成微信特例；Bridge Core 只按 route、pending media 和 Codex structured input 处理。
+飞书、Terminal、Mock 或未来其它渠道是否显示 progress，仍由 `ChannelDeliveryPolicy` 控制。入站附件处理不应写成微信特例；Bridge Core 只按 route、pending media 和 Codex structured input 处理。
 
 ## 渠道适配策略
 
@@ -386,10 +387,10 @@ busy guard 仍然阻断会改变执行语义的命令，例如 `/plan`、`/code`
 
 第一阶段：
 
-- 支持私聊图片。
-- 图片-only 走中间件提醒。
-- 图片后续文字走 pending media 合并。
-- 暂不支持群聊图片，除非现有 group route 已稳定。
+- 支持私聊图片和文件。
+- 附件-only 走中间件提醒。
+- 附件后续文字走 pending media 合并。
+- 群聊按现有 group route 能力继续隔离；没有稳定启用群聊时不额外扩大范围。
 
 注意：
 
@@ -400,9 +401,9 @@ busy guard 仍然阻断会改变执行语义的命令，例如 `/plan`、`/code`
 
 目标：
 
-- 支持私聊图片消息和图文消息。
+- 支持私聊和群聊图片/文件消息。
 - adapter 根据飞书事件里的 image/file key 调用飞书资源下载 API，并保存到本地。
-- 如果飞书富文本/消息结构能同时携带文本和图片，则同一条 `ChannelMessage` 同时填 `text` 和 `attachments`。
+- 如果飞书富文本/消息结构能同时携带文本和图片/文件，则同一条 `ChannelMessage` 同时填 `text` 和 `attachments`。
 
 第一阶段：
 
@@ -417,29 +418,29 @@ receiveMedia: true;
 
 ## 用户可见文案
 
-### 单张图片无文本
+### 单个附件无文本
 
 ```text
 【Chat-Codex中间件提醒】
-已收到 1 张图片。你想让 Codex 如何处理这张图片？
-请直接回复你的要求，例如：解释这张图、提取文字、检查 UI 问题、根据截图定位代码问题。
-发送 /cancel 可取消本次图片。
+已收到 1 个附件。你想让 Codex 如何处理这个附件？
+请直接回复你的要求，例如：解释图片、提取文字、总结文件、检查 UI 问题、根据截图定位代码问题。
+发送 /cancel 可取消本次附件。
 ```
 
-### 多张图片无文本
+### 多个附件无文本
 
 ```text
 【Chat-Codex中间件提醒】
-已收到 3 张图片。你想让 Codex 如何处理这些图片？
-请直接回复你的要求；我会把这些图片和你的说明一起交给 Codex。
-发送 /cancel 可取消本次图片。
+已收到 3 个附件。你想让 Codex 如何处理这些附件？
+请直接回复你的要求；我会把这些附件和你的说明一起交给 Codex。
+发送 /cancel 可取消本次附件。
 ```
 
-### 图片保存失败
+### 附件保存失败
 
 ```text
 【Chat-Codex中间件提醒】
-图片保存失败，暂时不能交给 Codex 处理。请稍后重发。
+附件保存失败，暂时不能交给 Codex 处理。请稍后重发。
 ```
 
 ### 附件类型不支持
@@ -464,16 +465,16 @@ receiveMedia: true;
    - 增加 MIME、大小、路径安全检查。
 
 3. Bridge pending media 流程：
-   - 图片-only 回复中间件提醒。
+   - 附件-only 回复中间件提醒。
    - 下一条普通文本合并 pending media。
-   - route busy 时，图文输入优先进入结构化 steer buffer；纯图片只进入 pending media。
+   - route busy 时，附件加文本输入优先进入结构化 steer buffer；纯附件只进入 pending media。
    - `/status`、`/cancel`、`/stop` 覆盖 pending media。
    - route 隔离测试。
 
 4. CodexAdapter 结构化输入：
    - 增加 `CodexTurnInput`。
-   - AppServer adapter 映射 `localImage` 到 `UserInput.localImage`。
-   - `turn/start` 和 `turn/steer` 都支持图片。
+   - AppServer adapter 映射 `localImage` 到 `UserInput.localImage`，并把 `localFile` 转成官方路径说明文本。
+   - `turn/start` 和 `turn/steer` 都支持图片和文件。
    - Bridge 的 steer buffer 从文本队列扩展为结构化输入队列，保留附件顺序。
    - Mock/Exec adapter 降级为文本。
 
@@ -483,8 +484,8 @@ receiveMedia: true;
    - 已覆盖入站图片/文件下载成功和图片下载失败测试。
 
 6. 飞书入站图片和文件：
-   - 已支持私聊图片消息和文件消息。
-   - 已支持富文本 `post` 中提取文本和图片。
+   - 已支持私聊和群聊图片消息、文件消息。
+   - 已支持富文本 `post` 中提取文本、图片和文件。
    - 已保持飞书多机器人、多 chat route 隔离由既有 routeKey 机制负责。
 
 7. 普通文件：
@@ -496,17 +497,17 @@ receiveMedia: true;
 必须新增测试：
 
 - `ChannelMessage` attachment-only 不再被 Bridge 忽略。
-- 图片-only 回复 `【Chat-Codex中间件提醒】`，不触发 Codex run。
-- 图片-only 后接普通文本，合并图片和文本投递 Codex。
-- 图片加文本同消息直接投递 Codex。
+- 附件-only 回复 `【Chat-Codex中间件提醒】`，不触发 Codex run。
+- 附件-only 后接普通文本，合并附件和文本投递 Codex。
+- 附件加文本同消息直接投递 Codex。
 - pending media 按 route 隔离，不串微信好友、飞书 chat 或渠道。
 - `/cancel` 取消 pending media。
 - `/stop` 清空 pending media。
-- busy route 下图片加文本优先 steer，失败 fallback 到队列。
-- busy route 下纯图片只进入 pending media，不调用 steer，不触发 Codex run。
-- busy route 下先发纯图片、再发普通文本；如果当前 turn 仍活跃，应合并 pending 图片后走结构化 steer。
-- busy route 下先发纯图片、再等当前 turn 结束、再发普通文本；应合并 pending 图片后启动下一轮或进入普通队列。
-- route 级 steer buffer 必须保留 `localImage`，不能把图文补充降级成纯文本后丢图。
+- busy route 下附件加文本优先 steer，失败 fallback 到队列。
+- busy route 下纯附件只进入 pending media，不调用 steer，不触发 Codex run。
+- busy route 下先发纯附件、再发普通文本；如果当前 turn 仍活跃，应合并 pending 附件后走结构化 steer。
+- busy route 下先发纯附件、再等当前 turn 结束、再发普通文本；应合并 pending 附件后启动下一轮或进入普通队列。
+- route 级 steer buffer 必须保留 `localImage`/`localFile`，不能把附件补充降级成纯文本后丢附件。
 - `/status` 同时显示 pending media 数量和待投递 steer buffer 数量。
 - AppServer adapter 发送 `localImage` 到 `turn/start`。
 - AppServer adapter 发送 `localImage` 到 `turn/steer`。

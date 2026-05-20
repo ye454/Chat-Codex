@@ -246,6 +246,45 @@ test("FeishuAdapter maps group receive events to group ChannelMessage internally
   assert.equal(adapter.getCapabilities().group, true);
 });
 
+test("FeishuAdapter downloads group file resources before emitting ChannelMessage", async () => {
+  const factory = new FakeFeishuTransportFactory();
+  const uploadRoot = tempDir("codex-feishu-group-upload-");
+  const adapter = new FeishuAdapter({ ...credentials, transportFactory: factory, groupEnabled: true, inboundMediaRootDir: uploadRoot });
+  const fileBytes = Buffer.from("group report");
+  factory.client.resourceBuffers.set("file_group_in_1", fileBytes);
+  factory.client.resourceHeaders.set("file_group_in_1", { "content-type": "application/pdf" });
+  let routeKey = "";
+  let localPath = "";
+  let downloadState = "";
+  adapter.onMessage(async (message) => {
+    const attachment = message.attachments?.[0];
+    routeKey = message.routeKey;
+    localPath = attachment?.localPath ?? "";
+    downloadState = attachment?.downloadState ?? "";
+  });
+
+  await adapter.start();
+  await factory.dispatcher.emitReceive(sampleFeishuTextEvent({
+    app_id: credentials.appId,
+    message: {
+      message_id: "om_group_file",
+      chat_id: "oc_group",
+      chat_type: "group",
+      message_type: "file",
+      content: JSON.stringify({ file_key: "file_group_in_1", file_name: "group-report.pdf", file_size: fileBytes.length }),
+    },
+  }));
+
+  assert.equal(routeKey, "feishu:work:group:oc_group");
+  assert.deepEqual(factory.client.messageResourceGetPayloads[0], {
+    params: { type: "file" },
+    path: { message_id: "om_group_file", file_key: "file_group_in_1" },
+  });
+  assert.equal(downloadState, "available");
+  assert.ok(localPath.startsWith(uploadRoot));
+  assert.deepEqual(fs.readFileSync(localPath), fileBytes);
+});
+
 test("FeishuAdapter skips group receive events while group capability is disabled", async () => {
   const factory = new FakeFeishuTransportFactory();
   const adapter = new FeishuAdapter({ ...credentials, transportFactory: factory });
