@@ -76,6 +76,10 @@ export class ChannelActions {
     return this.configStore.setChannelDisplayName(id, displayName);
   }
 
+  setChannelGroupEnabled(id: string, enabled: boolean): ChannelInstanceRecord | undefined {
+    return this.configStore.setChannelCapabilityOverride(id, "group", enabled);
+  }
+
   removeChannel(id: string): RemoveChannelResult {
     const existing = this.configStore.listChannelInstances().find((channel) => channel.id === id);
     if (!existing) {
@@ -127,12 +131,15 @@ export class ChannelActions {
     const normalized = normalizeFeishuCredentials(credentials);
     const accountId = normalized.accountId ?? DEFAULT_FEISHU_ACCOUNT_ID;
     this.feishuRuntimeCredentials.set(accountId, normalized);
+    const id = feishuChannelId(accountId);
+    const existing = this.configStore.listChannelInstances().find((channel) => channel.id === id);
     const record = this.configStore.upsertChannelInstance({
-      id: feishuChannelId(accountId),
+      id,
       type: "feishu",
       enabled: true,
       accountId,
       credentialSource,
+      capabilityOverrides: existing?.capabilityOverrides ?? { group: false },
       metadata: {
         accountId,
         appId: maskFeishuAppId(normalized.appId),
@@ -178,6 +185,7 @@ export class ChannelActions {
         ...credentials,
         id: record.id,
         accountId: record.defaultAccountId ?? credentials.accountId ?? DEFAULT_FEISHU_ACCOUNT_ID,
+        groupEnabled: isChannelGroupReceiveEnabled(record),
       });
     }
     throw new Error(`暂不支持的渠道类型: ${record.type}`);
@@ -200,6 +208,7 @@ export class ChannelActions {
         accountId: record.defaultAccountId ?? credentials.accountId ?? DEFAULT_FEISHU_ACCOUNT_ID,
         connectOnStart: false,
         probeOnStart: false,
+        groupEnabled: isChannelGroupReceiveEnabled(record),
       });
     }
     throw new Error(`暂不支持的渠道类型: ${record.type}`);
@@ -256,6 +265,10 @@ export function formatChannelRecordLabel(record: ChannelInstanceRecord, status?:
 
 export function channelDisplayName(record: ChannelInstanceRecord, status?: ChannelStatus): string {
   return record.displayName ?? status?.account ?? record.defaultAccountId ?? record.id;
+}
+
+export function isChannelGroupReceiveEnabled(record: ChannelInstanceRecord): boolean {
+  return record.capabilityOverrides?.group === true;
 }
 
 export function formatShortDateTime(iso: string | undefined): string {

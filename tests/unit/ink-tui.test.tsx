@@ -133,6 +133,46 @@ test("Ink TUI exposes add channel actions when channels already exist", async ()
   view.unmount();
 });
 
+test("Ink TUI toggles Feishu group receive from channel detail", async () => {
+  const dashboard = dashboardFixture();
+  const toggles: Array<{ channelId: string; enabled: boolean }> = [];
+  const view = render(<ChatCodexTui actions={mockActions(dashboard, {
+    setChannelGroupEnabled: async (channelId, enabled) => {
+      toggles.push({ channelId, enabled });
+      const channel = dashboard.channels.find((item) => item.record.id === channelId);
+      if (!channel) return undefined;
+      channel.record.capabilityOverrides = {
+        ...channel.record.capabilityOverrides,
+        group: enabled,
+      };
+      channel.capabilities.group = enabled;
+      return channel;
+    },
+  })} onDone={() => undefined} />);
+  await waitForInk();
+
+  view.stdin.write("c");
+  await waitForInk();
+  view.stdin.write("\r");
+  await waitForInk();
+  assert.match(cleanFrame(view), /渠道详情/);
+  assert.match(cleanFrame(view), /群聊接收\s+关闭/);
+  assert.match(cleanFrame(view), /开启群聊接收/);
+
+  view.stdin.write("g");
+  await waitForInk();
+  assert.match(cleanFrame(view), /确认开启/);
+  view.stdin.write("y");
+  await waitForInk();
+  await waitForInk();
+
+  assert.deepEqual(toggles, [{ channelId: "feishu-default", enabled: true }]);
+  assert.match(cleanFrame(view), /群聊接收\s+开启/);
+  assert.match(cleanFrame(view), /关闭群聊接收/);
+
+  view.unmount();
+});
+
 test("Ink TUI requires Feishu account label and submits with default domain", async () => {
   const submitted: unknown[] = [];
   const view = render(<ChatCodexTui actions={mockActions(emptyDashboardFixture(), {
@@ -472,6 +512,16 @@ test("Runtime TUI renders startup summary and transcript logs", async () => {
     text: "你好",
     timestamp: "2026-05-16T00:00:00.000Z",
   }, "你好");
+  sink.inbound({
+    id: "message-2",
+    channelId: "feishu-default",
+    routeKey: "feishu-default:default:group:oc_group",
+    accountId: "default",
+    conversation: { kind: "group", id: "oc_group", displayName: "研发群" },
+    sender: { id: "ou_group", displayName: "李四" },
+    text: "群消息",
+    timestamp: "2026-05-16T00:00:01.000Z",
+  }, "群消息");
   sink.outbound({
     channelId: "feishu-default",
     routeKey: "feishu-default:default:direct:oc_abc",
@@ -479,6 +529,12 @@ test("Runtime TUI renders startup summary and transcript logs", async () => {
     conversation: { kind: "direct", id: "oc_abc" },
     recipient: { id: "ou_abc", displayName: "张三" },
   }, "收到");
+  assert.deepEqual(store.snapshot().map((entry) => entry.source), [
+    "飞书 <= 私聊:张三 | 张三",
+    "飞书 <= 群聊:研发群 | 李四",
+    "飞书 => 私聊:oc_abc",
+  ]);
+  assert.deepEqual(store.snapshot().map((entry) => entry.message), ["你好", "群消息", "收到"]);
 
   const view = render(<RuntimeLogView summary={{
     title: `${expectedChatCodexTitle()} 运行中`,
@@ -497,7 +553,7 @@ test("Runtime TUI renders startup summary and transcript logs", async () => {
   assert.match(cleanFrame(view), /feishu-default/);
   assert.match(cleanFrame(view), /收到/);
   assert.match(cleanFrame(view), /发送/);
-  assert.match(cleanFrame(view), /你好/);
+  assert.match(cleanFrame(view), /群消息/);
   assert.match(cleanFrame(view), /Ctrl\+C 停止服务/);
   assert.doesNotMatch(cleanFrame(view), /q\/Esc 停止/);
 
@@ -715,13 +771,14 @@ function mockActions(
     listSessionChoices?: () => { selectable: unknown[]; unavailable: unknown[] };
     listWeixinPrimaryChoices?: () => { selectable: unknown[]; unavailable: unknown[] };
     bindExistingSession?: (routeKey: string, sessionId: string) => unknown;
+    setChannelGroupEnabled?: (channelId: string, enabled: boolean) => Promise<unknown>;
     setWeixinPrimaryNew?: (channel: unknown) => unknown;
     trustRouteManually?: (routeKey: string) => unknown;
     revokeRouteTrust?: (routeKey: string, options?: { unbindSession?: boolean }) => unknown;
   } = {},
 ): LauncherActions {
   return {
-    getDashboard: async () => dashboard,
+    getDashboard: async () => cloneDashboardForRender(dashboard),
     getStartup: () => dashboard.startup,
     getPlan: () => ({ unboundRoutePolicy: "auto_new" }),
     getBinding: (routeKey: string) => dashboard.bindings.find((binding) => binding.route.routeKey === routeKey),
@@ -748,6 +805,16 @@ function mockActions(
     addFeishuBot: overrides.addFeishuBot ?? (async () => ({ ok: true, message: "飞书机器人已添加。" })),
     listSessionChoices: overrides.listSessionChoices ?? (() => ({ selectable: [], unavailable: [] })),
     bindExistingSession: overrides.bindExistingSession ?? (() => ({ ok: true, binding: dashboard.bindings[0], session: { id: "session", shortId: "session" } })),
+    setChannelGroupEnabled: overrides.setChannelGroupEnabled ?? (async (channelId: string, enabled: boolean) => {
+      const channel = dashboard.channels.find((item) => item.record.id === channelId);
+      if (!channel) return undefined;
+      channel.record.capabilityOverrides = {
+        ...channel.record.capabilityOverrides,
+        group: enabled,
+      };
+      channel.capabilities.group = enabled;
+      return channel;
+    }),
     listWeixinPrimaryChoices: overrides.listWeixinPrimaryChoices ?? (() => ({ selectable: [], unavailable: [] })),
     setWeixinPrimaryNew: overrides.setWeixinPrimaryNew ?? (() => ({ ok: true, message: "已设置：收到第一条微信私聊后创建新 session。" })),
     setWeixinPrimaryNone: () => ({ ok: true, message: "已设置：暂不绑定，首条消息自动创建。" }),
@@ -790,6 +857,23 @@ function mockActions(
     formatContextRefreshPolicy: (policy: ContextRefreshPolicy | undefined) => policy?.mode === "reload" ? "检测并刷新" : policy?.mode === "detect" ? "检测提醒" : "关闭",
     formatContextRefreshEffectivePolicy: (effective: ContextRefreshEffectivePolicy) => `${effective.policy.mode}`,
   } as unknown as LauncherActions;
+}
+
+function cloneDashboardForRender(dashboard: LauncherDashboard): LauncherDashboard {
+  return {
+    ...dashboard,
+    channels: dashboard.channels.map((channel) => ({
+      ...channel,
+      record: {
+        ...channel.record,
+        capabilityOverrides: channel.record.capabilityOverrides
+          ? { ...channel.record.capabilityOverrides }
+          : undefined,
+      },
+      status: { ...channel.status },
+      capabilities: { ...channel.capabilities },
+    })),
+  };
 }
 
 function dashboardFixture(): LauncherDashboard {

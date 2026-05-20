@@ -39,6 +39,7 @@ import { handleCollaborationModeCommand } from "./commands/collaboration-command
 import { handleCompactCommand } from "./commands/compact-command.js";
 import { handleContextRefreshCommand } from "./commands/context-refresh-command.js";
 import { handleGoalCommand } from "./commands/goal-command.js";
+import { handleGroupReceiveCommand } from "./commands/group-receive-command.js";
 import { handleModelCommand } from "./commands/model-command.js";
 import { handleNewSessionCommand } from "./commands/new-command.js";
 import { handlePermissionCommand } from "./commands/permission-command.js";
@@ -256,6 +257,11 @@ export class Bridge {
           delivery: this.delivery,
           statusText: this.statusTextRenderer,
         }, message, target, rawMode),
+        groupReceive: (message, target, args, commandName) => handleGroupReceiveCommand({
+          state: this.state,
+          delivery: this.delivery,
+          channelCapabilities: options.channelCapabilities,
+        }, message, target, args, commandName),
         sendFile: (message, target, rawText) => handleSendFileCommand({
           delivery: this.delivery,
           routeQueue: this.routeQueue,

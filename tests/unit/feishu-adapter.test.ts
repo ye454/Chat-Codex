@@ -212,6 +212,87 @@ test("FeishuAdapter emits ChannelMessage for p2p text events and deduplicates me
   assert.equal(status.details?.lastSkipReason, "duplicate_message");
 });
 
+test("FeishuAdapter maps group receive events to group ChannelMessage internally", async () => {
+  const factory = new FakeFeishuTransportFactory();
+  const adapter = new FeishuAdapter({ ...credentials, transportFactory: factory, groupEnabled: true });
+  let routeKey = "";
+  let conversationKind = "";
+  let text = "";
+  adapter.onMessage(async (message) => {
+    routeKey = message.routeKey;
+    conversationKind = message.conversation.kind;
+    text = message.text ?? "";
+  });
+
+  await adapter.start();
+  await factory.dispatcher.emitReceive(sampleFeishuTextEvent({
+    app_id: credentials.appId,
+    message: {
+      message_id: "om_group_once",
+      chat_id: "oc_group",
+      chat_type: "group",
+      content: JSON.stringify({ text: "@_bot 看一下" }),
+      mentions: [{
+        key: "@_bot",
+        id: { open_id: "ou_bot" },
+        name: "Codex Bot",
+      }],
+    },
+  }));
+
+  assert.equal(routeKey, "feishu:work:group:oc_group");
+  assert.equal(conversationKind, "group");
+  assert.equal(text, "看一下");
+  assert.equal(adapter.getCapabilities().group, true);
+});
+
+test("FeishuAdapter skips group receive events while group capability is disabled", async () => {
+  const factory = new FakeFeishuTransportFactory();
+  const adapter = new FeishuAdapter({ ...credentials, transportFactory: factory });
+  let received = 0;
+  adapter.onMessage(async () => {
+    received += 1;
+  });
+
+  await adapter.start();
+  await factory.dispatcher.emitReceive(sampleFeishuTextEvent({
+    app_id: credentials.appId,
+    message: {
+      message_id: "om_group_disabled",
+      chat_id: "oc_group",
+      chat_type: "group",
+      content: JSON.stringify({ text: "@_bot 看一下" }),
+      mentions: [{
+        key: "@_bot",
+        id: { open_id: "ou_bot" },
+        name: "Codex Bot",
+      }],
+    },
+  }));
+
+  assert.equal(received, 0);
+  assert.equal((await adapter.getStatus()).details?.lastSkipReason, "group_disabled");
+
+  adapter.setGroupEnabled(true);
+  await factory.dispatcher.emitReceive(sampleFeishuTextEvent({
+    app_id: credentials.appId,
+    message: {
+      message_id: "om_group_enabled",
+      chat_id: "oc_group",
+      chat_type: "group",
+      content: JSON.stringify({ text: "@_bot 再看一下" }),
+      mentions: [{
+        key: "@_bot",
+        id: { open_id: "ou_bot" },
+        name: "Codex Bot",
+      }],
+    },
+  }));
+
+  assert.equal(received, 1);
+  assert.equal(adapter.getCapabilities().group, true);
+});
+
 test("FeishuAdapter sendText replies to source message first", async () => {
   const factory = new FakeFeishuTransportFactory();
   const adapter = new FeishuAdapter({ ...credentials, transportFactory: factory, connectOnStart: false });

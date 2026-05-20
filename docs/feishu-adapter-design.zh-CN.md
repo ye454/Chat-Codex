@@ -20,6 +20,8 @@
 - 用户身份 OAuth 或以用户身份发消息。
 - webhook 入站模式。
 
+群聊后续设计见 `docs/feishu-group-chat-design.zh-CN.md`。群聊开启时必须同时处理 @bot 触发、route 配对、群内审批权限、小黑屋和发言人身份展示，不能只把 `group: false` 改成 `true`。
+
 ## 参考来源
 
 本地最新 npm 发布包：

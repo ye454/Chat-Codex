@@ -31,6 +31,13 @@ test("ChannelActions registers independent Weixin accounts and Feishu bots", asy
   assert.equal(weixinB.id, weixinChannelId("wx-account-b"));
   assert.equal(feishuA.id, feishuChannelId("bot-a"));
   assert.equal(feishuB.id, feishuChannelId("bot-b"));
+  assert.equal(feishuA.capabilityOverrides?.group, false);
+  assert.equal(actions.createRuntimeAdapter(feishuA).getCapabilities().group, false);
+  const feishuAGroupEnabled = actions.setChannelGroupEnabled(feishuA.id, true);
+  assert.equal(feishuAGroupEnabled?.capabilityOverrides?.group, true);
+  assert.equal(actions.createRuntimeAdapter(feishuAGroupEnabled ?? feishuA).getCapabilities().group, true);
+  const feishuAUpdated = actions.registerFeishuBot({ appId: "cli_a2", appSecret: "secret-a2", accountId: "bot-a" });
+  assert.equal(feishuAUpdated.capabilityOverrides?.group, true);
   assert.deepEqual(actions.listChannelInstances().map((channel) => channel.id), [
     feishuA.id,
     feishuB.id,

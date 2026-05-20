@@ -250,6 +250,12 @@ export class BridgeStatusText {
           "`/context-refresh inherit`: 清除当前聊天覆盖，跟随全局默认。",
         ],
       },
+      ...(isFeishuDirectMessage(message)
+        ? [{
+            command: "/group on|off",
+            description: "开启或关闭当前飞书机器人实例的群聊接收；每个群仍需单独配对。",
+          }]
+        : []),
       { command: "/sessions", description: "列出当前聊天上下文拥有、绑定过或本地记录相关的 Codex 会话。" },
       { command: "/sessions all", description: "列出本机全部可发现的 Codex 历史会话。" },
       { command: "/resume [session|编号]", description: "恢复并绑定已有会话；不带参数时进入编号选择。" },
@@ -383,6 +389,14 @@ export class BridgeStatusText {
     const suffix = policy.progress === "aggregate" ? "（渠道聚合）" : "";
     return `- 进度投递: ${formatProgressModeForStatus(this.progressModeFor(routeKey))}${suffix}`;
   }
+}
+
+function isFeishuDirectMessage(message: ChannelMessage | undefined): boolean {
+  if (!message || message.conversation.kind !== "direct") return false;
+  return message.channelId === "feishu"
+    || message.channelId.startsWith("feishu-")
+    || message.channelId === "lark"
+    || message.channelId.startsWith("lark-");
 }
 
 interface HelpCommand {

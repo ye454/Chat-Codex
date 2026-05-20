@@ -76,6 +76,7 @@ export class FeishuAdapter implements ChannelAdapter {
   private readonly probeOnStart: boolean;
   private readonly staleMessageMs: number;
   private readonly dedupTtlMs: number;
+  private groupEnabled: boolean;
   private readonly transportFactory: FeishuTransportFactory;
   private readonly now: () => number;
   private readonly inboundMediaRootDir?: string;
@@ -97,6 +98,7 @@ export class FeishuAdapter implements ChannelAdapter {
     this.probeOnStart = options.probeOnStart ?? true;
     this.staleMessageMs = options.staleMessageMs ?? DEFAULT_FEISHU_STALE_MESSAGE_MS;
     this.dedupTtlMs = options.dedupTtlMs ?? DEFAULT_DEDUP_TTL_MS;
+    this.groupEnabled = options.groupEnabled ?? false;
     this.transportFactory = options.transportFactory ?? new DefaultFeishuTransportFactory();
     this.now = options.now ?? Date.now;
     this.inboundMediaRootDir = options.inboundMediaRootDir;
@@ -205,7 +207,7 @@ export class FeishuAdapter implements ChannelAdapter {
       receiveMedia: true,
       typing: true,
       direct: true,
-      group: false,
+      group: this.groupEnabled,
       thread: false,
       login: "token",
       messageUpdate: false,
@@ -219,6 +221,14 @@ export class FeishuAdapter implements ChannelAdapter {
 
   onMessage(handler: ChannelMessageHandler): void {
     this.handler = handler;
+  }
+
+  setGroupEnabled(enabled: boolean): void {
+    this.groupEnabled = enabled;
+    this.status = {
+      ...this.status,
+      details: this.statusDetails(enabled ? "group-enabled" : "group-disabled"),
+    };
   }
 
   async sendText(target: ChannelTarget, text: string, options?: SendOptions): Promise<SendResult> {
@@ -323,6 +333,16 @@ export class FeishuAdapter implements ChannelAdapter {
   }
 
   private async handleIncomingEvent(event: FeishuMessageReceiveEvent): Promise<void> {
+    if (event.message?.chat_type === "group" && !this.groupEnabled) {
+      this.status = {
+        ...this.status,
+        details: {
+          ...this.statusDetails("event-skipped"),
+          lastSkipReason: "group_disabled",
+        },
+      };
+      return;
+    }
     const mapped = feishuEventToChannelMessage(event, {
       channelId: this.id,
       accountId: this.credentials.accountId ?? DEFAULT_FEISHU_ACCOUNT_ID,
@@ -575,6 +595,7 @@ export class FeishuAdapter implements ChannelAdapter {
       credentials: this.credentials,
       botOpenId: this.botOpenId,
       botName: this.botName,
+      groupEnabled: this.groupEnabled,
       connectionState: connection?.state,
       reconnectAttempts: connection?.reconnectAttempts,
       dedupSize: this.seenMessages.size,

@@ -33,11 +33,20 @@ export interface BridgeOptions {
   routeTrustMode?: RouteTrustMode;
   pairingCodeManager?: PairingCodeManager;
   contextRefresh?: BridgeContextRefreshOptions;
+  channelCapabilities?: BridgeChannelCapabilityController;
 }
 
 export interface BridgeContextRefreshOptions {
   defaultPolicy?: ContextRefreshPolicy;
   readFingerprint?(sessionId: string): CodexSessionContextFingerprint | undefined | Promise<CodexSessionContextFingerprint | undefined>;
+}
+
+export type BridgeChannelCapabilitySetResult =
+  | { ok: true; enabled: boolean }
+  | { ok: false; message: string };
+
+export interface BridgeChannelCapabilityController {
+  setGroupEnabled(channelId: string, enabled: boolean): BridgeChannelCapabilitySetResult | Promise<BridgeChannelCapabilitySetResult>;
 }
 
 export interface QueuedPrompt {

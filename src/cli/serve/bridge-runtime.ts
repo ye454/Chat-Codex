@@ -16,6 +16,7 @@ import { formatFirstRoutePresetForUser, formatUnboundRoutePolicyForUser } from "
 import { printRuntimeSummary } from "./formatters.js";
 import { waitForShutdownSignal } from "./prompts.js";
 import { formatCodexStatusForCli } from "./summary.js";
+import { isChannelGroupReceiveEnabled } from "../actions/channel-actions.js";
 
 export async function startServeBridge(
   startup: PreparedServeStartup,
@@ -44,6 +45,15 @@ export async function startServeBridge(
     progressMode: startup.progressMode,
     contextRefresh: { defaultPolicy: contextRefresh },
     routeTrustMode: "real_channels",
+    channelCapabilities: {
+      setGroupEnabled: (channelId, enabled) => {
+        const updated = channelActions.setChannelGroupEnabled(channelId, enabled);
+        if (!updated) return { ok: false, message: `没有找到这个渠道实例：${channelId}` };
+        const adapter = adapters.find((item) => item.id === channelId) as { setGroupEnabled?: (next: boolean) => void } | undefined;
+        adapter?.setGroupEnabled?.(isChannelGroupReceiveEnabled(updated));
+        return { ok: true, enabled: isChannelGroupReceiveEnabled(updated) };
+      },
+    },
     turnScheduler: startup.maxConcurrentTurns ? new LimitedTurnScheduler(startup.maxConcurrentTurns) : undefined,
   });
 

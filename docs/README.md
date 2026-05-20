@@ -88,6 +88,9 @@
 - `feishu-adapter-design.zh-CN.md`
   飞书适配设计。说明第一阶段如何用飞书 WebSocket 长连接接入私聊文本消息，并默认投递 Codex 进度。
 
+- `feishu-group-chat-design.zh-CN.md`
+  飞书群聊接入与权限设计。说明群聊 route、@bot 触发、一次配对、超级管理员/管理员/小黑屋、审批权限、状态持久化和分阶段实施边界。
+
 - `requirements.md`
   早期英文需求草稿。保留作参考，不作为当前主设计依据。
 

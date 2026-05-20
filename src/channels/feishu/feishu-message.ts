@@ -6,6 +6,7 @@ import type {
   FeishuMessageMappingResult,
   FeishuMessageReceiveEvent,
 } from "./feishu-types.js";
+import { feishuGroupEventToChannelMessage } from "./group/group-message.js";
 
 export const FEISHU_CHANNEL_ID = "feishu";
 export const DEFAULT_FEISHU_ACCOUNT_ID = "default";
@@ -122,7 +123,7 @@ export function feishuEventToChannelMessage(
   if (!message?.message_id || !message.chat_id) {
     return { ok: false, reason: "missing_message_fields" };
   }
-  if (message.chat_type !== "p2p") {
+  if (message.chat_type !== "p2p" && message.chat_type !== "group") {
     return { ok: false, reason: "unsupported_chat_type" };
   }
   if (!isSupportedFeishuMessageType(message.message_type)) {
@@ -136,6 +137,7 @@ export function feishuEventToChannelMessage(
     ?? event.sender?.sender_id?.user_id
     ?? event.sender?.sender_id?.union_id;
   if (!senderId) return { ok: false, reason: "missing_sender_id" };
+  const senderDisplayName = firstNonEmpty(event.sender.sender_name, event.sender.name, event.sender.user_name);
   if (options.botOpenId && senderId === options.botOpenId) {
     return { ok: false, reason: "self_echo" };
   }
@@ -145,6 +147,15 @@ export function feishuEventToChannelMessage(
   const parsedContent = parseFeishuMessageContent(message.message_type, message.content);
   if (!parsedContent.text && parsedContent.attachments.length === 0) {
     return { ok: false, reason: "empty_message" };
+  }
+  if (message.chat_type === "group") {
+    return feishuGroupEventToChannelMessage(event, options, {
+      senderId,
+      senderDisplayName,
+      text: parsedContent.text,
+      attachments: parsedContent.attachments,
+      timestamp: formatFeishuTimestamp(message.create_time, options.now),
+    });
   }
   const routeKey = buildRouteKey({
     channelId: options.channelId,
@@ -158,7 +169,10 @@ export function feishuEventToChannelMessage(
     routeKey,
     channelId: options.channelId,
     accountId: options.accountId,
-    sender: { id: senderId },
+    sender: {
+      id: senderId,
+      ...(senderDisplayName ? { displayName: senderDisplayName } : {}),
+    },
     conversation: {
       id: message.chat_id,
       kind: "direct",
@@ -303,6 +317,7 @@ export function feishuStatusDetails(input: {
   credentials: FeishuCredentials;
   botOpenId?: string;
   botName?: string;
+  groupEnabled?: boolean;
   connectionState?: string;
   reconnectAttempts?: number;
   dedupSize?: number;
@@ -318,6 +333,7 @@ export function feishuStatusDetails(input: {
     connectionMode: "websocket",
     botOpenId: input.botOpenId,
     botName: input.botName,
+    groupEnabled: input.groupEnabled ?? false,
     connectionState: input.connectionState,
     reconnectAttempts: input.reconnectAttempts,
     dedupSize: input.dedupSize,

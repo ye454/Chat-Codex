@@ -157,6 +157,12 @@ export class LauncherActions {
     return (await this.listChannels()).find((channel) => channel.record.id === channelId);
   }
 
+  async setChannelGroupEnabled(channelId: string, enabled: boolean): Promise<ManagedChannelSummary | undefined> {
+    const updated = this.channelActions.setChannelGroupEnabled(channelId, enabled);
+    if (!updated) return undefined;
+    return (await this.listChannels()).find((channel) => channel.record.id === channelId);
+  }
+
   async removeChannel(channelId: string): Promise<RemoveChannelResult> {
     return this.channelActions.removeChannel(channelId);
   }

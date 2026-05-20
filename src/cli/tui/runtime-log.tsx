@@ -1,7 +1,13 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Box, Text, useInput, useWindowSize } from "ink";
 import type { ChannelMedia, ChannelMessage, ChannelTarget } from "../../protocol/channel.js";
-import type { TranscriptSink } from "../../logging/transcript.js";
+import {
+  transcriptChannelLabel,
+  transcriptInboundDetail,
+  transcriptInboundSubject,
+  transcriptTargetConversation,
+  type TranscriptSink,
+} from "../../logging/transcript.js";
 import type { Logger } from "../../logging/logger.js";
 import type { CodexCliStatus, CodexRunPolicy } from "../../codex/codex-cli.js";
 import { formatCodexCommandSource, formatCodexPlatform } from "../../codex/codex-process.js";
@@ -73,20 +79,20 @@ export class RuntimeTuiTranscriptSink implements TranscriptSink {
   constructor(private readonly store: RuntimeLogStore) {}
 
   inbound(message: ChannelMessage, text: string): void {
-    this.store.add("inbound", `${channelLabel(message.channelId)} <= ${displaySender(message)}`, text);
+    this.store.add("inbound", `${transcriptChannelLabel(message.channelId)} <= ${transcriptInboundSubject(message)} | ${transcriptInboundDetail(message)}`, text);
   }
 
   outbound(target: ChannelTarget, text: string): void {
-    this.store.add("outbound", `${channelLabel(target.channelId)} => ${formatConversation(target)}`, text);
+    this.store.add("outbound", `${transcriptChannelLabel(target.channelId)} => ${transcriptTargetConversation(target)}`, text);
   }
 
   localProgress(target: ChannelTarget, text: string): void {
-    this.store.add("progress", `${channelLabel(target.channelId)} -- ${formatConversation(target)}`, text);
+    this.store.add("progress", `${transcriptChannelLabel(target.channelId)} -- ${transcriptTargetConversation(target)}`, text);
   }
 
   outboundMedia(target: ChannelTarget, media: ChannelMedia): void {
     const mediaName = media.name ?? media.path ?? media.url ?? "未命名媒体";
-    this.store.add("media", `${channelLabel(target.channelId)} => ${formatConversation(target)}`, `${media.type}: ${mediaName}`);
+    this.store.add("media", `${transcriptChannelLabel(target.channelId)} => ${transcriptTargetConversation(target)}`, `${media.type}: ${mediaName}`);
   }
 }
 
@@ -224,20 +230,6 @@ function kindLabel(kind: RuntimeLogKind): string {
   if (kind === "progress") return "进度";
   if (kind === "media") return "媒体";
   return "错误";
-}
-
-function channelLabel(channelId: string): string {
-  if (channelId.startsWith("weixin")) return "微信";
-  if (channelId.startsWith("feishu")) return "飞书";
-  return channelId;
-}
-
-function displaySender(message: ChannelMessage): string {
-  return message.sender.displayName ?? message.sender.id;
-}
-
-function formatConversation(target: ChannelTarget): string {
-  return `${target.conversation.kind}:${target.conversation.id}`;
 }
 
 function formatPolicy(policy: CodexRunPolicy): string {

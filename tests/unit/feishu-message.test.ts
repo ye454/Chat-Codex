@@ -48,6 +48,168 @@ test("feishuEventToChannelMessage maps p2p text to ChannelMessage", () => {
   });
 });
 
+test("feishuEventToChannelMessage preserves Feishu sender display name when present", () => {
+  const now = Date.now();
+  const direct = feishuEventToChannelMessage(sampleFeishuTextEvent({
+    sender: { sender_name: "小黄" },
+    message: {
+      message_id: "om_named_direct",
+      create_time: String(now),
+      chat_id: "oc_named_direct",
+      content: JSON.stringify({ text: "ping" }),
+    },
+  }), {
+    channelId: "feishu",
+    accountId: "work",
+    now,
+  });
+  const group = feishuEventToChannelMessage(sampleFeishuTextEvent({
+    sender: { sender_name: "张三" },
+    message: {
+      message_id: "om_named_group",
+      create_time: String(now),
+      chat_id: "oc_named_group",
+      chat_type: "group",
+      content: JSON.stringify({ text: "@_bot 群消息" }),
+      mentions: [{
+        key: "@_bot",
+        id: { open_id: "ou_bot" },
+        name: "Codex Bot",
+      }],
+    },
+  }), {
+    channelId: "feishu",
+    accountId: "work",
+    botOpenId: "ou_bot",
+    now,
+  });
+
+  assert.equal(direct.ok, true);
+  assert.equal(group.ok, true);
+  if (!direct.ok || !group.ok) return;
+  assert.deepEqual(direct.message.sender, { id: "ou_user", displayName: "小黄" });
+  assert.deepEqual(group.message.sender, { id: "ou_user", displayName: "张三" });
+});
+
+test("feishuEventToChannelMessage maps group text and normalizes mentions", () => {
+  const now = Date.now();
+  const result = feishuEventToChannelMessage(sampleFeishuTextEvent({
+    message: {
+      message_id: "om_group",
+      create_time: String(now),
+      chat_id: "oc_group",
+      chat_type: "group",
+      content: JSON.stringify({ text: "@_bot 帮我看看 @_user_2" }),
+      mentions: [
+        {
+          key: "@_bot",
+          id: { open_id: "ou_bot" },
+          name: "Codex Bot",
+        },
+        {
+          key: "@_user_2",
+          id: { open_id: "ou_user_2" },
+          name: "李四",
+        },
+      ],
+    },
+  }), {
+    channelId: "feishu",
+    accountId: "work",
+    botOpenId: "ou_bot",
+    expectedAppId: "cli_1234567890abcdef",
+    now,
+  });
+
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.equal(result.message.id, "om_group");
+  assert.equal(result.message.text, "帮我看看 @李四");
+  assert.equal(result.message.routeKey, "feishu:work:group:oc_group");
+  assert.deepEqual(result.message.sender, { id: "ou_user" });
+  assert.deepEqual(result.message.conversation, {
+    id: "oc_group",
+    kind: "group",
+    displayName: "飞书群聊",
+  });
+  const raw = result.message.raw as {
+    chatCodex?: {
+      feishu?: {
+        group?: {
+          mentionedBot?: boolean;
+          mentionAll?: boolean;
+          mentions?: Array<{ key: string; openId?: string; isBot?: boolean }>;
+          originalText?: string;
+          normalizedText?: string;
+        };
+      };
+    };
+  };
+  assert.equal(raw.chatCodex?.feishu?.group?.mentionedBot, true);
+  assert.equal(raw.chatCodex?.feishu?.group?.mentionAll, false);
+  assert.equal(raw.chatCodex?.feishu?.group?.originalText, "@_bot 帮我看看 @_user_2");
+  assert.equal(raw.chatCodex?.feishu?.group?.normalizedText, "帮我看看 @李四");
+  assert.deepEqual(raw.chatCodex?.feishu?.group?.mentions?.map((mention) => ({
+    key: mention.key,
+    openId: mention.openId,
+    isBot: mention.isBot,
+  })), [
+    { key: "@_bot", openId: "ou_bot", isBot: true },
+    { key: "@_user_2", openId: "ou_user_2", isBot: false },
+  ]);
+});
+
+test("feishuEventToChannelMessage keeps different Feishu groups as separate routes", () => {
+  const now = Date.now();
+  const groupA = feishuEventToChannelMessage(sampleFeishuTextEvent({
+    message: {
+      message_id: "om_group_a",
+      create_time: String(now),
+      chat_id: "oc_group_a",
+      chat_type: "group",
+      content: JSON.stringify({ text: "@_bot A 群消息" }),
+      mentions: [{
+        key: "@_bot",
+        id: { open_id: "ou_bot" },
+        name: "Codex Bot",
+      }],
+    },
+  }), {
+    channelId: "feishu",
+    accountId: "work",
+    botOpenId: "ou_bot",
+    now,
+  });
+  const groupB = feishuEventToChannelMessage(sampleFeishuTextEvent({
+    message: {
+      message_id: "om_group_b",
+      create_time: String(now),
+      chat_id: "oc_group_b",
+      chat_type: "group",
+      content: JSON.stringify({ text: "@_bot B 群消息" }),
+      mentions: [{
+        key: "@_bot",
+        id: { open_id: "ou_bot" },
+        name: "Codex Bot",
+      }],
+    },
+  }), {
+    channelId: "feishu",
+    accountId: "work",
+    botOpenId: "ou_bot",
+    now,
+  });
+
+  assert.equal(groupA.ok, true);
+  assert.equal(groupB.ok, true);
+  if (!groupA.ok || !groupB.ok) return;
+  assert.equal(groupA.message.routeKey, "feishu:work:group:oc_group_a");
+  assert.equal(groupB.message.routeKey, "feishu:work:group:oc_group_b");
+  assert.notEqual(groupA.message.routeKey, groupB.message.routeKey);
+  assert.equal(groupA.message.conversation.id, "oc_group_a");
+  assert.equal(groupB.message.conversation.id, "oc_group_b");
+});
+
 test("feishuEventToChannelMessage skips unsupported or unsafe events", () => {
   const baseOptions = {
     channelId: "feishu",
@@ -56,7 +218,7 @@ test("feishuEventToChannelMessage skips unsupported or unsafe events", () => {
   };
 
   assert.deepEqual(feishuEventToChannelMessage(sampleFeishuTextEvent({
-    message: { chat_type: "group" },
+    message: { chat_type: "thread" },
   }), baseOptions), { ok: false, reason: "unsupported_chat_type" });
 
   assert.deepEqual(feishuEventToChannelMessage(sampleFeishuTextEvent({

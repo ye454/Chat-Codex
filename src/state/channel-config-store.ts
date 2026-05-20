@@ -25,8 +25,12 @@ export interface UpsertChannelInstanceInput {
   accountId?: string;
   displayName?: string;
   credentialSource?: string;
+  capabilityOverrides?: ChannelCapabilityOverrides;
   metadata?: Record<string, unknown>;
 }
+
+export type ChannelCapabilityName = "group" | "thread";
+export type ChannelCapabilityOverrides = NonNullable<ChannelInstanceRecord["capabilityOverrides"]>;
 
 export interface RemoveChannelConfigResult {
   ok: boolean;
@@ -64,6 +68,7 @@ export class ChannelConfigStore {
       defaultAccountId: input.accountId ?? existing?.defaultAccountId,
       displayName: normalizeDisplayName(input.displayName) ?? existing?.displayName,
       credentialSource: input.credentialSource ?? existing?.credentialSource,
+      capabilityOverrides: normalizeCapabilityOverrides(input.capabilityOverrides ?? existing?.capabilityOverrides),
       createdAt: existing?.createdAt ?? now,
       updatedAt: now,
     };
@@ -86,7 +91,7 @@ export class ChannelConfigStore {
     return {
       schemaVersion: config.schemaVersion ?? LOCAL_STATE_SCHEMA_VERSION,
       updatedAt: config.updatedAt ?? new Date(0).toISOString(),
-      channels: Array.isArray(config.channels) ? config.channels : [],
+      channels: Array.isArray(config.channels) ? config.channels.map(normalizeChannelInstanceRecord) : [],
       codexDefaults: normalizeCodexDefaults(config.codexDefaults),
     };
   }
@@ -127,6 +132,7 @@ export class ChannelConfigStore {
       accountId: existing.defaultAccountId,
       displayName: existing.displayName,
       credentialSource: existing.credentialSource,
+      capabilityOverrides: existing.capabilityOverrides,
     });
   }
 
@@ -138,6 +144,34 @@ export class ChannelConfigStore {
     const record: ChannelInstanceRecord = {
       ...existing,
       displayName: normalizeDisplayName(displayName),
+      updatedAt: now,
+    };
+    config.channels = [
+      ...config.channels.filter((channel) => channel.id !== id),
+      record,
+    ].sort((left, right) => left.id.localeCompare(right.id));
+    config.updatedAt = now;
+    writeJsonFileAtomic(this.configPath, config);
+    this.writeInstanceFiles(record, undefined, undefined);
+    return record;
+  }
+
+  setChannelCapabilityOverride(
+    id: string,
+    capability: ChannelCapabilityName,
+    enabled: boolean,
+  ): ChannelInstanceRecord | undefined {
+    const config = this.readConfig();
+    const existing = config.channels.find((channel) => channel.id === id);
+    if (!existing) return undefined;
+    const now = new Date().toISOString();
+    const nextOverrides = normalizeCapabilityOverrides({
+      ...existing.capabilityOverrides,
+      [capability]: enabled,
+    });
+    const record: ChannelInstanceRecord = {
+      ...existing,
+      capabilityOverrides: nextOverrides,
       updatedAt: now,
     };
     config.channels = [
@@ -249,4 +283,19 @@ function normalizeCodexDefaults(value: BridgeConfigDocument["codexDefaults"]): B
 function normalizeDisplayName(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
   return trimmed ? trimmed : undefined;
+}
+
+function normalizeChannelInstanceRecord(record: ChannelInstanceRecord): ChannelInstanceRecord {
+  return {
+    ...record,
+    capabilityOverrides: normalizeCapabilityOverrides(record.capabilityOverrides),
+  };
+}
+
+function normalizeCapabilityOverrides(value: ChannelCapabilityOverrides | undefined): ChannelCapabilityOverrides | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const next: ChannelCapabilityOverrides = {};
+  if (typeof value.group === "boolean") next.group = value.group;
+  if (typeof value.thread === "boolean") next.thread = value.thread;
+  return Object.keys(next).length > 0 ? next : undefined;
 }

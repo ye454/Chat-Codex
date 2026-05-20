@@ -84,6 +84,14 @@ test("BridgeCommandRouter lets context refresh status dispatch while busy", asyn
   assert.equal(fixture.calls.contextRefresh, 1);
 });
 
+test("BridgeCommandRouter routes group receive command without route busy guard", async () => {
+  const fixture = routerFixture({ busy: true });
+  await fixture.router.handle(message(), target(), "group", ["on"], "/group on");
+  assert.equal(fixture.calls.groupReceive, 1);
+  assert.deepEqual(fixture.groupReceiveCall?.args, ["on"]);
+  assert.equal(fixture.groupReceiveCall?.commandName, "group");
+});
+
 test("BridgeCommandRouter honors disabled progress command policy", async () => {
   const fixture = routerFixture({
     deliveryPolicyFor: () => normalizeChannelDeliveryPolicy({
@@ -108,9 +116,11 @@ function routerFixture(options: {
     model: 0,
     progressMode: 0,
     contextRefresh: 0,
+    groupReceive: 0,
     compact: 0,
   };
   let newSessionCall: { args: string[]; rawText: string } | undefined;
+  let groupReceiveCall: { args: string[]; commandName: string } | undefined;
   const delivery = new BridgeDelivery({
     channels: {
       sendText: async (_target: ChannelTarget, text: string) => {
@@ -142,6 +152,10 @@ function routerFixture(options: {
     contextRefresh: async () => {
       calls.contextRefresh += 1;
     },
+    groupReceive: async (_message, _target, args, commandName) => {
+      calls.groupReceive += 1;
+      groupReceiveCall = { args, commandName };
+    },
     sendFile: async () => undefined,
     model: async () => {
       calls.model += 1;
@@ -158,6 +172,9 @@ function routerFixture(options: {
     calls,
     get newSessionCall() {
       return newSessionCall;
+    },
+    get groupReceiveCall() {
+      return groupReceiveCall;
     },
     router: new BridgeCommandRouter({
       logger: new SilentLogger(),

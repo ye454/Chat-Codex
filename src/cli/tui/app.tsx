@@ -6,7 +6,7 @@ import type { FeishuCredentials } from "../../channels/feishu/feishu-types.js";
 import { writeClipboardText as writeClipboardTextDefault } from "../../runtime/clipboard.js";
 import { chatCodexTitle } from "../../runtime/package-info.js";
 import type { BindingSummary, SessionChoices } from "../actions/binding-actions.js";
-import { formatManagedChannelLabel } from "../actions/channel-actions.js";
+import { formatManagedChannelLabel, isChannelGroupReceiveEnabled } from "../actions/channel-actions.js";
 import {
   feishuCredentialDefaults,
   type FeishuBotSetupResult,
@@ -447,9 +447,10 @@ export function ChatCodexTui({ actions, onDone, copyToClipboard = writeClipboard
   };
 
   const handleChannelDetailInput = async (input: string, enter: boolean, record: LauncherDashboard["channels"][number]["record"]): Promise<void> => {
-    const picked = numericPick(input, 5);
+    const isFeishu = record.type === "feishu" || record.type === "lark";
+    const picked = numericPick(input, isFeishu ? 6 : 5);
     const actionIndex = picked ?? selected;
-    const explicitAction = enter || picked !== undefined || input === "b" || input === "c" || input === "e";
+    const explicitAction = enter || picked !== undefined || input === "b" || input === "c" || input === "e" || input === "g";
     if (!explicitAction) return;
     if (input === "e") {
       const updated = await actions.setChannelEnabled(record.id, !record.enabled);
@@ -464,21 +465,27 @@ export function ChatCodexTui({ actions, onDone, copyToClipboard = writeClipboard
       setScreen({ name: "addFeishu", step: "appId", values: feishuCredentialDefaults() });
       return;
     }
-    if (actionIndex === 1) {
+    if (isFeishu && (input === "g" || actionIndex === 1)) {
+      const channel = channels.find((item) => item.record.id === record.id);
+      if (channel) confirmToggleGroupReceive(channel);
+      return;
+    }
+    const shiftedActionIndex = isFeishu ? actionIndex - 1 : actionIndex;
+    if (shiftedActionIndex === 1) {
       openRenameChannel(record.id);
       return;
     }
-    if (actionIndex === 2) {
+    if (shiftedActionIndex === 2) {
       const updated = await actions.setChannelEnabled(record.id, !record.enabled);
       await refresh(updated?.record.enabled ? "已启用渠道，原聊天绑定保持不变。" : "已停用渠道，原聊天绑定保持不变。");
       return;
     }
-    if (actionIndex === 3) {
+    if (shiftedActionIndex === 3) {
       const target = channels.find((item) => item.record.id === record.id);
       if (target) confirmRemoveChannel(target);
       return;
     }
-    if (actionIndex === 4) {
+    if (shiftedActionIndex === 4) {
       setScreen({ name: "status" });
     }
   };
@@ -843,6 +850,40 @@ export function ChatCodexTui({ actions, onDone, copyToClipboard = writeClipboard
     setScreen({ name: "channels" });
   };
 
+  const confirmToggleGroupReceive = (channel: LauncherDashboard["channels"][number]): void => {
+    const next = !isChannelGroupReceiveEnabled(channel.record);
+    setConfirm({
+      message: next
+        ? [
+            `确认开启 ${formatManagedChannelLabel(channel)} 的群聊接收？`,
+            "开启后，飞书群聊 @机器人 会进入 Chat-Codex 配对流程；每个群仍需单独配对。",
+            "按 y 确认，按 n 取消。",
+          ].join(" ")
+        : [
+            `确认关闭 ${formatManagedChannelLabel(channel)} 的群聊接收？`,
+            "关闭后，Chat-Codex 将忽略飞书群聊消息；已有群 route、配对、权限和 session 绑定会保留。",
+            "按 y 确认，按 n 取消。",
+          ].join(" "),
+      yes: async () => {
+        const updated = await actions.setChannelGroupEnabled(channel.record.id, next);
+        if (updated) {
+          setDashboard((current) => current
+            ? {
+                ...current,
+                channels: current.channels.map((item) => item.record.id === updated.record.id ? updated : item),
+              }
+            : current);
+        }
+        setConfirm(undefined);
+        setFlash({
+          kind: updated ? "success" : "error",
+          message: updated ? `已${next ? "开启" : "关闭"}飞书群聊接收。` : "这个渠道已经不存在。",
+        });
+        await refresh();
+      },
+    });
+  };
+
   const confirmRemoveChannel = (channel: LauncherDashboard["channels"][number]): void => {
     setConfirm({
       message: `确认删除 ${formatManagedChannelLabel(channel)}？会移除渠道配置、聊天记录和绑定占用；不会删除 Codex session。本操作按 y 确认，按 n 取消。`,
@@ -973,7 +1014,10 @@ function maxSelectableIndex(screen: Screen, channels: LauncherDashboard["channel
   if (screen.name === "channels") return channels.length > 0 ? channels.length + 6 : 1;
   if (screen.name === "bindings") return Math.max(0, bindingItemCount - 1);
   if (screen.name === "home") return channels.length === 0 ? 5 : 7;
-  if (screen.name === "channelDetail") return 4;
+  if (screen.name === "channelDetail") {
+    const channel = channels.find((item) => item.record.id === screen.channelId);
+    return channel?.record.type === "feishu" || channel?.record.type === "lark" ? 5 : 4;
+  }
   if (screen.name === "bindingDetail") return 4;
   if (screen.name === "pairingDetail") return 2;
   if (screen.name === "permission") return 1;

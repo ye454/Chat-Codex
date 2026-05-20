@@ -46,7 +46,7 @@ export class ConsoleTranscriptSink implements TranscriptSink {
   inbound(message: ChannelMessage, text: string): void {
     const tone: TranscriptTone = "inbound";
     this.writeBlock([
-      this.header(channelLabel(message.channelId), "<=", displaySender(message), formatConversation(message.conversation.kind, message.conversation.id), tone),
+      this.header(transcriptChannelLabel(message.channelId), "<=", transcriptInboundSubject(message), transcriptInboundDetail(message), tone),
       this.verbose ? `route: ${message.routeKey}` : undefined,
       this.verbose ? `sender: ${message.sender.id}` : undefined,
       ...this.bodyLines(text, tone),
@@ -57,7 +57,7 @@ export class ConsoleTranscriptSink implements TranscriptSink {
     const detail = classifyOutbound(text);
     const tone = toneForOutbound(detail);
     this.writeBlock([
-      this.header(channelLabel(target.channelId), "=>", formatConversation(target.conversation.kind, target.conversation.id), detail, tone),
+      this.header(transcriptChannelLabel(target.channelId), "=>", transcriptTargetConversation(target), detail, tone),
       this.verbose ? `route: ${target.routeKey}` : undefined,
       ...this.bodyLines(text, tone),
     ]);
@@ -66,7 +66,7 @@ export class ConsoleTranscriptSink implements TranscriptSink {
   localProgress(target: ChannelTarget, text: string): void {
     const tone: TranscriptTone = "progress";
     this.writeBlock([
-      this.header(channelLabel(target.channelId), "--", formatConversation(target.conversation.kind, target.conversation.id), "本地进度（未投递）", tone),
+      this.header(transcriptChannelLabel(target.channelId), "--", transcriptTargetConversation(target), "本地进度（未投递）", tone),
       this.verbose ? `route: ${target.routeKey}` : undefined,
       ...this.bodyLines(text, tone),
     ]);
@@ -76,7 +76,7 @@ export class ConsoleTranscriptSink implements TranscriptSink {
     const mediaName = media.name ?? media.path ?? media.url ?? "";
     const tone: TranscriptTone = "media";
     this.writeBlock([
-      this.header(channelLabel(target.channelId), "=>", formatConversation(target.conversation.kind, target.conversation.id), `媒体 ${media.type}`, tone),
+      this.header(transcriptChannelLabel(target.channelId), "=>", transcriptTargetConversation(target), `媒体 ${media.type}`, tone),
       this.verbose ? `route: ${target.routeKey}` : undefined,
       ...this.bodyLines([
         mediaName ? `文件: ${mediaName}` : undefined,
@@ -109,11 +109,33 @@ function isWritable(value: Writable | ConsoleTranscriptSinkOptions): value is Wr
   return typeof (value as Writable).write === "function";
 }
 
-function channelLabel(channelId: string): string {
+export function transcriptChannelLabel(channelId: string): string {
   if (channelId === "weixin") return "微信";
+  if (channelId.startsWith("weixin-")) return "微信";
+  if (isFeishuChannelId(channelId)) return "飞书";
   if (channelId === "terminal") return "终端";
   if (channelId === "mock") return "Mock";
   return channelId;
+}
+
+export function transcriptInboundSubject(message: ChannelMessage): string {
+  if (isFeishuChannelId(message.channelId)) return formatFeishuConversation(message);
+  return displaySender(message);
+}
+
+export function transcriptInboundDetail(message: ChannelMessage): string {
+  if (isFeishuChannelId(message.channelId)) return displaySender(message);
+  return formatConversation(message.conversation.kind, message.conversation.id);
+}
+
+export function transcriptTargetConversation(target: ChannelTarget): string {
+  if (isFeishuChannelId(target.channelId)) {
+    return formatConversationWithLabel(
+      feishuConversationKindLabel(target.conversation.kind),
+      meaningfulFeishuConversationName(target.conversation.displayName) ?? target.conversation.id,
+    );
+  }
+  return formatConversation(target.conversation.kind, target.conversation.id);
 }
 
 function displaySender(message: ChannelMessage): string {
@@ -122,6 +144,41 @@ function displaySender(message: ChannelMessage): string {
 
 function formatConversation(kind: string, id: string): string {
   return `${kind}:${shorten(id, 32)}`;
+}
+
+function formatFeishuConversation(message: ChannelMessage): string {
+  const fallbackName = message.conversation.kind === "direct"
+    ? message.sender.displayName ?? message.conversation.id
+    : message.conversation.id;
+  return formatConversationWithLabel(
+    feishuConversationKindLabel(message.conversation.kind),
+    meaningfulFeishuConversationName(message.conversation.displayName) ?? fallbackName,
+  );
+}
+
+function formatConversationWithLabel(label: string, name: string): string {
+  return `${label}:${shorten(name, 32)}`;
+}
+
+function feishuConversationKindLabel(kind: string): string {
+  if (kind === "direct") return "私聊";
+  if (kind === "group") return "群聊";
+  if (kind === "thread") return "话题";
+  return kind;
+}
+
+function meaningfulFeishuConversationName(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  if (!trimmed) return undefined;
+  if (trimmed === "飞书私聊" || trimmed === "飞书群聊") return undefined;
+  return trimmed;
+}
+
+function isFeishuChannelId(channelId: string): boolean {
+  return channelId === "feishu"
+    || channelId.startsWith("feishu-")
+    || channelId === "lark"
+    || channelId.startsWith("lark-");
 }
 
 function classifyOutbound(text: string): string {

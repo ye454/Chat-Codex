@@ -17,6 +17,7 @@ export interface FeishuAdapterOptions extends FeishuCredentials {
   probeOnStart?: boolean;
   staleMessageMs?: number;
   dedupTtlMs?: number;
+  groupEnabled?: boolean;
   transportFactory?: FeishuTransportFactory;
   now?: () => number;
   inboundMediaRootDir?: string;
@@ -194,6 +195,9 @@ export interface FeishuMessageReceiveEvent {
       open_id?: string;
     };
     sender_type: string;
+    sender_name?: string;
+    name?: string;
+    user_name?: string;
     tenant_key?: string;
   };
   message: {

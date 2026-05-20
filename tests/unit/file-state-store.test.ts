@@ -8,7 +8,7 @@ import { ChannelConfigStore } from "../../src/state/channel-config-store.js";
 import { CHAT_CODEX_STATE_DIR_ENV, defaultBridgeStateDir, resolveChatCodexStateRoot } from "../../src/state/state-files.js";
 import type { ChannelMessage } from "../../src/protocol/channel.js";
 import type { CodexSession } from "../../src/codex/types.js";
-import type { BridgeConfigDocument, ChannelAccountCredentialsDocument, ChannelAccountDocument, PendingBindingsDocument, RoutesDocument, SessionOwnersDocument, SessionPoliciesDocument, TrustedRouteRecord, TrustedRoutesDocument } from "../../src/state/persistent-state-types.js";
+import type { BridgeConfigDocument, ChannelAccountCredentialsDocument, ChannelAccountDocument, ChannelInstanceDocument, PendingBindingsDocument, RoutesDocument, SessionOwnersDocument, SessionPoliciesDocument, TrustedRouteRecord, TrustedRoutesDocument } from "../../src/state/persistent-state-types.js";
 import { pendingBindingOwnerRouteKey } from "../../src/state/memory-state-store.js";
 
 test("default state root uses fixed user directory", () => {
@@ -210,6 +210,29 @@ test("ChannelConfigStore writes channel account metadata separately from local c
     appSecret: "real-secret",
     domain: "feishu",
   });
+});
+
+test("ChannelConfigStore persists channel capability overrides", () => {
+  const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-channel-config-"));
+  const rootDir = path.join(baseDir, "state", "bridge");
+  const store = new ChannelConfigStore({ bridgeDir: rootDir });
+
+  const created = store.upsertChannelInstance({
+    id: "feishu-main",
+    type: "feishu",
+    accountId: "default",
+    capabilityOverrides: { group: false },
+  });
+  assert.equal(created.capabilityOverrides?.group, false);
+
+  const enabled = store.setChannelCapabilityOverride("feishu-main", "group", true);
+  assert.equal(enabled?.capabilityOverrides?.group, true);
+  assert.equal(store.listChannelInstances()[0]?.capabilityOverrides?.group, true);
+
+  const config = readJson<BridgeConfigDocument>(path.join(rootDir, "config.json"));
+  assert.equal(config.channels[0]?.capabilityOverrides?.group, true);
+  const instance = readJson<ChannelInstanceDocument>(path.join(baseDir, "state", "channels", "feishu", "feishu-main", "instance.json"));
+  assert.equal(instance.capabilityOverrides?.group, true);
 });
 
 test("ChannelConfigStore persists display name and removes channel state directory", () => {

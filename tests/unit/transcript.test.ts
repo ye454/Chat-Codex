@@ -52,6 +52,53 @@ test("ConsoleTranscriptSink prints concise chat-style inbound and outbound recor
   assert.doesNotMatch(text, /weixin:acct:direct:chat-1/);
 });
 
+test("ConsoleTranscriptSink shows Feishu conversation type and sender in inbound logs", () => {
+  const output = new MemoryWritable();
+  const sink = new ConsoleTranscriptSink({
+    output,
+    color: false,
+    now: () => new Date(2026, 4, 14, 8, 9, 10),
+  });
+
+  sink.inbound({
+    id: "m1",
+    routeKey: "feishu-default:default:direct:oc_direct",
+    channelId: "feishu-default",
+    accountId: "default",
+    sender: { id: "ou_sender", displayName: "小黄" },
+    conversation: { id: "oc_direct", kind: "direct", displayName: "飞书私聊" },
+    text: "私聊消息",
+    timestamp: "2026-05-14T00:09:10.000Z",
+  }, "私聊消息");
+
+  sink.inbound({
+    id: "m2",
+    routeKey: "feishu-default:default:group:oc_group",
+    channelId: "feishu-default",
+    accountId: "default",
+    sender: { id: "ou_group_sender", displayName: "张三" },
+    conversation: { id: "oc_group", kind: "group", displayName: "研发群" },
+    text: "群聊消息",
+    timestamp: "2026-05-14T00:09:10.000Z",
+  }, "群聊消息");
+
+  sink.inbound({
+    id: "m3",
+    routeKey: "feishu-default:default:group:oc_group_unknown",
+    channelId: "feishu-default",
+    accountId: "default",
+    sender: { id: "ou_unknown" },
+    conversation: { id: "oc_group_unknown", kind: "group", displayName: "飞书群聊" },
+    text: "群聊消息",
+    timestamp: "2026-05-14T00:09:10.000Z",
+  }, "群聊消息");
+
+  const text = output.text();
+  assert.match(text, /\[08:09:10] 飞书 <= 私聊:小黄 \| 小黄/);
+  assert.match(text, /\[08:09:10] 飞书 <= 群聊:研发群 \| 张三/);
+  assert.match(text, /\[08:09:10] 飞书 <= 群聊:oc_group_unknown \| ou_unknown/);
+});
+
 test("ConsoleTranscriptSink can color terminal transcript records", () => {
   const output = new MemoryWritable();
   const sink = new ConsoleTranscriptSink({

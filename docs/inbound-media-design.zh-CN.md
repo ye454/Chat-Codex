@@ -36,6 +36,41 @@ Codex 侧现状：
   - `{ type: "mention", name, path }`
 - 因此图片先保存到本地，再通过 `localImage` 投递给 Codex 是可行的。普通文件没有直接的 app-server `UserInput` 类型，第一阶段应以本地路径文本方式交给 Codex 读取。
 
+## 官方对齐原则：文件引用不是文件上传
+
+Chat-Codex 的入站文件投递必须对齐 Codex 官方语义：
+
+- 图片是原生输入。官方 CLI/exec 支持 `--image <FILE>`，TUI 粘贴或选择图片路径时会转成 `LocalImage`，app-server 支持 `UserInput.localImage`。
+- 普通文件不是原生输入。官方 `UserInput` 没有通用 `localFile` / `file attachment` 类型；TUI 的 `/mention` 或 `@` 文件搜索选中普通文件时，只是把本地路径插入输入框，路径包含空白时会加引号。
+- Codex 最终看到普通文件的方式仍然是文本。模型根据文本里的本地路径，再通过可用工具和当前权限读取文件。
+
+因此 Chat-Codex 不应把普通文件理解成“上传二进制给 Codex”，也不应把文件正文全部粘贴进 prompt。正确链路是：
+
+1. 渠道 adapter 下载微信/飞书入站文件。
+2. 中间件把文件保存到本机用户目录，默认在 `~/.chat-codex/uploads/`。
+3. `ChannelAttachment.localPath` 记录可读的本地绝对路径。
+4. Bridge 内部可继续使用 `localFile` 表示“这是一个已保存的入站普通文件”。
+5. 投递给 Codex app-server 前，`localFile` 必须转换成文本路径引用；图片才保留为 `localImage`。
+
+推荐普通文件文本格式：
+
+```text
+<用户说明>
+
+用户上传了文件：
+- report.pdf: /Users/me/.chat-codex/uploads/feishu/default/<routeHash>/2026-05/msg-file.pdf
+
+请根据用户要求读取这个文件。
+```
+
+路径规则：
+
+- 投递给 Codex 的文件路径必须是绝对路径。
+- 路径或文件名包含空白时应加双引号，贴近官方 TUI 插入路径的行为。
+- 用户上传的原始文件名只用于提示和审计；真实保存路径必须经过 sanitize。
+- 普通聊天用户不需要看到完整本机路径；完整路径只进入 Codex prompt、调试日志或明确的排障输出。
+- Codex 是否能读取普通文件取决于当前 session 的权限、沙箱和路径可访问性。`workspace-write`/`read-only` 场景下要确认 `~/.chat-codex/uploads/` 至少可读。
+
 ## 目标行为
 
 ### 图片加文本
@@ -182,7 +217,7 @@ export interface CodexTurnInput {
 ```
 
 - `AppServerCodexAdapter` 把 `localImage` 映射为 app-server `UserInput.localImage`。该能力已经存在于 Codex app-server v2 协议。
-- `localFile` 第一阶段映射为文本说明，因为 app-server 当前没有通用 file input：
+- `localFile` 映射为文本路径引用，因为 app-server 当前没有通用 file input。这是与官方普通文件引用方式对齐的长期规则，不是临时绕行：
 
 ```text
 用户上传了文件：
@@ -191,14 +226,21 @@ export interface CodexTurnInput {
 请根据用户要求读取这些文件。
 ```
 
+因此普通文件和图片的“投递形态”不同：
+
+- 图片是结构化 `localImage`，模型可以直接看图。
+- 普通文件是中间件内部 `localFile`，最终会被转换成本地路径说明，让 Codex 在当前权限和沙箱允许的前提下自行读取。
+- 文件 + 文字、先发文件后补文字、运行中补充文件 + 文字，都应走和图片相同的 Bridge pending/steer/queue 流程，但底层输入项不是 `localImage`。
+- 如果用户感觉“文件不像图片那样被处理”，优先检查文件是否成功下载到 `localPath`、Codex 当前权限是否能读取该路径，以及提示文案是否仍写成“图片”导致误解。
+
 - `MockCodexAdapter` 和 `ExecCodexAdapter` 可以先把结构化输入降级为文本，保证现有测试和 fallback 行为稳定。
 - `steer()` 也应支持同一套 `CodexTurnInput`，因为 app-server `turn/steer` 同样接收 `UserInput[]`。
 
 `turn/start` 和 `turn/steer` 的区别：
 
-- 空闲 route：调用 `turn/start`，把文本和图片作为新 turn 输入。
-- busy route：如果当前 adapter 支持结构化 `steer()`，调用 `turn/steer`，同样传入 text + `localImage`。
-- 如果 busy route 的 adapter 不支持结构化 steer，必须回落到 route 队列，不丢图片。
+- 空闲 route：调用 `turn/start`，把文本和附件作为新 turn 输入；图片是 `localImage`，普通文件是 `localFile` 文本路径说明。
+- busy route：如果当前 adapter 支持结构化 `steer()`，调用 `turn/steer`，同样传入 text + `localImage`/`localFile`。
+- 如果 busy route 的 adapter 不支持结构化 steer，必须回落到 route 队列，不丢图片或文件。
 - `expectedTurnId` 仍由 app-server adapter 维护，避免图片误投到其它 turn。
 
 `CodexTurnInput.items` 必须保留输入顺序。后续实现 route 级 steer buffer 时，不能继续只保存 `string[]`，需要保存结构化输入：

@@ -140,6 +140,10 @@ export interface ChannelInstanceRecord {
   defaultAccountId?: string;
   displayName?: string;
   credentialSource?: string;
+  capabilityOverrides?: {
+    group?: boolean;
+    thread?: boolean;
+  };
   createdAt: string;
   updatedAt: string;
 }

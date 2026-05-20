@@ -5,6 +5,7 @@ import { FeishuAdapter } from "../../src/channels/feishu/feishu-adapter.js";
 import { MockCodexAdapter } from "../../src/codex/mock-codex-adapter.js";
 import type { CodexEvent } from "../../src/codex/types.js";
 import { SilentLogger } from "../../src/logging/logger.js";
+import { MemoryStateStore } from "../../src/state/memory-state-store.js";
 import { FakeFeishuTransportFactory, sampleFeishuTextEvent } from "../helpers/feishu-fakes.js";
 
 class FeishuProgressCodexAdapter extends MockCodexAdapter {
@@ -42,6 +43,8 @@ test("Feishu private chat uses Bridge commands and default progress delivery", a
 
   const texts = factory.client.sentTexts();
   assert.ok(texts.some((text) => text.includes("**可用命令**") && text.includes("/status")));
+  assert.ok(texts.some((text) => text.includes("/group on|off")));
+  assert.equal(texts.some((text) => text.includes("/grop")), false);
   assert.ok(texts.some((text) => text.includes("Codex 正在处理这条消息。")));
   assert.ok(texts.some((text) => text.includes("Codex 进度:") && text.includes("正在分析飞书私聊消息。")));
   assert.ok(texts.some((text) => text.includes("完成: 请处理这个任务")));
@@ -75,6 +78,49 @@ test("Feishu private chat honors /progress silent through the shared Bridge", as
   assert.ok(textsAfterPrompt.some((text) => text.includes("Codex 正在处理这条消息。")));
   assert.ok(textsAfterPrompt.some((text) => text.includes("完成: 静默任务")));
   assert.equal(textsAfterPrompt.some((text) => text.includes("Codex 进度:")), false);
+});
+
+test("Feishu trusted private chat can toggle group receive at runtime", async () => {
+  const factory = new FakeFeishuTransportFactory();
+  const channel = new FeishuAdapter({ ...credentials, transportFactory: factory });
+  const state = new MemoryStateStore();
+  state.trustRoute({
+    routeKey: "feishu:work:direct:oc_private",
+    channelId: "feishu",
+    accountId: "work",
+    conversationKind: "direct",
+    conversationId: "oc_private",
+    trustedAt: "2026-05-19T00:00:00.000Z",
+    trustedBySenderId: "ou_user",
+    trustMethod: "pairing_code",
+    createdAt: "2026-05-19T00:00:00.000Z",
+    updatedAt: "2026-05-19T00:00:00.000Z",
+  });
+  const bridge = new Bridge({
+    channel,
+    codex: new FeishuProgressCodexAdapter(),
+    state,
+    logger: new SilentLogger(),
+    cwd: process.cwd(),
+    channelCapabilities: {
+      setGroupEnabled: (channelId, enabled) => {
+        assert.equal(channelId, "feishu");
+        channel.setGroupEnabled(enabled);
+        return { ok: true, enabled };
+      },
+    },
+  });
+
+  await bridge.start();
+  await factory.dispatcher.emitReceive(feishuInbound("/group on", "om_group_on"));
+  assert.equal(channel.getCapabilities().group, true);
+  await factory.dispatcher.emitReceive(feishuInbound("/grop off", "om_grop_off"));
+  assert.equal(channel.getCapabilities().group, false);
+  await bridge.stop();
+
+  const texts = factory.client.sentTexts();
+  assert.ok(texts.some((text) => text.includes("已开启飞书群聊接收")));
+  assert.ok(texts.some((text) => text.includes("已关闭飞书群聊接收")));
 });
 
 function feishuInbound(text: string, messageId: string) {
